@@ -1,0 +1,23 @@
+{
+  "id": "prism.connectivity",
+  "version": "1.0.0",
+  "displayName": "官方连通性诊断",
+  "description": "使用宿主已保存的渠道凭据或账号原生授权验证模型连通性；插件只制定检测计划并生成有界纯文本报告。",
+  "schemaVersion": 1,
+  "apiVersion": 1,
+  "permissions": [
+    "diagnostics.channel.probe",
+    "diagnostics.oauth-account.probe"
+  ],
+  "configuration": [
+    {
+      "key": "defaultPrompt",
+      "label": "默认提示词",
+      "kind": "textarea",
+      "required": true,
+      "defaultValue": "请只回复 OK",
+      "help": "每次检测的提示词留空时使用本设置。去除首尾空白后最多 4000 个字符；不能在配置中填写密钥、令牌或上游地址。",
+      "maxLength": 4000
+    }
+  ]
+}

@@ -25,6 +25,10 @@
         </dependency>
         <dependency>
             <groupId>dev.soven</groupId>
+            <artifactId>prism-plugin-host</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.soven</groupId>
             <artifactId>prism-protocol</artifactId>
         </dependency>
         <dependency>

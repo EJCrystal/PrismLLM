@@ -124,6 +124,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.net.URI
@@ -354,6 +355,12 @@ class GatewayApplication(
     private var channelHealthIndexJob: Job? = null
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
+    val pluginInstallationRepository = dev.soven.prismllm.admin.persistence.PluginInstallationRepository(databaseFactory.database)
+    val pluginRuntime = dev.soven.prismllm.plugin.host.PluginRuntime(
+        catalog = dev.soven.prismllm.plugin.host.PluginCatalog(config.pluginCatalogDir),
+        managedDirectory = config.pluginInstallDir,
+        store = pluginInstallationRepository,
+    )
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
@@ -588,6 +595,18 @@ class GatewayApplication(
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
+        runBlocking {
+            try {
+                pluginRuntime.initialize(
+                    bootstrapId = CONNECTIVITY_PLUGIN_ID,
+                    initialConfiguration = kotlinx.serialization.json.buildJsonObject {
+                        put("defaultPrompt", modelTestSettingsRepository.load().defaultPrompt)
+                    },
+                )
+            } catch (cause: Exception) {
+                logger.warn("诊断插件初始化失败，核心转发仍可使用；请检查插件页面和安装目录", cause)
+            }
+        }
         // 每次启动都处理 V54 留下的待搬迁账号；逐账号清除标记，上次失败的重启后继续。
         runBlocking { providerChannelProvisioner.reconcile() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
@@ -701,6 +720,17 @@ class GatewayApplication(
                     ContentType.Application.Json,
                     cause.status,
                 )
+            }
+            exception<dev.soven.prismllm.plugin.host.PluginHostException> { call, cause ->
+                call.markAdminAuditError(cause.code)
+                if (!call.response.isCommitted) {
+                    call.respondGatewayError(
+                        HttpStatusCode.fromValue(cause.statusCode),
+                        cause.code,
+                        cause.message ?: "诊断插件不可用",
+                        "invalid_request_error",
+                    )
+                }
             }
             exception<Throwable> { call, cause ->
                 call.markAdminAuditError("internal_error")
@@ -867,6 +897,7 @@ class GatewayApplication(
         runBlocking { notificationRuntime.closeAndDrain() }
         (notificationSender as? AutoCloseable)?.close()
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
+        pluginRuntime.close()
         oauthQuotaService.close()
         oauthTokenService.close()
         scope.cancel()

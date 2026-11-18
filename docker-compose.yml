@@ -26,13 +26,17 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: jdbc:postgresql://postgres:5432/llm_gateway
+      PLUGIN_CATALOG_DIR: /app/bundled-plugins
+      PLUGIN_INSTALL_DIR: /app/plugin-state
     ports:
       - "8080:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    # Put trusted quota-provider and IQ-judge JARs in ./plugins. The directory is read-only in the container.
+    # Legacy quota-provider/IQ-judge JARs stay in their independent read-only directory.
+    # The trusted diagnostic catalog is image-owned; managed packages need writable persistent state.
     volumes:
       - ./plugins:/app/plugins:ro
+      - pluginstate:/app/plugin-state
     depends_on:
       postgres:
         condition: service_healthy
@@ -40,6 +44,8 @@ services:
 volumes:
   pgdata:
     name: prism-llm_pgdata
+  pluginstate:
+    name: prism-llm_pluginstate
 
 networks:
   default:

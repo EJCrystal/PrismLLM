@@ -141,6 +141,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
     route("/admin/api") {
         modelCredentialRoutes(app)
         notificationRoutes(app)
+        pluginAdminRoutes(app)
         post("/login") {
             val request = call.receive<LoginRequest>()
             val (user, issued) = app.sessions.withUsernameLock(request.username) {
@@ -329,7 +330,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/model-test-settings") {
             call.requireAdmin(app)
-            call.respond(app.modelTestSettingsRepository.load().toResponse())
+            call.respond(app.connectivitySettings())
         }
 
         put("/model-test-settings") {
@@ -339,8 +340,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (prompt.isEmpty() || prompt.length > MODEL_TEST_PROMPT_MAX) {
                 throw badRequest("invalid_model_test_settings", "默认提示词长度必须在 1..$MODEL_TEST_PROMPT_MAX 之间")
             }
-            app.modelTestSettingsRepository.save(prompt)
-            call.respond(app.modelTestSettingsRepository.load().toResponse())
+            call.respond(app.saveConnectivitySettings(prompt))
         }
 
         get("/channels") {
@@ -678,39 +678,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/channels/{id}/model-test") {
             call.requireAdmin(app)
             val channelId = call.requiredParam("id", "缺少渠道 id")
-            val channel = app.channelRepository.find(channelId)?.let { channelWithCredentials(app, it) }
-                ?: throw notFound("channel_not_found", "渠道不存在")
-            val request = call.receive<ChannelModelTestRequest>()
-            val model = request.model.trim()
-            if (model.isEmpty() || model.length > 200) {
-                throw badRequest("invalid_model_test", "模型名长度必须在 1..200 之间")
-            }
-            if (model !in channel.models) {
-                throw badRequest("model_not_authorized", "渠道「${channel.name}」尚未授权模型「$model」")
-            }
-            val credential = resolveChannelCredentialForModel(channel, model, request.keyId)
-            val protocol = GatewayProtocol.fromValue(request.protocol.trim())
-                ?: throw badRequest("invalid_model_test_protocol", "测试协议无效")
-            if (protocol !in channel.protocols) {
-                throw badRequest("model_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
-            }
-            val settings = app.modelTestSettingsRepository.load()
-            val prompt = request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: settings.defaultPrompt
-            if (prompt.length > MODEL_TEST_PROMPT_MAX) {
-                throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
-            }
-            val result = testChannelModelConnectivity(
-                channel = channel,
-                credentialRef = credential,
-                model = model,
-                protocol = protocol,
-                prompt = prompt,
-                credentials = app.oauthTokenService,
-                httpClient = app.httpClient,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+            val result = app.executeConnectivityPlugin(
+                PluginInvocationContext("channel", channelId),
+                call.receive<ChannelModelTestRequest>(),
             )
-            call.respond(result.toResponse(model, protocol, credential.id, credential.name, prompt))
+            call.respond(result.toLegacyConnectivityResponse())
         }
 
         get("/iq-tests/benchmarks") {
@@ -1489,81 +1461,17 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/oauth-accounts/{id}/model-test") {
             call.requireAdmin(app)
             val accountId = call.requiredParam("id", "缺少账号 id")
-            // 必须加载模型授权：find() 的空模型列表表示“全部模型”，会绕开账号级限制。
-            val account = app.oauthAccountRepository.findDetailed(accountId)
-                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            val request = call.receive<ChannelModelTestRequest>()
-            val model = request.model.trim()
-            if (model.isEmpty() || model.length > 200) {
-                throw badRequest("invalid_model_test", "模型名长度必须在 1..200 之间")
-            }
-            if (!account.supports(model)) {
-                throw badRequest("model_not_authorized", "账号「${account.name}」未授权模型「$model」")
-            }
-            val protocol = GatewayProtocol.fromValue(request.protocol.trim())
-                ?: throw badRequest("invalid_model_test_protocol", "测试协议无效")
-            val endpoint = ProviderEndpoints.of(account.provider)
-            if (protocol !in endpoint.protocols) {
-                throw badRequest("model_test_protocol_unsupported", "订阅账号不支持协议 ${protocol.value}")
-            }
-            // 端点渠道由系统置备，承载官方地址与请求覆盖；测试必须使用与数据面完全相同的配置。
-            val channelId = app.providerChannelProvisioner.ensure(account.provider)
-                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + account.provider.value)
-            val channel = app.channelRepository.find(channelId)
-                ?: throw notFound("channel_not_found", "系统端点渠道不存在")
-            if (model !in channel.models) {
-                throw badRequest("model_not_authorized", "系统端点渠道尚未配置模型「$model」")
-            }
-            val settings = app.modelTestSettingsRepository.load()
-            val prompt = request.prompt?.trim()?.takeIf { it.isNotEmpty() } ?: settings.defaultPrompt
-            if (prompt.length > MODEL_TEST_PROMPT_MAX) {
-                throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
-            }
-            val proxy = try {
-                account.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }
-                    ?.let { proxyAddress(it, app.config.oauth.proxyAllowedHosts) }
-            } catch (cause: OAuthRefreshException) {
-                throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
-            }
-            val token = try {
-                app.oauthTokenService.accessToken(account.id)
-            } catch (cause: CancellationException) {
-                throw cause
-            } catch (cause: Throwable) {
-                throw GatewayError(
-                    HttpStatusCode.BadGateway,
-                    "oauth_credential_unavailable",
-                    "读取账号凭据失败: " + (cause.message ?: cause::class.simpleName),
-                    "upstream_error",
-                    retryable = true,
-                )
-            } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
-            val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
-                withTimeoutOrNull(MODEL_TEST_PREPARE_TIMEOUT_MS) {
-                    app.codeAssistProjectResolver.context(account, token.accessToken, proxy)
-                }?.project
-            } else {
-                null
-            }
-            val result = testOAuthAccountModelConnectivity(
-                channel = channel,
-                accessToken = token.accessToken,
-                project = project,
-                model = model,
-                protocol = protocol,
-                prompt = prompt,
-                httpClient = upstreamClient(app, proxy),
-                codeAssistUserAgent = app.currentAntigravityUserAgent(),
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+            val result = app.executeConnectivityPlugin(
+                PluginInvocationContext("oauth-account", accountId),
+                call.receive<ChannelModelTestRequest>(),
             )
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", accountId)
-                put("model", model)
-                put("protocol", protocol.value)
-                put("success", result.success)
+                put("model", result.target.model)
+                put("protocol", result.target.protocol)
+                put("success", result.outcome.success)
             })
-            call.respond(result.toResponse(model, protocol, account.id, account.name, prompt))
+            call.respond(result.toLegacyConnectivityResponse())
         }
 
         post("/oauth-login/start") {
@@ -2338,7 +2246,7 @@ private fun credentialUnavailable(credential: UpstreamCredential): GatewayError 
     }
 
 /** 可选的模型测试目标：渠道已授权模型及其可用凭据（静态密钥与订阅账号）。 */
-private suspend fun GatewayApplication.modelTestTargets(): List<IqTestTargetResponse> {
+internal suspend fun GatewayApplication.modelTestTargets(): List<IqTestTargetResponse> {
     val accountsByChannel = oauthAccountRepository.listByChannel()
     return channelRepository.list().flatMap { channel ->
         val hydrated = channel.copy(oauthAccounts = accountsByChannel[channel.id].orEmpty())
@@ -2378,7 +2286,7 @@ private fun aggregateFingerprintUsage(results: List<ModelConnectivityTestResult>
 }
 
 /** 管理面渠道操作需要同时看到静态密钥与关联订阅账号。 */
-private suspend fun channelWithCredentials(app: GatewayApplication, channel: ChannelRecord): ChannelRecord =
+internal suspend fun channelWithCredentials(app: GatewayApplication, channel: ChannelRecord): ChannelRecord =
     channel.copy(oauthAccounts = app.oauthAccountRepository.listByChannel()[channel.id].orEmpty())
 
 /** 选择显式指定的上游凭据（密钥或账号）；未指定时取优先级最高的可路由凭据。 */
@@ -2412,7 +2320,7 @@ private fun preferredProbeProtocol(channel: ChannelRecord): GatewayProtocol =
         ?: channel.protocols.first()
 
 /** 为指定模型选择上游凭据；显式 id 必须支持该模型。 */
-private fun resolveChannelCredentialForModel(
+internal fun resolveChannelCredentialForModel(
     channel: ChannelRecord,
     model: String,
     credentialId: String?,

@@ -1,3 +1,9 @@
+export type {
+  PluginAction, PluginCatalogItem, PluginChoice, PluginContextKind, PluginExecution, PluginField, PluginFieldKind,
+  PluginInvocationContext, PluginInvocationRequest, PluginManifest, PluginRuntimeState, PluginUiContribution,
+  PluginUiDescriptor, PluginUiEntry, PluginValue, PluginValues,
+} from './plugin'
+
 export type ProtocolId = 'chat_completions' | 'responses' | 'messages' | 'gemini'
 
 export type ModelRouteCredentialType = 'static' | 'oauth'

@@ -34,11 +34,15 @@ const makeFixture = () => ({
   detail: { modelId, revision: 5, configured: true, entries: [clone(entryA), clone(entryB)], availableCredentials: [clone(entryA), clone(entryB)] },
   logoutCalls: 0,
   pendingPut: null,
+  requests: [],
+  pluginCanLeave: true,
+  pluginLeaveCalls: 0,
 })
 function createFetch(fixture) {
   return async (input, init = {}) => {
     const url = new URL(String(input), window.location.origin)
     const method = init.method || 'GET'
+    fixture.requests.push({ method, path: url.pathname })
     if (url.pathname === '/admin/api/me' && method === 'GET') return new Response(JSON.stringify({ username: 'admin', avatarDataUrl: null }))
     if (url.pathname === '/admin/api/logout' && method === 'POST') {
       fixture.logoutCalls++
@@ -114,6 +118,12 @@ describe('App navigation protects model route drafts', () => {
     const errorState = await loadClientComponent(server, 'ErrorState', { Icon: icon })
     routeComponent = await loadClientComponent(server, 'ModelRoutesView', { Icon: icon, ErrorState: errorState })
     const inert = { render: () => h('div') }
+    const marketplaceStub = {
+      setup(_, { expose }) {
+        expose({ canLeave() { fixture.pluginLeaveCalls++; return fixture.pluginCanLeave } })
+        return () => h('div', { 'data-plugin-marketplace': '' }, 'Synthetic plugin view; no network')
+      },
+    }
     const components = {
       Icon: icon,
       ToastStack: inert,
@@ -121,6 +131,7 @@ describe('App navigation protects model route drafts', () => {
       ChannelsView: inert,
       OAuthAccountsView: inert,
       ModelRoutesView: routeComponent,
+      PluginMarketplaceView: marketplaceStub,
       ClientKeysView: inert,
       LogsView: inert,
       UsageReportsView: inert,
@@ -161,6 +172,47 @@ describe('App navigation protects model route drafts', () => {
     assert.equal(confirmCalls.length, 2)
   })
 
+  it('exposes permanent Plugins navigation while preserving model-route draft confirmation and avoiding plugin network', async () => {
+    await mount()
+    makeDraft()
+    await nextTick()
+    button(host.querySelector('nav'), '插件').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '模型路由')
+    assert.ok(host.querySelector('.route-editor'))
+    assert.equal(confirmCalls.length, 1)
+    confirmResult = true
+    button(host.querySelector('nav'), '插件').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '插件')
+    assert.ok(host.querySelector('[data-plugin-marketplace]'))
+    assert.ok(host.querySelector('.main.main-fill .content.content-fill'))
+    assert.equal(button(host.querySelector('nav'), '插件').classList.contains('active'), true)
+    assert.equal(host.querySelector('.route-editor'), null)
+    assert.equal(confirmCalls.length, 2)
+    assert.deepEqual(fixture.requests.filter(request => /^\/admin\/api\/(plugins|plugin-catalog)/.test(request.path)), [])
+  })
+
+  it('dispatches the Plugins canLeave guard for sidebar navigation and explicit logout', async () => {
+    await mount()
+    button(host.querySelector('nav'), '插件').click()
+    await settle()
+    assert.ok(host.querySelector('[data-plugin-marketplace]'))
+    fixture.pluginCanLeave = false
+    button(host.querySelector('nav'), '渠道').click()
+    button(host, '退出登录').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '插件')
+    assert.equal(fixture.logoutCalls, 0)
+    assert.equal(fixture.pluginLeaveCalls, 2)
+    fixture.pluginCanLeave = true
+    button(host.querySelector('nav'), '渠道').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '渠道')
+    assert.equal(fixture.pluginLeaveCalls, 3)
+    assert.deepEqual(fixture.requests.filter(request => /^\/admin\/api\/(plugins|plugin-catalog)/.test(request.path)), [])
+  })
+
   it('protects dirty drafts on explicit logout with the same confirmation', async () => {
     await mount()
     makeDraft()
@@ -190,6 +242,7 @@ describe('App navigation protects model route drafts', () => {
     assert.match(text(host.querySelector('.route-save-bar')), /保存中/)
 
     button(host.querySelector('nav'), '渠道').click()
+    button(host.querySelector('nav'), '插件').click()
     button(host, '退出登录').click()
     await settle()
     assert.equal(text(host.querySelector('h1')), '模型路由')

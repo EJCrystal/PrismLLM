@@ -18,7 +18,7 @@
 - 🧠 **统一模型检测**：渠道列表的「测试」入口提供连通性、智商、指纹与记录四个页签。连通性检测用真实请求验证渠道、凭据与协议；智商检测内置鹈鹕骑行与糖果测试，支持可插拔判分器；指纹检测根据随机数字序列在本地参考库中比对 68 个已知模型。智商与指纹结果按渠道归档在「记录」页签，可按类型、模型与结论筛选；三类检测都不写请求日志、不消耗调用方密钥额度，指纹比对完全在本地完成。
 - 💰 **单请求 USD 费用快照**：按用量与“渠道覆盖价 > 模型默认价”核算输入、输出及缓存费用，推理 Token 不重复计费；本次请求单次解析价格并计算费用，供每日额度账本与异步请求日志共用，日志消费者不二次算价。每日额度为按 UTC 准入日期归属、请求结束后结算的软预算，不是预授权硬上限。
 - 🔔 **Webhook 与飞书通知**：渠道健康异常、上游密钥停用和连续失败告警，多目标订阅、恢复通知与持久化重试；接收端地址与签名凭据在管理台加密保存，见[通知指南](docs/notifications.md)。
-- 🔌 **可扩展插件生态**：支持通过 JVM SPI 加载独立的余额与额度查询插件（官方提供 Sub2API / New API 适配器）。
+- **可信 JVM 插件**：官方连通性诊断以独立 `.prismplugin` 包、本地可信目录与通用声明式 UI 提供，安装/启用等待冷启动，禁用与卸载立即关闭新执行；原有 IQ 与余额/额度 JAR 扩展继续独立运行（Sub2API / New API 适配器仍可选安装）。
 
 ---
 
@@ -53,6 +53,8 @@ docker compose up -d --build
 
 启动后访问管理后台：`http://localhost:8080/admin/`，使用 `.env` 中设置的管理员账号密码登录。
 
+镜像在 `/app/bundled-plugins` 内置官方连通性诊断可信索引与独立安装包，Compose 用独立可写 `pluginstate` 卷保存托管包，同时保留 `./plugins:/app/plugins:ro` 供旧 IQ / 额度 JAR 使用。首次引导不覆盖管理员已禁用或卸载的记录，安装与启用的冷加载行为见 [诊断插件指南](docs/plugins/connectivity-diagnostic.md)。
+
 以上为本地启动示例；生产环境必须使用 TLS 并设置 `COOKIE_SECURE=true`，将 `/admin/`、`/admin/api/*` 与 `/metrics` 限制在私网或受控运维入口。默认 Compose 给 gateway 设置 `stop_grace_period: 60s`，为默认 30 秒 Drain 及 server、队列清理留出余量；增大 `DRAIN_TIMEOUT_MS` 时必须同步增大容器或编排器的停止预算，这不是完整停机耗时的绝对上界。部署与安全备份要求见 [配置指南](docs/configuration.md)。
 
 ### 方式二：本地运行
@@ -65,8 +67,16 @@ docker compose up -d --build
 npm --prefix web ci
 npm --prefix web run build
 
-# 2. 构建并运行后端（首次启动会自动通过 Flyway 执行数据库表结构迁移）
-mvn package
+# 2. 安装 SDK / host 并独立构建官方诊断包（不进入 app.jar）
+mvn -DskipTests -pl prism-plugin-sdk,prism-plugin-host -am install
+mvn -f extensions/connectivity-diagnostic/pom.xml verify
+mkdir -p bundled-plugins
+cp extensions/connectivity-diagnostic/target/catalog.json \
+   extensions/connectivity-diagnostic/target/prism-connectivity-1.0.0.prismplugin \
+   bundled-plugins/
+
+# 3. 构建并运行后端（首次启动会自动通过 Flyway 执行数据库表结构迁移）
+PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" mvn package
 java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 ```
 
@@ -83,6 +93,8 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 | `ADMIN_PASSWORD` | *(必填)* | 初始管理员密码 |
 | `CONNECT_TIMEOUT_MS` | `30000` | 上游连接超时时间（毫秒） |
 | `FIRST_TOKEN_TIMEOUT_MS` | `120000`| 流式首数据等待超时（毫秒；沿用变量名，不是语义 Token 的保证） |
+| `PLUGIN_CATALOG_DIR` | `bundled-plugins` | 部署方管理的本地可信诊断索引与安装包；镜像使用 `/app/bundled-plugins` |
+| `PLUGIN_INSTALL_DIR` | `plugin-state` | 独立可写托管包目录；Compose 持久卷挂载 `/app/plugin-state`，不与旧 `plugins` 混用 |
 
 完整环境变量清单、代理配置与日志保留策略请参阅 [配置指南](docs/configuration.md)。
 
@@ -99,7 +111,8 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 - 🎭 **[上游请求覆盖与伪装](docs/upstream-request-overrides.md)**：请求头预设、UA 注入与 JSON Merge Patch 规则。
 - 💵 **[计费与用量核算](docs/billing.md)**：费用计算公式、双层单价继承模型与多维度用量报表。
 - 🧠 **[模型检测说明](docs/model-detection.md)**：连通性、智商与指纹检测的判定口径、接口与限制，以及指纹参考库的来源和许可。
-- 🔌 **[渠道额度插件指南](docs/plugins/channel-quota-provider.md)**：Sub2API 与 New API 额度查询插件安装与自定义开发。
+- **[官方连通性诊断插件与开发](docs/plugins/connectivity-diagnostic.md)**：独立 SDK 编译、可信目录安装、权限/重启/禁用/卸载、声明式 UI 与测试夹具；可信 JVM 而非沙箱。
+- **[渠道额度插件指南](docs/plugins/channel-quota-provider.md)**：Sub2API 与 New API 额度查询插件安装与自定义开发，旧 JAR 目录保持独立。
 - 📈 **[监控与告警配置](monitoring/README.md)**：Prometheus 采集规则、告警模板与 Grafana 接入。
 - 🤖 **[AI 代码审查门禁](docs/ai-code-review.md)**：CodeRabbit → PR-Agent 两级降级规则与所需配置。
 
@@ -124,7 +137,8 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 
 ```bash
 # 后端测试套件（含基于 Testcontainers 的全链路测试）
-mvn test
+# 首次先按「本地运行」安装 SDK 并 verify 独立插件，提供真实包测试夹具。
+PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" mvn test
 
 # 前端轻量测试套件
 npm --prefix web test

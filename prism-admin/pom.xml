@@ -21,6 +21,10 @@
             <artifactId>prism-shared</artifactId>
         </dependency>
         <dependency>
+            <groupId>dev.soven</groupId>
+            <artifactId>prism-plugin-host</artifactId>
+        </dependency>
+        <dependency>
             <groupId>org.jetbrains.kotlin</groupId>
             <artifactId>kotlin-stdlib</artifactId>
             <version>${kotlin.version}</version>

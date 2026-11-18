@@ -1,0 +1,81 @@
+{
+  "schemaVersion": 1,
+  "entries": [
+    {
+      "id": "connectivity-channel",
+      "label": "连通性",
+      "placement": "channel-tests",
+      "contexts": ["channel"],
+      "icon": "bolt",
+      "action": {
+        "id": "probe-channel",
+        "label": "检测连通性",
+        "resource": "model-test-targets",
+        "supportsBatch": true,
+        "resultKind": "probe-v1",
+        "fields": [
+          {"key": "model", "label": "模型", "kind": "model", "required": true, "help": "只选择宿主返回的已保存模型目标。"},
+          {"key": "keyId", "label": "凭据", "kind": "credential", "help": "只显示凭据的名称和不透明 ID，不包含密钥明文。留空沿用该模型目标的默认凭据。"},
+          {"key": "protocol", "label": "协议", "kind": "protocol", "required": true, "help": "只选择目标支持的协议，不接受自定义地址。"},
+          {"key": "scope", "label": "检测范围", "kind": "scope", "required": true, "defaultValue": "single", "options": [{"value": "single", "label": "当前目标"}, {"value": "all", "label": "当前渠道全部目标"}]},
+          {"key": "prompt", "label": "本次提示词", "kind": "textarea", "maxLength": 4000, "help": "留空使用插件设置的默认提示词；本次覆盖不会保存为默认值。"}
+        ],
+        "notes": [
+          "默认提示词在插件设置中保存，未设置时为「请只回复 OK」。本次提示词优先，去除首尾空白后最多 4000 个字符。",
+          "每个目标最多输出 128 Token，最多等待 45 秒；全部目标最多两路并发，不自动重试。",
+          "不写生产请求日志、不消耗调用方密钥额度，不触发冷却或自动停用；上游仍可能计费。"
+        ]
+      }
+    },
+    {
+      "id": "connectivity-account",
+      "label": "连通性",
+      "placement": "oauth-account-tests",
+      "contexts": ["oauth-account"],
+      "icon": "bolt",
+      "action": {
+        "id": "probe-account",
+        "label": "检测账号连通性",
+        "resource": "model-test-targets",
+        "supportsBatch": false,
+        "resultKind": "probe-v1",
+        "fields": [
+          {"key": "model", "label": "账号模型", "kind": "model", "required": true, "help": "只选择当前授权账号支持的模型，使用账号自己的原生授权，不选择渠道密钥。"},
+          {"key": "protocol", "label": "协议", "kind": "protocol", "required": true, "help": "使用账号模型支持的原生协议。"},
+          {"key": "prompt", "label": "本次提示词", "kind": "textarea", "maxLength": 4000, "help": "留空使用插件设置的默认提示词；本次覆盖不会保存为默认值。"}
+        ],
+        "notes": [
+          "此入口固定使用当前账号的原生授权，不提供渠道密钥选择或跨账号批量检测。",
+          "默认提示词在插件设置中保存。本次提示词优先，去除首尾空白后最多 4000 个字符，默认「请只回复 OK」。",
+          "最多输出 128 Token、等待 45 秒，不自动重试；不写生产请求日志、不消耗调用方密钥额度，也不触发冷却或自动停用。"
+        ]
+      }
+    },
+    {
+      "id": "connectivity-page",
+      "label": "模型连通性诊断",
+      "placement": "plugin-page",
+      "contexts": ["channel"],
+      "icon": "bolt",
+      "action": {
+        "id": "probe-global",
+        "label": "检测模型连通性",
+        "resource": "model-test-targets",
+        "supportsBatch": true,
+        "resultKind": "probe-v1",
+        "fields": [
+          {"key": "model", "label": "渠道 / 模型目标", "kind": "model", "required": true, "help": "从宿主返回的安全模型目标中选择，模型与所属渠道绑定。"},
+          {"key": "keyId", "label": "凭据", "kind": "credential", "help": "只显示名称和不透明 ID；留空沿用目标的默认凭据。"},
+          {"key": "protocol", "label": "协议", "kind": "protocol", "required": true},
+          {"key": "scope", "label": "检测范围", "kind": "scope", "required": true, "defaultValue": "single", "options": [{"value": "single", "label": "当前目标"}, {"value": "all", "label": "全部可选渠道目标"}]},
+          {"key": "prompt", "label": "本次提示词", "kind": "textarea", "maxLength": 4000, "help": "留空使用插件设置的默认提示词；本次覆盖不会保存为默认值。"}
+        ],
+        "notes": [
+          "使用已保存的渠道模型与凭据；账号原生检测请使用账号页入口，不能在此填写令牌或上游地址。",
+          "提示词去除首尾空白后最多 4000 个字符；本次值优先于插件设置，最终默认「请只回复 OK」。",
+          "每个目标最多输出 128 Token、等待 45 秒；全部目标最多两路并发，不自动重试，不写生产请求日志或消耗调用方密钥额度，也不触发冷却或自动停用。"
+        ]
+      }
+    }
+  ]
+}

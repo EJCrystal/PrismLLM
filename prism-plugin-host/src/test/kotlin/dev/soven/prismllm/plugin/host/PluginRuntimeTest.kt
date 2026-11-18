@@ -1,0 +1,988 @@
+package dev.soven.prismllm.plugin.host
+
+import dev.soven.prismllm.plugin.sdk.DiagnosticInput
+import dev.soven.prismllm.plugin.sdk.DiagnosticTarget
+import dev.soven.prismllm.plugin.sdk.PluginApi
+import dev.soven.prismllm.plugin.sdk.PluginField
+import dev.soven.prismllm.plugin.sdk.ProbeLimits
+import dev.soven.prismllm.plugin.sdk.ProbeOutcome
+import dev.soven.prismllm.plugin.sdk.ProbePlan
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.junit.jupiter.api.Tag
+import org.junit.jupiter.api.Test
+import java.net.URLClassLoader
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
+import kotlin.test.assertSame
+import kotlin.test.assertTrue
+
+@Tag("unit")
+internal class PluginRuntimeTest : PluginTestSupport() {
+    private val target = DiagnosticTarget("channel", "channel-1", "model-1", "responses", credentialId = "key-1")
+    private val input = DiagnosticInput("probe")
+    private val ok = ProbeOutcome(true, 200, 10, responseText = "OK")
+    private fun config(prompt: String): JsonObject = buildJsonObject { put("defaultPrompt", prompt) }
+
+    private fun eraseManagedStorage() {
+        if (!Files.exists(managedDirectory)) return
+        Files.walk(managedDirectory).use { paths -> paths.filter { Files.isDirectory(it) }.forEach {
+            Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwx------"))
+        } }
+        Files.walk(managedDirectory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) } }
+    }
+
+    private suspend fun invoke(host: PluginRuntime, id: String = "example.probe", version: String = "1.0.0", values: JsonObject = JsonObject(emptyMap())) =
+        host.execute(id, version, DiagnosticInput("probe", values), target) { ok }
+
+    private suspend fun installedStore(vararg packages: PackageFixture): MemoryInstallationStore {
+        publish(*packages)
+        val store = MemoryInstallationStore()
+        val installer = runtime(store)
+        installer.initialize()
+        packages.forEach {
+            installer.install(it.manifest.id, it.manifest.version, it.manifest.permissions)
+            installer.setEnabled(it.manifest.id, true)
+        }
+        installer.close()
+        return store
+    }
+
+    private fun ownedFixture(id: String = "example.probe", delayed: Boolean = false): PackageFixture = fixture(
+        id = id,
+        constructorPrefix = { property -> """
+            System.getProperties().put("$property.loader", getClass().getClassLoader());
+            ${if (delayed) """
+                mark("load-ready");
+                try {
+                    while (!"true".equals(System.getProperty("$property.release"))) Thread.sleep(5);
+                } catch (InterruptedException cancelled) {
+                    mark("load-interrupted");
+                    while (!"true".equals(System.getProperty("$property.release"))) {
+                        try { Thread.sleep(5); } catch (InterruptedException ignored) { }
+                    }
+                }
+                mark("load-returned");
+            """.trimIndent() else ""}
+        """.trimIndent() },
+        closePrefix = { """
+            if (Thread.currentThread().getContextClassLoader() != getClass().getClassLoader()) throw new IllegalStateException("wrong close loader");
+            mark("closed-with-loader");
+        """.trimIndent() },
+        jarEntries = listOf(ZipFixtureEntry("fixture/owned-resource.txt", "owned".toByteArray())),
+    )
+
+    private fun loader(packaged: PackageFixture): URLClassLoader = assertNotNull(System.getProperties()["${packaged.property}.loader"] as? URLClassLoader)
+
+    private suspend fun assertDisposed(packaged: PackageFixture) {
+        awaitProperty("${packaged.property}.closed", "1")
+        awaitProperty("${packaged.property}.closed-with-loader", "1")
+        assertEquals(1, packaged.count("closed"))
+        assertNull(loader(packaged).findResource("fixture/owned-resource.txt"))
+    }
+
+    private fun assertNoActive(host: PluginRuntime) {
+        val field = PluginRuntime::class.java.getDeclaredField("active").apply { isAccessible = true }
+        assertTrue((field.get(host) as Map<*, *>).isEmpty(), "Closed/unpublished runtime must not retain active owners")
+    }
+
+    @Test
+    fun `manual install configure and enable never initialize code until the next startup`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize()
+        val installed = host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+        assertTrue(installed.installed)
+        assertFalse(installed.desiredEnabled)
+        assertFalse(installed.admissionEnabled)
+        assertNull(installed.activeVersion)
+        host.configure(packaged.manifest.id, config("manual prompt"))
+        val pending = host.setEnabled(packaged.manifest.id, true)
+        assertTrue(pending.requiresRestart)
+        assertNull(pending.activeUi)
+        assertEquals(emptyList(), host.contributions())
+        assertEquals(0, packaged.count("constructed"))
+        val writes = store.writes
+        val replay = host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions.reversed())
+        assertEquals(pending, replay)
+        assertEquals(writes, store.writes)
+        host.close()
+        val restarted = runtime(store)
+        restarted.initialize()
+        assertTrue(restarted.state(packaged.manifest.id).admissionEnabled)
+        assertEquals("manual prompt", invoke(restarted).plan.prompt)
+        assertEquals(1, packaged.count("constructed"))
+        assertEquals(2, restarted.contributions().size)
+    }
+
+    @Test
+    fun `legacy bootstrap is one-time full-grant and does not reset administrator configuration`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id, config("legacy prompt"))
+        host.initialize(packaged.manifest.id, config("must not overwrite"))
+        val state = host.state(packaged.manifest.id)
+        assertTrue(state.desiredEnabled && state.admissionEnabled)
+        assertEquals(packaged.manifest.permissions, state.approvedPermissions)
+        assertEquals(config("legacy prompt"), state.activeConfiguration)
+        assertEquals(1, store.writes)
+        assertEquals(1, packaged.count("constructed"))
+        assertEquals("legacy prompt", invoke(host).plan.prompt)
+    }
+
+    @Test
+    fun `bad catalogue entry cannot block official bootstrap or healthy managed installations`(): Unit = runBlocking {
+        val healthy = fixture(id = "healthy.probe")
+        val store = installedStore(healthy)
+        val recorded = assertNotNull(store.find(healthy.manifest.id))
+        val official = fixture(id = "prism.connectivity")
+        val broken = fixture(id = "broken.catalogue")
+        publish(healthy, official, broken)
+        // Retain the catalogue's original pin while corrupting only the unrelated C package.
+        Files.write(catalogDirectory.resolve(broken.fileName), broken.archive + 0)
+        assertNull(store.find(official.manifest.id))
+        val host = runtime(store)
+        host.initialize(official.manifest.id, config("legacy bootstrap"))
+        assertTrue(host.state(healthy.manifest.id).admissionEnabled)
+        assertEquals(recorded, store.find(healthy.manifest.id))
+        assertTrue(host.state(official.manifest.id).admissionEnabled)
+        val bad = host.catalogItems().single { it.manifest.id == broken.manifest.id }
+        assertFalse(bad.compatible)
+        assertTrue(bad.compatibilityReason.orEmpty().contains("PLUGIN_HASH_MISMATCH"))
+        assertTrue(bad.ui.entries.isEmpty())
+        assertEquals(setOf(healthy.manifest.id, official.manifest.id), host.states().map { it.id }.toSet())
+        assertEquals(setOf(healthy.manifest.id, official.manifest.id), host.contributions().map { it.pluginId }.toSet())
+        assertTrue(invoke(host, healthy.manifest.id).outcome.success)
+        assertEquals(config("updated healthy"), host.configure(healthy.manifest.id, config("updated healthy")).activeConfiguration)
+        assertEquals(0, broken.count("constructed"))
+        assertNull(store.find(broken.manifest.id))
+    }
+
+    @Test
+    fun `bootstrap staging failure is visible without a decision write or skipping managed plugins`(): Unit = runBlocking {
+        val healthy = fixture(id = "healthy.probe")
+        val store = installedStore(healthy)
+        val official = fixture(id = "prism.connectivity")
+        publish(healthy, official)
+        val occupied = managedDirectory.resolve(official.manifest.id).resolve(official.manifest.version)
+        Files.createDirectories(occupied)
+        val damaged = official.archive + 0
+        Files.write(occupied.resolve("package.prismplugin"), damaged)
+        Files.write(occupied.resolve("plugin.jar"), official.jar)
+        val writes = store.writes
+        val host = runtime(store)
+        host.initialize(official.manifest.id)
+        assertTrue(host.state(healthy.manifest.id).admissionEnabled)
+        val failed = host.state(official.manifest.id)
+        assertEquals("error", failed.status)
+        assertFalse(failed.installed || failed.admissionEnabled)
+        assertTrue(failed.loadError.orEmpty().contains("PLUGIN_VERSION_CONFLICT"))
+        assertNull(store.find(official.manifest.id))
+        assertEquals(writes, store.writes)
+        assertTrue(Files.readAllBytes(occupied.resolve("package.prismplugin")).contentEquals(damaged))
+        assertEquals(2, host.states().size)
+        assertTrue(host.contributions().all { it.pluginId == healthy.manifest.id })
+        assertTrue(invoke(host, healthy.manifest.id).report.success)
+        host.initialize(official.manifest.id)
+        assertEquals(writes, store.writes)
+        assertEquals(0, official.count("constructed"))
+    }
+
+    @Test
+    fun `corrupt catalogue root leaves managed plugins usable and bootstrap errors recover by explicit install`(): Unit = runBlocking {
+        val healthy = fixture(id = "healthy.probe")
+        val store = installedStore(healthy)
+        val official = fixture(id = "prism.connectivity")
+        publish(healthy, official)
+        Files.writeString(catalogDirectory.resolve("catalog.json"), "{invalid")
+        val writes = store.writes
+        val host = runtime(store)
+        host.initialize(official.manifest.id)
+        assertTrue(host.state(healthy.manifest.id).admissionEnabled)
+        assertTrue(host.state(official.manifest.id).loadError.orEmpty().contains("PLUGIN_INVALID_PACKAGE"))
+        assertEquals(setOf(healthy.manifest.id, official.manifest.id), host.states().map { it.id }.toSet())
+        failure("PLUGIN_INVALID_PACKAGE") { host.catalogItems() }
+        assertTrue(host.contributions().all { it.pluginId == healthy.manifest.id })
+        assertTrue(invoke(host, healthy.manifest.id).outcome.success)
+        assertEquals(writes, store.writes)
+        assertNull(store.find(official.manifest.id))
+        publish(healthy, official)
+        host.initialize(official.manifest.id) // Initialization is complete; no implicit retry/decision.
+        assertNull(store.find(official.manifest.id))
+        val installed = host.install(official.manifest.id, official.manifest.version, official.manifest.permissions)
+        assertTrue(installed.installed)
+        assertFalse(installed.desiredEnabled || installed.admissionEnabled)
+        assertNull(installed.loadError)
+        assertEquals(1, host.states().count { it.id == official.manifest.id })
+        assertEquals(0, official.count("constructed"))
+    }
+
+    @Test
+    fun `invalid optional bootstrap package records an actionable error without disabling healthy managed code`(): Unit = runBlocking {
+        val healthy = fixture(id = "healthy.probe")
+        val store = installedStore(healthy)
+        val official = fixture(id = "prism.connectivity")
+        publish(healthy, official)
+        Files.write(catalogDirectory.resolve(official.fileName), official.archive + 0)
+        val writes = store.writes
+        val host = runtime(store)
+        host.initialize(official.manifest.id)
+        assertTrue(host.state(healthy.manifest.id).admissionEnabled)
+        val failed = host.state(official.manifest.id)
+        assertEquals("error", failed.status)
+        assertTrue(failed.loadError.orEmpty().contains("PLUGIN_HASH_MISMATCH"))
+        assertFalse(host.catalogItems().single { it.manifest.id == official.manifest.id }.compatible)
+        assertEquals(writes, store.writes)
+        assertNull(store.find(official.manifest.id))
+        assertFalse(Files.exists(managedDirectory.resolve(official.manifest.id)))
+        assertTrue(invoke(host, healthy.manifest.id).report.success)
+    }
+
+    @Test
+    fun `bootstrap chooses the latest compatible semantic version deterministically`(): Unit = runBlocking {
+        val earlier = fixture(version = "1.9.0")
+        val later = fixture(version = "1.10.0")
+        val preview = fixture(version = "2.0.0-rc.1")
+        val incompatible = fixture(version = "2.0.0", apiVersion = 2)
+        publish(incompatible, earlier, preview, later)
+        val host = runtime()
+        host.initialize(earlier.manifest.id)
+        assertEquals("2.0.0-rc.1", host.state(earlier.manifest.id).activeVersion)
+        assertEquals(0, incompatible.count("constructed"))
+    }
+
+    @Test
+    fun `disable closes admission now and enabling a loaded class remains pending until restart`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id)
+        val disabled = host.setEnabled(packaged.manifest.id, false)
+        assertFalse(disabled.admissionEnabled)
+        assertFalse(disabled.requiresRestart)
+        assertEquals("1.0.0", disabled.activeVersion)
+        assertNull(disabled.activeUi)
+        failure("PLUGIN_DISABLED") { invoke(host) }
+        val enabled = host.setEnabled(packaged.manifest.id, true, packaged.manifest.permissions)
+        assertTrue(enabled.desiredEnabled && enabled.requiresRestart)
+        assertFalse(enabled.admissionEnabled)
+        failure("PLUGIN_DISABLED") { invoke(host) }
+        host.close()
+        val restarted = runtime(store)
+        restarted.initialize()
+        assertTrue(restarted.state(packaged.manifest.id).admissionEnabled)
+        assertEquals(2, packaged.count("constructed"))
+    }
+
+    @Test
+    fun `uninstall keeps a tombstone config and selection and suppresses bootstrap after restart`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id, config("retain me"))
+        val tombstone = host.uninstall(packaged.manifest.id)
+        assertFalse(tombstone.installed || tombstone.desiredEnabled || tombstone.admissionEnabled)
+        assertEquals("uninstalled", tombstone.status)
+        assertEquals("1.0.0", tombstone.installedVersion)
+        assertEquals(config("retain me"), tombstone.configuration)
+        assertNull(tombstone.activeUi)
+        failure("PLUGIN_DISABLED") { invoke(host) }
+        host.close()
+        val restarted = runtime(store)
+        restarted.initialize(packaged.manifest.id, config("must not restore"))
+        assertFalse(restarted.state(packaged.manifest.id).installed)
+        assertEquals(1, packaged.count("constructed"))
+        val restored = restarted.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+        assertTrue(restored.installed)
+        assertFalse(restored.desiredEnabled)
+        assertEquals(config("retain me"), restored.configuration)
+    }
+
+    @Test
+    fun `a concurrent tombstone wins insert-if-absent bootstrap`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        store.beforeInsert = { proposed -> store.seed(proposed.copy(installed = false, desiredEnabled = false, configuration = config("concurrent tombstone"))) }
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id)
+        val state = host.state(packaged.manifest.id)
+        assertFalse(state.installed)
+        assertEquals(config("concurrent tombstone"), state.configuration)
+        assertEquals(0, packaged.count("constructed"))
+    }
+
+    @Test
+    fun `pending upgrade exposes desired fields but never swaps active UI or active config`(): Unit = runBlocking {
+        val previous = fixture()
+        publish(previous)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(previous.manifest.id, config("old config"))
+        val replacement = fixture(version = "2.0.0", configKey = "futurePrompt", configuration = listOf(
+            PluginField("futurePrompt", "Future prompt", "textarea", required = true, defaultValue = JsonPrimitive("new default"), maxLength = 4_000),
+        ))
+        publish(previous, replacement)
+        failure("PLUGIN_PERMISSION_REQUIRED") { host.install(previous.manifest.id, "2.0.0", listOf(PluginApi.CHANNEL_PROBE)) }
+        assertEquals("1.0.0", host.state(previous.manifest.id).installedVersion)
+        val pending = host.install(previous.manifest.id, "2.0.0", replacement.manifest.permissions)
+        assertTrue(pending.requiresRestart && pending.desiredEnabled && pending.admissionEnabled)
+        assertEquals("2.0.0", pending.installedVersion)
+        assertEquals("1.0.0", pending.activeVersion)
+        assertEquals(previous.ui, pending.activeUi)
+        assertEquals(listOf("futurePrompt"), pending.configurationFields.map { it.key })
+        val changed = host.configure(previous.manifest.id, buildJsonObject { put("futurePrompt", "pending config") })
+        assertEquals(config("old config"), changed.activeConfiguration)
+        assertEquals("old config", invoke(host).plan.prompt)
+        failure("PLUGIN_ACTIVE_VERSION_CONFLICT") { invoke(host, version = "2.0.0") }
+        assertTrue(host.contributions().all { it.activeVersion == "1.0.0" })
+        assertEquals(0, replacement.count("constructed"))
+        host.close()
+        val restarted = runtime(store)
+        restarted.initialize()
+        assertEquals(replacement.ui, restarted.state(previous.manifest.id).activeUi)
+        assertEquals("pending config", invoke(restarted, version = "2.0.0").plan.prompt)
+    }
+
+    @Test
+    fun `same-version configuration updates are immediate but each invocation gets a stable snapshot`(): Unit = runBlocking {
+        val packaged = fixture(planPrefix = { property -> """
+            System.setProperty("$property.ready", "true");
+            while (!"true".equals(System.getProperty("$property.release"))) {
+                try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }
+            }
+        """.trimIndent() })
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id, config("old snapshot"))
+        coroutineScope {
+            val invocation = async(Dispatchers.Default) { invoke(host) }
+            awaitProperty("${packaged.property}.ready")
+            val changed = host.configure(packaged.manifest.id, config("new snapshot"))
+            assertEquals(config("new snapshot"), changed.activeConfiguration)
+            System.setProperty("${packaged.property}.release", "true")
+            val execution = invocation.await()
+            assertEquals("old snapshot", execution.plan.prompt)
+            assertEquals("old snapshot", execution.report.text)
+        }
+        assertEquals("new snapshot", invoke(host).plan.prompt)
+    }
+
+    @Test
+    fun `disable during plan prevents the credential-preparing callback`(): Unit = runBlocking {
+        val packaged = fixture(planPrefix = { property -> """
+            System.setProperty("$property.ready", "true");
+            while (!"true".equals(System.getProperty("$property.release"))) {
+                try { Thread.sleep(5); } catch (InterruptedException e) { throw new RuntimeException(e); }
+            }
+        """.trimIndent() })
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        coroutineScope {
+            val invocation = async(Dispatchers.Default) { runCatching { host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok } } }
+            awaitProperty("${packaged.property}.ready")
+            host.setEnabled(packaged.manifest.id, false)
+            System.setProperty("${packaged.property}.release", "true")
+            val error = invocation.await().exceptionOrNull() as PluginHostException
+            assertEquals("PLUGIN_DISABLED", error.code)
+        }
+        assertEquals(0, probes.get())
+        assertEquals(0, packaged.count("reported"))
+    }
+
+    @Test
+    fun `CAS failures never replace active config or silently retry and disable remains fail-closed`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id, config("committed"))
+        store.failNextSave.set(true)
+        failure("PLUGIN_REVISION_CONFLICT") { host.configure(packaged.manifest.id, config("uncommitted")) }
+        assertEquals(config("committed"), host.state(packaged.manifest.id).activeConfiguration)
+        assertEquals(1, store.writes)
+        host.configure(packaged.manifest.id, config("next revision"))
+        assertEquals(1L, store.find(packaged.manifest.id)?.revision)
+        store.failNextSave.set(true)
+        failure("PLUGIN_REVISION_CONFLICT") { host.setEnabled(packaged.manifest.id, false) }
+        val state = host.state(packaged.manifest.id)
+        assertTrue(state.desiredEnabled && state.requiresRestart)
+        assertFalse(state.admissionEnabled)
+        failure("PLUGIN_DISABLED") { invoke(host) }
+        assertEquals(2, store.writes)
+    }
+
+    @Test
+    fun `explicit complete grants are required and startup will not load unapproved code`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize()
+        failure("PLUGIN_PERMISSION_REQUIRED") { host.install(packaged.manifest.id, "1.0.0", emptyList()) }
+        failure("PLUGIN_INVALID_GRANTS") { host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions + "arbitrary.permission") }
+        host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+        val record = assertNotNull(store.find(packaged.manifest.id))
+        store.seed(record.copy(desiredEnabled = true, approvedPermissions = emptyList()))
+        host.close()
+        val restarted = runtime(store)
+        restarted.initialize()
+        assertEquals("error", restarted.state(packaged.manifest.id).status)
+        assertNull(restarted.state(packaged.manifest.id).activeVersion)
+        assertEquals(0, packaged.count("constructed"))
+    }
+
+    @Test
+    fun `stale versions unknown actions contexts endpoint input and mismatched target choices fail before plan`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        suspend fun execute(invocation: DiagnosticInput = input, selected: DiagnosticTarget = target, version: String = "1.0.0") =
+            host.execute(packaged.manifest.id, version, invocation, selected) { probes.incrementAndGet(); ok }
+        failure("PLUGIN_ACTIVE_VERSION_CONFLICT") { execute(version = "0.0.1") }
+        failure("PLUGIN_ACTION_NOT_AVAILABLE") { execute(DiagnosticInput("not-declared")) }
+        failure { execute(selected = target.copy(kind = "arbitrary")) }
+        failure("PLUGIN_INVALID_INPUT") { execute(DiagnosticInput("probe", buildJsonObject { put("endpoint", "https://not-allowed.invalid") })) }
+        failure("PLUGIN_INVALID_INPUT") { execute(DiagnosticInput("probe", buildJsonObject { put("model", "not-authorized") })) }
+        failure("PLUGIN_INVALID_INPUT") { execute(DiagnosticInput("probe", buildJsonObject { put("protocol", "not-authorized") })) }
+        failure("PLUGIN_INVALID_INPUT") { execute(DiagnosticInput("probe", buildJsonObject { put("keyId", "not-authorized") })) }
+        failure("PLUGIN_INVALID_INPUT") { execute(DiagnosticInput("probe", buildJsonObject { put("scope", "all") }), target.copy(kind = "oauth-account", credentialId = null)) }
+        assertEquals(0, packaged.count("planned"))
+        assertEquals(0, probes.get())
+        val account = target.copy(kind = "oauth-account", id = "account-1", credentialId = null)
+        assertEquals(account, execute(selected = account).target)
+    }
+
+    @Test
+    fun `configuration enforces declared scalar schema and defaults without secret fields`(): Unit = runBlocking {
+        val packaged = fixture(configuration = defaultConfiguration() + listOf(
+            PluginField("flag", "Flag", "boolean", defaultValue = JsonPrimitive(false)),
+            PluginField("count", "Count", "number", defaultValue = JsonPrimitive(2), min = 1.0, max = 3.0),
+        ))
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val invalid = listOf(
+            buildJsonObject { put("defaultPrompt", "x".repeat(4_001)) },
+            buildJsonObject { put("defaultPrompt", "  ") },
+            buildJsonObject { put("flag", "true") },
+            buildJsonObject { put("count", 4) },
+            buildJsonObject { put("count", "2") },
+            buildJsonObject { put("baseUrl", "https://not-allowed.invalid") },
+            buildJsonObject { put("flag", buildJsonObject { put("nested", true) }) },
+        )
+        invalid.forEach { values -> failure("PLUGIN_INVALID_CONFIGURATION") { host.configure(packaged.manifest.id, values) } }
+        assertEquals("请只回复 OK", invoke(host).plan.prompt)
+        val valid = host.configure(packaged.manifest.id, buildJsonObject { put("defaultPrompt", "valid"); put("count", 3); put("flag", true) })
+        assertEquals(JsonPrimitive(true), valid.activeConfiguration?.get("flag"))
+    }
+
+    @Test
+    fun `host binds one probe and clamps prompt token and timeout limits while keeping upstream 401 in outcome`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        var actualPlan: ProbePlan? = null
+        val values = buildJsonObject { put("prompt", "  " + "x".repeat(5_000) + "  ") }
+        val execution = host.execute(packaged.manifest.id, "1.0.0", DiagnosticInput("probe", values), target, ProbeLimits(20_000, 2_048, 90_000)) {
+            actualPlan = it
+            probes.incrementAndGet()
+            ProbeOutcome(false, 401, 10, errorMessage = "upstream authentication failed")
+        }
+        assertEquals("x".repeat(4_000), execution.plan.prompt)
+        assertEquals(128, execution.plan.maxOutputTokens)
+        assertEquals(45_000L, execution.plan.timeoutMs)
+        assertEquals(actualPlan, execution.plan)
+        assertEquals(401, execution.outcome.statusCode)
+        assertFalse(execution.report.success)
+        assertEquals(1, probes.get())
+        assertEquals(1, packaged.count("planned"))
+        assertEquals(1, packaged.count("reported"))
+    }
+
+    @Test
+    fun `invalid plans and bounded plugin failures do not call the transport`(): Unit = runBlocking {
+        val packaged = fixture(planTokens = 0)
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        failure("PLUGIN_INVALID_PLAN") { host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok } }
+        assertEquals(0, probes.get())
+        assertEquals(0, packaged.count("reported"))
+        val throwing = fixture(id = "throwing.probe", planPrefix = { "if (System.nanoTime() != 0) throw new IllegalStateException(\"PRIVATE_FAILURE_DETAIL\");" })
+        publish(packaged, throwing)
+        val second = runtime()
+        second.initialize(throwing.manifest.id)
+        val error = failure("PLUGIN_CODE_FAILED") { second.execute(throwing.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok } }
+        assertFalse(error.message.orEmpty().contains("PRIVATE_FAILURE_DETAIL"))
+        assertEquals(0, probes.get())
+    }
+
+    private class BoundProbeFailure(val domainCode: String) : RuntimeException(domainCode)
+
+    @Test
+    fun `ordinary bound callback failures retain identity and never produce a plugin report or retry`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        val contexts = listOf(target, target.copy(kind = "oauth-account", id = "account-domain", credentialId = null))
+        contexts.forEach { selected ->
+            val domainFailure = BoundProbeFailure("credential-domain-${selected.kind}")
+            val actual = assertFailsWith<BoundProbeFailure> {
+                host.execute(packaged.manifest.id, "1.0.0", input, selected) { probes.incrementAndGet(); throw domainFailure }
+            }
+            assertSame(domainFailure, actual)
+            assertEquals(0, packaged.count("reported"))
+        }
+        assertEquals(2, probes.get())
+        assertEquals(2, packaged.count("planned"))
+        assertTrue(invoke(host).outcome.success) // Failure must release both invocation/probe permits.
+    }
+
+    @Test
+    fun `callback cancellation propagates without a report and caller cancellation releases capacity`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        assertFailsWith<CancellationException> {
+            host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); throw CancellationException("bound callback cancelled") }
+        }
+        assertEquals(0, packaged.count("reported"))
+        coroutineScope {
+            val entered = CompletableDeferred<Unit>()
+            val invocation = async(Dispatchers.Default) {
+                host.execute(packaged.manifest.id, "1.0.0", input, target) {
+                    probes.incrementAndGet()
+                    entered.complete(Unit)
+                    delay(10_000)
+                    ok
+                }
+            }
+            entered.await()
+            invocation.cancel(CancellationException("caller cancelled"))
+            invocation.join()
+            assertTrue(invocation.isCancelled)
+        }
+        assertEquals(2, probes.get())
+        assertEquals(0, packaged.count("reported"))
+        assertTrue(invoke(host).outcome.success)
+    }
+
+    @Test
+    fun `plugin report exceptions remain sanitized after exactly one bound probe`(): Unit = runBlocking {
+        val packaged = fixture(reportPrefix = "if (System.nanoTime() != 0) throw new IllegalStateException(\"PRIVATE_REPORT_DETAIL\");")
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        val error = failure("PLUGIN_CODE_FAILED") {
+            host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok }
+        }
+        assertTrue(error.message.orEmpty().contains("report failed (IllegalStateException)"))
+        assertFalse(error.message.orEmpty().contains("PRIVATE_REPORT_DETAIL"))
+        assertEquals(1, probes.get())
+        assertEquals(1, packaged.count("reported"))
+    }
+
+    @Test
+    fun `callback timeout is an outcome without retry and cancellation is respected`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        val execution = host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 150)) {
+            probes.incrementAndGet()
+            delay(1_000)
+            ok
+        }
+        assertFalse(execution.outcome.success)
+        assertTrue(execution.outcome.errorMessage.orEmpty().contains("timed out"))
+        assertEquals(1, probes.get())
+        assertEquals(1, packaged.count("reported"))
+    }
+
+    @Test
+    fun `OAuth callback gets separate preparation allowance while channel and HTTP plan budgets stay unchanged`(): Unit = runBlocking {
+        assertEquals(45_000L, PluginExecutionBudgets.callbackTimeoutMs("channel", 45_000))
+        assertEquals(65_000L, PluginExecutionBudgets.callbackTimeoutMs("oauth-account", 45_000))
+        assertEquals(20_150L, PluginExecutionBudgets.callbackTimeoutMs("oauth-account", 150))
+        failure { PluginExecutionBudgets.callbackTimeoutMs("unrecognized", 45_000) }
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val account = target.copy(kind = "oauth-account", id = "account-1", credentialId = null)
+        val native = host.execute(packaged.manifest.id, "1.0.0", input, account, ProbeLimits(timeoutMs = 150)) { plan ->
+            assertEquals(150L, plan.timeoutMs)
+            delay(300) // Simulate separately bounded native preparation before the HTTP helper.
+            ok
+        }
+        assertTrue(native.outcome.success)
+        assertEquals(10L, native.outcome.latencyMs) // Keep the adapter's upstream latency, not preparation.
+        val channel = host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 150)) {
+            delay(300)
+            ok
+        }
+        assertFalse(channel.outcome.success)
+        assertTrue(channel.outcome.errorMessage.orEmpty().contains("150 ms"))
+    }
+
+    @Test
+    fun `probe admission waiting is bounded separately and never reported as upstream latency`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val occupied = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val probes = AtomicInteger()
+        coroutineScope {
+            val running = List(2) { async(Dispatchers.Default) {
+                host.execute(packaged.manifest.id, "1.0.0", input, target) {
+                    if (probes.incrementAndGet() == 2) occupied.complete(Unit)
+                    release.await()
+                    ok
+                }
+            } }
+            try {
+                occupied.await()
+                val error = failure("PLUGIN_BUSY") {
+                    host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 150)) { probes.incrementAndGet(); ok }
+                }
+                assertEquals(503, error.statusCode)
+                assertEquals(2, probes.get())
+            } finally {
+                release.complete(Unit)
+            }
+            running.forEach { assertEquals(10L, it.await().outcome.latencyMs) }
+        }
+        assertTrue(invoke(host).outcome.success) // Timed-out waiters must not leak semaphore permits.
+    }
+
+    @Test
+    fun `blocking plan which ignores interrupts cannot defeat its host deadline`(): Unit = runBlocking {
+        val packaged = fixture(planPrefix = { """
+            long deadline = System.nanoTime() + 700000000L;
+            while (System.nanoTime() < deadline) {
+                try { Thread.sleep(5); } catch (InterruptedException ignored) { }
+            }
+        """.trimIndent() })
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        val started = System.nanoTime()
+        failure("PLUGIN_CODE_TIMEOUT") { host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 150)) { probes.incrementAndGet(); ok } }
+        assertTrue((System.nanoTime() - started) / 1_000_000 < 600, "Caller must not wait for the blocking plan")
+        assertEquals(0, probes.get())
+    }
+
+    @Test
+    fun `transport concurrency is bounded to two independent workers`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val inFlight = AtomicInteger()
+        val peak = AtomicInteger()
+        val probes = AtomicInteger()
+        coroutineScope {
+            List(8) { async(Dispatchers.Default) {
+                host.execute(packaged.manifest.id, "1.0.0", input, target) {
+                    val count = inFlight.incrementAndGet()
+                    peak.accumulateAndGet(count, ::maxOf)
+                    probes.incrementAndGet()
+                    try { delay(40); ok } finally { inFlight.decrementAndGet() }
+                }
+            } }.forEach { assertTrue(it.await().outcome.success) }
+        }
+        assertEquals(2, peak.get())
+        assertEquals(8, probes.get())
+    }
+
+    @Test
+    fun `code result ownership disposes late and delivered abandoned values exactly once`(): Unit = runBlocking {
+        val disposed = AtomicInteger()
+        val late = PluginRuntime.CodeResultOwnership<Any> { disposed.incrementAndGet() }
+        late.discard()
+        late.offer(Any())
+        late.discard()
+        assertNull(late.take())
+        assertEquals(1, disposed.get())
+        val delivered = PluginRuntime.CodeResultOwnership<Any> { disposed.incrementAndGet() }
+        delivered.offer(Any())
+        delivered.discard() // The continuation delivered its signal, but the outer timeout lost.
+        delivered.discard()
+        assertNull(delivered.take())
+        assertEquals(2, disposed.get())
+        val claimed = PluginRuntime.CodeResultOwnership<Any> { disposed.incrementAndGet() }
+        val value = Any()
+        claimed.offer(value)
+        assertSame(value, claimed.take())
+        claimed.discard()
+        assertEquals(2, disposed.get())
+    }
+
+    @Test
+    fun `timed out load disposes a delayed cooperative provider return even after runtime close`(): Unit = runBlocking {
+        val packaged = ownedFixture(delayed = true)
+        publish(packaged)
+        val host = runtime()
+        coroutineScope {
+            val initialization = async(Dispatchers.Default) { host.initialize(packaged.manifest.id) }
+            try {
+                awaitProperty("${packaged.property}.load-ready", "1")
+                assertNotNull(loader(packaged).findResource("fixture/owned-resource.txt"))
+                withTimeout(4_000) { initialization.await() }
+                awaitProperty("${packaged.property}.load-interrupted", "1")
+                val state = host.state(packaged.manifest.id)
+                assertEquals("error", state.status)
+                assertTrue(state.loadError.orEmpty().contains("load exceeded its time bound"))
+                assertNull(state.activeVersion)
+                assertEquals(0, packaged.count("closed"))
+            } finally {
+                host.close()
+                System.setProperty("${packaged.property}.release", "true")
+            }
+        }
+        assertDisposed(packaged)
+        assertNoActive(host)
+        assertEquals(1, packaged.count("load-returned"))
+    }
+
+    @Test
+    fun `cancelled initialization disposes a late cooperative load result without publication`(): Unit = runBlocking {
+        val packaged = ownedFixture(delayed = true)
+        publish(packaged)
+        val host = runtime()
+        coroutineScope {
+            val initialization = async(Dispatchers.Default) { host.initialize(packaged.manifest.id) }
+            try {
+                awaitProperty("${packaged.property}.load-ready", "1")
+                initialization.cancel(CancellationException("initialization cancelled"))
+                withTimeout(1_500) { initialization.join() }
+                assertTrue(initialization.isCancelled)
+                awaitProperty("${packaged.property}.load-interrupted", "1")
+                assertEquals(0, packaged.count("closed"))
+                failure("PLUGIN_RUNTIME_NOT_INITIALIZED") { host.states() }
+            } finally {
+                host.close()
+                System.setProperty("${packaged.property}.release", "true")
+            }
+        }
+        assertDisposed(packaged)
+        assertNoActive(host)
+        assertEquals(1, packaged.count("load-returned"))
+    }
+
+    @Test
+    fun `close racing startup publication cleans all pending providers and loaders without orphan active entries`(): Unit = runBlocking {
+        val earlier = ownedFixture(id = "a.pending")
+        val delayed = ownedFixture(id = "b.pending", delayed = true)
+        val store = installedStore(earlier, delayed)
+        val host = runtime(store)
+        coroutineScope {
+            val initialization = async(Dispatchers.Default) { runCatching { host.initialize() } }
+            try {
+                awaitProperty("${delayed.property}.load-ready", "1")
+                assertEquals(1, earlier.count("constructed"))
+                assertNotNull(loader(earlier).findResource("fixture/owned-resource.txt"))
+                host.close()
+                awaitProperty("${delayed.property}.load-interrupted", "1")
+                System.setProperty("${delayed.property}.release", "true")
+                val error = assertNotNull(withTimeout(1_500) { initialization.await() }.exceptionOrNull() as? PluginHostException)
+                assertEquals("PLUGIN_RUNTIME_CLOSED", error.code)
+            } finally {
+                host.close()
+                System.setProperty("${delayed.property}.release", "true")
+            }
+        }
+        assertDisposed(earlier)
+        assertDisposed(delayed)
+        assertNoActive(host)
+        host.close()
+        assertEquals(1, earlier.count("closed"))
+        assertEquals(1, delayed.count("closed"))
+        failure("PLUGIN_RUNTIME_CLOSED") { host.contributions() }
+    }
+
+    @Test
+    fun `cold load uses only package-local services and reports identity mismatch safely`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val parentResources = root.resolve("parent")
+        val service = parentResources.resolve(PluginPackages.SERVICE_PATH)
+        Files.createDirectories(service.parent)
+        Files.writeString(service, "nonexistent.ParentProvider\n")
+        URLClassLoader(arrayOf(parentResources.toUri().toURL()), javaClass.classLoader).use { parent ->
+            val host = runtime(parent = parent)
+            host.initialize(packaged.manifest.id)
+            assertEquals("1.0.0", host.state(packaged.manifest.id).activeVersion)
+        }
+        val mismatch = fixture(id = "mismatch.probe", providerId = "wrong.identity")
+        publish(packaged, mismatch)
+        val second = runtime()
+        second.initialize(mismatch.manifest.id)
+        val broken = second.state(mismatch.manifest.id)
+        assertEquals("error", broken.status)
+        assertNotNull(broken.loadError)
+        assertNull(broken.activeUi)
+        assertEquals(1, mismatch.count("closed"))
+        failure("PLUGIN_NOT_ACTIVE") { second.execute(mismatch.manifest.id, "1.0.0", input, target) { ok } }
+    }
+
+    @Test
+    fun `staged packages survive catalogue removal but JAR tampering prevents startup admission`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id)
+        host.close()
+        Files.delete(catalogDirectory.resolve("catalog.json"))
+        val independent = runtime(store)
+        independent.initialize(packaged.manifest.id)
+        assertTrue(independent.state(packaged.manifest.id).admissionEnabled)
+        independent.close()
+        val jar = managedDirectory.resolve(packaged.manifest.id).resolve("1.0.0/plugin.jar")
+        Files.setPosixFilePermissions(jar, PosixFilePermissions.fromString("rw-------"))
+        Files.write(jar, byteArrayOf(1, 2, 3))
+        val tampered = runtime(store)
+        tampered.initialize()
+        val state = tampered.state(packaged.manifest.id)
+        assertEquals("error", state.status)
+        assertFalse(state.admissionEnabled)
+        assertNull(state.activeVersion)
+    }
+
+    @Test
+    fun `lost staging is recovered only from the recorded trusted pin without changing desired state`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val original = runtime(store)
+        original.initialize(packaged.manifest.id, config("preserved across storage loss"))
+        original.close()
+        eraseManagedStorage()
+        val writes = store.writes
+        val restarted = runtime(store)
+        restarted.initialize(packaged.manifest.id, config("bootstrap must not overwrite"))
+        val state = restarted.state(packaged.manifest.id)
+        assertTrue(state.admissionEnabled)
+        assertEquals(config("preserved across storage loss"), state.activeConfiguration)
+        assertEquals(writes, store.writes)
+        assertEquals("preserved across storage loss", invoke(restarted).plan.prompt)
+    }
+
+    @Test
+    fun `tombstone metadata and configuration recover from catalogue without staging or bootstrapping code`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val original = runtime(store)
+        original.initialize()
+        original.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+        original.configure(packaged.manifest.id, config("retained tombstone config"))
+        original.uninstall(packaged.manifest.id)
+        original.close()
+        eraseManagedStorage()
+        val restarted = runtime(store)
+        restarted.initialize(packaged.manifest.id, config("must never bootstrap"))
+        val tombstone = restarted.state(packaged.manifest.id)
+        assertFalse(tombstone.installed)
+        assertEquals(packaged.manifest.configuration, tombstone.configurationFields)
+        assertEquals(config("retained tombstone config"), tombstone.configuration)
+        assertNull(tombstone.activeVersion)
+        assertFalse(Files.exists(managedDirectory))
+        val changed = restarted.configure(packaged.manifest.id, config("edited retained config"))
+        assertFalse(changed.installed || changed.desiredEnabled)
+        assertFalse(Files.exists(managedDirectory))
+        assertEquals(0, packaged.count("constructed"))
+        val restored = restarted.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+        assertTrue(restored.installed)
+        assertFalse(restored.desiredEnabled)
+        assertEquals(config("edited retained config"), restored.configuration)
+    }
+
+    @Test
+    fun `recorded digest prevents recovery or same-version replacement even when staging is gone`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val original = runtime(store)
+        original.initialize(packaged.manifest.id, config("pinned config"))
+        original.close()
+        eraseManagedStorage()
+        val replacement = fixture()
+        publish(replacement)
+        val restarted = runtime(store)
+        restarted.initialize(packaged.manifest.id)
+        val state = restarted.state(packaged.manifest.id)
+        assertEquals("error", state.status)
+        assertNull(state.activeVersion)
+        assertFalse(Files.exists(managedDirectory))
+        failure("PLUGIN_VERSION_CONFLICT") { restarted.install(packaged.manifest.id, "1.0.0", replacement.manifest.permissions) }
+        assertEquals(packaged.sha256, store.find(packaged.manifest.id)?.sha256)
+        assertEquals(config("pinned config"), state.configuration)
+        assertEquals(0, replacement.count("constructed"))
+    }
+
+    @Test
+    fun `all plugin code runs with its package loader as thread context loader`(): Unit = runBlocking {
+        val check = "if (Thread.currentThread().getContextClassLoader() != getClass().getClassLoader()) throw new IllegalStateException(\"wrong context loader\");"
+        val packaged = fixture(constructorPrefix = { check }, planPrefix = { check }, reportPrefix = check)
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        assertTrue(invoke(host).report.success)
+    }
+
+    @Test
+    fun `close is idempotent closes providers and denies later calls`(): Unit = runBlocking {
+        val packaged = ownedFixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        assertNotNull(loader(packaged).findResource("fixture/owned-resource.txt"))
+        host.close()
+        host.close()
+        assertDisposed(packaged)
+        assertNoActive(host)
+        failure("PLUGIN_RUNTIME_CLOSED") { invoke(host) }
+        failure("PLUGIN_RUNTIME_CLOSED") { host.states() }
+    }
+}

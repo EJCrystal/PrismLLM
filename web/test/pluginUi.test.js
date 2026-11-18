@@ -1,0 +1,995 @@
+import { after, afterEach, before, beforeEach, describe, it } from 'node:test'
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
+import { fileURLToPath } from 'node:url'
+import { JSDOM } from 'jsdom'
+import { clonePluginData, makeExecution, makeField, makeOfficialPluginFixture, makePluginFixture, makeTarget } from './fixtures/plugin.js'
+
+// Same Vite SSR-module + actual client-template/JSDOM convention as appNavigation tests.
+// Everything below is mock-only UI data. No ZIP/JAR/catalogue trust or JVM acceptance is claimed.
+const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', { url: 'http://127.0.0.1/', pretendToBeVisual: true })
+for (const name of ['window', 'document', 'Document', 'Node', 'NodeFilter', 'Element', 'HTMLElement', 'HTMLButtonElement', 'HTMLInputElement', 'HTMLSelectElement', 'HTMLTextAreaElement', 'SVGElement', 'MutationObserver', 'Event', 'MouseEvent', 'KeyboardEvent', 'CustomEvent']) globalThis[name] = dom.window[name]
+globalThis.getComputedStyle = dom.window.getComputedStyle.bind(dom.window)
+globalThis.requestAnimationFrame = dom.window.requestAnimationFrame.bind(dom.window)
+globalThis.cancelAnimationFrame = dom.window.cancelAnimationFrame.bind(dom.window)
+globalThis.ResizeObserver = class { observe() {} unobserve() {} disconnect() {} }
+dom.window.scrollTo = () => {}
+dom.window.HTMLElement.prototype.scrollTo = () => {}
+dom.window.HTMLElement.prototype.scrollIntoView = () => {}
+const originalFetch = globalThis.fetch
+const originalConfirm = window.confirm
+const runtime = await import('vue')
+const { createApp, h, nextTick, reactive, ssrContextKey } = runtime
+const { parse } = await import('@vue/compiler-sfc')
+const { compile: compileTemplate } = await import('@vue/compiler-dom')
+const { transform } = await import('esbuild')
+const { createServer } = await import('vite')
+const vue = (await import('@vitejs/plugin-vue')).default
+const text = node => node?.textContent.replace(/\s+/g, ' ').trim() ?? ''
+const genericMethods = ['listPluginCatalog', 'listPlugins', 'getPlugin', 'getPluginContributions', 'installPlugin', 'setPluginEnabled', 'configurePlugin', 'uninstallPlugin', 'listPluginTargets', 'invokePlugin']
+
+function deferred() {
+  let resolve, reject
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no })
+  return { promise, resolve, reject }
+}
+async function settle() { await nextTick(); await delay(5); await nextTick() }
+async function waitFor(predicate, label = 'reactive update') {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    await settle()
+    if (predicate()) return
+  }
+  assert.fail(`Timed out waiting for ${label}`)
+}
+function button(scope, label) {
+  const found = [...scope.querySelectorAll('button')].find(node => text(node) === label)
+  assert.ok(found, `Expected button ${label}; got ${text(scope)}`)
+  return found
+}
+function fact(scope, label) {
+  const term = [...scope.querySelectorAll('.plugin-market-facts dt')].find(node => text(node) === label)
+  assert.ok(term, `Expected runtime fact ${label}`)
+  return text(term.nextElementSibling)
+}
+function pluginItem(scope, id) {
+  const item = [...scope.querySelectorAll('.plugin-market-item')].find(node => text(node.querySelector('.plugin-market-item-id')) === id)
+  assert.ok(item, `Expected plugin list item ${id}`)
+  return item
+}
+function field(scope, label) {
+  const found = [...scope.querySelectorAll('label')].find(node => text(node.querySelector('span')).replace(/\s*\*$/, '') === label)
+  assert.ok(found, `Expected field ${label}`)
+  const input = found.querySelector('input,select,textarea')
+  assert.ok(input, `Expected control for ${label}`)
+  return input
+}
+async function change(input, value) {
+  if (input.type === 'checkbox') input.checked = value
+  else input.value = String(value)
+  input.dispatchEvent(new Event(input.tagName === 'SELECT' || input.type === 'checkbox' ? 'change' : 'input', { bubbles: true }))
+  await nextTick()
+}
+
+// Keep dialog mechanics/legacy APIs outside this suite, while rendering the real slots and tabs.
+// Their viewport, scroll and read-only record coverage remains in testWorkbench.test.js.
+const modalStub = {
+  props: ['title'], emits: ['close'],
+  setup(props, { slots, emit }) { return () => h('section', { class: 'synthetic-dialog', 'aria-label': props.title }, [
+    h('button', { type: 'button', onClick: () => emit('close') }, '关闭模拟窗口'),
+    slots['title-extra']?.(), slots.subhead?.(), slots.default?.(), slots.footer?.(),
+  ]) },
+}
+const legacyStub = kind => ({ render: () => h('div', { 'data-legacy-view': kind }, `legacy ${kind}`) })
+
+describe('descriptor-driven plugin UI (synthetic API data only)', () => {
+  let server, api, originals, toasts, ApiError, modelTestTargetKey, PLUGIN_STATE_CHANGED
+  let captures, calls, mock, confirmResult, confirmCalls, recordMounts
+  const components = new Map()
+  const mounted = []
+  const channel = { id: 'channel-1', name: '合成渠道', enabled: true }
+
+  async function clientComponent(name, children = {}) {
+    const component = (await server.ssrLoadModule(`/src/components/${name}.vue`)).default
+    const { descriptor } = parse(readFileSync(new URL(`../src/components/${name}.vue`, import.meta.url), 'utf8'))
+    const compiled = compileTemplate(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, expressionPlugins: ['typescript'] })
+    const { code } = await transform(compiled.code, { loader: 'ts' })
+    const setup = component.setup
+    // Adapt the loaded module object in memory, so computed dynamic component references also use
+    // the actual compiled client template. No production Vue/source file is rewritten.
+    component.ssrRender = undefined
+    component.render = new Function('Vue', code)(runtime)
+    component.components = children
+    component.setup = (props, context) => {
+      const state = setup(props, context)
+      if (name === 'ChannelTestDrawer') {
+        state.components.iq = legacyStub('iq')
+        state.components.fingerprint = legacyStub('fingerprint')
+      }
+      captures.set(name, state)
+      const descriptors = Object.getOwnPropertyDescriptors(state)
+      delete descriptors.__isScriptSetup
+      return Object.assign(Object.defineProperties({}, descriptors), children)
+    }
+    components.set(name, component)
+    return component
+  }
+
+  function setFixtures(...fixtures) {
+    mock.catalog = fixtures.map(fixture => clonePluginData(fixture.catalog))
+    mock.states = new Map(fixtures.map(fixture => [fixture.state.id, clonePluginData(fixture.state)]))
+    mock.contributions = fixtures.flatMap(fixture => clonePluginData(fixture.contributions))
+  }
+  function stateFor(id) {
+    const state = mock.states.get(id)
+    assert.ok(state, `Missing synthetic state ${id}`)
+    return clonePluginData(state)
+  }
+  function responseFor(call, overrides = {}) {
+    const target = mock.targets.find(item => item.channelId === call.payload.context.id && item.model === call.payload.values.model)
+      ?? makeTarget({ channelId: call.payload.context.id, model: call.payload.values.model })
+    return makeExecution({ pluginId: call.id, activeVersion: call.payload.expectedActiveVersion, context: call.payload.context, values: call.payload.values, target, ...overrides })
+  }
+  function setState(id, changes) {
+    const next = { ...stateFor(id), ...clonePluginData(changes) }
+    mock.states.set(id, next)
+    return clonePluginData(next)
+  }
+  function installHooks() {
+    api.listPluginCatalog = async options => { calls.catalog.push(options); return clonePluginData(mock.catalog) }
+    api.listPlugins = async options => { calls.plugins.push(options); return clonePluginData([...mock.states.values()]) }
+    api.getPlugin = async (id, options = {}) => {
+      calls.state.push({ id, options })
+      return mock.getState ? mock.getState(id, options) : stateFor(id)
+    }
+    api.getPluginContributions = async options => {
+      calls.contributions.push(options)
+      return clonePluginData(mock.contributions.filter(item => mock.states.get(item.pluginId)?.admissionEnabled))
+    }
+    api.listPluginTargets = async (id, context, options = {}) => {
+      calls.targets.push({ id, context: context ? clonePluginData(context) : undefined, options })
+      return mock.getTargets ? mock.getTargets(id, context, options) : clonePluginData(mock.targets)
+    }
+    api.invokePlugin = async (id, payload, options = {}) => {
+      const call = { id, payload: clonePluginData(payload), options }
+      calls.invocations.push(call)
+      return mock.invoke ? mock.invoke(call) : responseFor(call)
+    }
+    api.installPlugin = async (id, payload) => {
+      calls.install.push({ id, payload: clonePluginData(payload) })
+      const item = mock.catalog.find(item => item.manifest.id === id && item.manifest.version === payload.version)
+      assert.ok(item)
+      const old = mock.states.get(id)
+      const next = {
+        id, displayName: item.manifest.displayName, description: item.manifest.description, source: item.source,
+        installed: true, installedVersion: payload.version, activeVersion: old?.activeVersion ?? null,
+        desiredEnabled: old?.installed ? old.desiredEnabled : false, admissionEnabled: old?.admissionEnabled ?? false,
+        requiresRestart: !!old?.desiredEnabled, status: old?.desiredEnabled ? 'pending-restart' : 'disabled', loadError: null,
+        permissions: [...item.manifest.permissions], approvedPermissions: [...payload.approvedPermissions],
+        configuration: old?.configuration ?? Object.fromEntries(item.manifest.configuration.map(field => [field.key, field.defaultValue])),
+        activeConfiguration: old?.activeConfiguration ?? null, configurationFields: clonePluginData(item.manifest.configuration), activeUi: old?.activeUi ?? null,
+      }
+      mock.states.set(id, next)
+      return clonePluginData(next)
+    }
+    api.setPluginEnabled = async (id, payload) => {
+      calls.enabled.push({ id, payload: clonePluginData(payload) })
+      return setState(id, { desiredEnabled: payload.enabled, admissionEnabled: false, requiresRestart: payload.enabled,
+        status: payload.enabled ? 'pending-restart' : 'disabled', activeUi: null,
+        ...(payload.approvedPermissions ? { approvedPermissions: payload.approvedPermissions } : {}) })
+    }
+    api.configurePlugin = async (id, payload) => {
+      calls.configuration.push({ id, payload: clonePluginData(payload) })
+      if (mock.configure) return mock.configure(id, payload)
+      const state = stateFor(id)
+      return setState(id, { configuration: payload.values,
+        activeConfiguration: state.activeVersion === state.installedVersion ? payload.values : state.activeConfiguration })
+    }
+    api.uninstallPlugin = async id => {
+      calls.uninstall.push(id)
+      return setState(id, { installed: false, desiredEnabled: false, admissionEnabled: false, requiresRestart: false, status: 'uninstalled', activeUi: null })
+    }
+    for (const name of ['testChannelModel', 'testOAuthAccountModel']) api[name] = async () => {
+      calls.legacy.push(name)
+      throw new Error(`Plugin UI must not dispatch legacy helper ${name}`)
+    }
+  }
+
+  async function mount(name, props = {}) {
+    const container = document.createElement('div')
+    document.body.append(container)
+    const properties = reactive({ ...props })
+    const app = createApp({ render: () => h(components.get(name), { ...properties }) })
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(container)
+    const entry = { app, container, state: captures.get(name), setProps: async patch => { Object.assign(properties, patch); await settle() },
+      unmount() { app.unmount(); container.remove() } }
+    mounted.push(entry)
+    await settle()
+    return entry
+  }
+  async function hostFor(fixture = makePluginFixture(), props = {}) {
+    setFixtures(fixture)
+    const entry = await mount('PluginDiagnosticHost', { contribution: fixture.contribution, context: { kind: 'channel', id: channel.id }, ...props })
+    await waitFor(() => !entry.state.loading.value, 'plugin resources')
+    return entry
+  }
+
+  before(async () => {
+    server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, envFile: false,
+      cacheDir: join(tmpdir(), 'prism-plugin-ui-tests-' + process.pid), plugins: [vue()], optimizeDeps: { noDiscovery: true, include: [] },
+      server: { middlewareMode: true, hmr: false, proxy: {} }, appType: 'custom' })
+    api = (await server.ssrLoadModule('/src/api.ts')).api
+    originals = Object.fromEntries([...genericMethods, 'testChannelModel', 'testOAuthAccountModel'].map(name => [name, api[name]]))
+    toasts = (await server.ssrLoadModule('/src/toast.ts')).toasts
+    ApiError = (await server.ssrLoadModule('/src/types/api.ts')).ApiError
+    modelTestTargetKey = (await server.ssrLoadModule('/src/utils/modelTest.ts')).modelTestTargetKey
+    PLUGIN_STATE_CHANGED = (await server.ssrLoadModule('/src/utils/pluginForm.ts')).PLUGIN_STATE_CHANGED
+    const icon = await clientComponent('Icon')
+    const empty = await clientComponent('TestEmptyState', { Icon: icon })
+    const workbench = await clientComponent('TestWorkbench')
+    const input = await clientComponent('PluginFieldInput')
+    const result = await clientComponent('PluginDiagnosticResult')
+    const diagnostic = await clientComponent('PluginDiagnosticHost', { Icon: icon, PluginFieldInput: input, PluginDiagnosticResult: result, TestEmptyState: empty, TestWorkbench: workbench })
+    await clientComponent('PluginMarketplaceView', { Icon: icon, Modal: modalStub, PluginDiagnosticHost: diagnostic, PluginFieldInput: input, TestEmptyState: empty })
+    await clientComponent('ChannelConnectivityPanel', { PluginDiagnosticHost: diagnostic, TestEmptyState: empty })
+    await clientComponent('OAuthModelTestModal', { Modal: modalStub, PluginDiagnosticHost: diagnostic, TestEmptyState: empty })
+    const records = { props: ['channelId', 'initialRecord'], setup() { recordMounts++; return () => h('div', { 'data-legacy-view': 'records' }, 'legacy records') } }
+    await clientComponent('ChannelTestDrawer', { Icon: icon, Modal: modalStub, PluginDiagnosticHost: diagnostic, TestRecordsView: records })
+  })
+  beforeEach(() => {
+    captures = new Map()
+    calls = { catalog: [], plugins: [], state: [], contributions: [], targets: [], invocations: [], install: [], enabled: [], configuration: [], uninstall: [], legacy: [], fetch: [] }
+    mock = { catalog: [], states: new Map(), contributions: [], targets: [makeTarget()] }
+    confirmResult = false; confirmCalls = []; recordMounts = 0
+    window.confirm = message => { confirmCalls.push(message); return confirmResult }
+    globalThis.fetch = window.fetch = async (...args) => { calls.fetch.push(args); throw new Error('Plugin UI tests forbid unmocked network') }
+    toasts.splice(0)
+    setFixtures(makePluginFixture())
+    installHooks()
+  })
+  afterEach(async () => {
+    while (mounted.length) mounted.pop().unmount()
+    await settle()
+    toasts.splice(0)
+    Object.assign(api, originals)
+    globalThis.fetch = window.fetch = originalFetch
+    window.confirm = originalConfirm
+  })
+  after(async () => { await server?.close(); dom.window.close() })
+
+  it('renders and invokes every supported field kind for an unknown plugin without a per-ID component', async () => {
+    const fixture = makePluginFixture()
+    const { container, state } = await hostFor(fixture)
+    assert.equal(state.loadError.value, '')
+    assert.equal(field(container, '观察标签').type, 'text')
+    assert.equal(field(container, '观察备注').tagName, 'TEXTAREA')
+    assert.equal(field(container, '详细报告').type, 'checkbox')
+    assert.equal(field(container, '样本数量').type, 'number')
+    assert.equal(field(container, '报告风格').tagName, 'SELECT')
+    for (const label of ['模型', '上游凭据', '协议', '检测范围']) assert.equal(field(container, label).tagName, 'SELECT')
+    await change(field(container, '观察标签'), 'unknown plugin input')
+    await change(field(container, '详细报告'), true)
+    await change(field(container, '样本数量'), 3)
+    await change(field(container, '报告风格'), 'full')
+    await state.run(); await settle()
+    const call = calls.invocations[0]
+    assert.equal(call.id, 'acme.synthetic')
+    assert.equal(call.payload.actionId, fixture.contribution.entry.action.id)
+    assert.deepEqual(call.payload.context, { kind: 'channel', id: channel.id })
+    assert.equal(call.payload.expectedActiveVersion, '1.0.0')
+    assert.equal(call.payload.values.verbose, true)
+    assert.equal(call.payload.values.samples, 3)
+    assert.equal(call.payload.values.style, 'full')
+    assert.equal(call.payload.values.label, 'unknown plugin input')
+    assert.equal(container.querySelectorAll('.plugin-result').length, 1)
+    assert.equal(calls.legacy.length, 0)
+    assert.equal(calls.fetch.length, 0)
+  })
+
+  it('uses the complete generic API parsers over mocked fetch for the unknown plugin', async () => {
+    const fixture = makePluginFixture()
+    setFixtures(fixture)
+    for (const name of ['getPlugin', 'listPluginTargets', 'invokePlugin']) api[name] = originals[name]
+    const requests = []
+    globalThis.fetch = window.fetch = async (input, init = {}) => {
+      const url = new URL(String(input), window.location.origin)
+      const method = init.method ?? 'GET'
+      requests.push({ method, path: url.pathname })
+      let value
+      if (method === 'GET' && url.pathname === `/admin/api/plugins/${fixture.manifest.id}`) value = fixture.state
+      else if (method === 'GET' && url.pathname.endsWith('/resources/model-test-targets')) value = mock.targets
+      else if (method === 'POST' && url.pathname.endsWith('/invocations')) {
+        const payload = JSON.parse(init.body)
+        value = makeExecution({ pluginId: fixture.manifest.id, activeVersion: payload.expectedActiveVersion, context: payload.context, values: payload.values, target: mock.targets[0] })
+      } else assert.fail(`Unexpected mock request ${method} ${url.pathname}`)
+      return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
+    }
+    const entry = await mount('PluginDiagnosticHost', { contribution: fixture.contribution, context: { kind: 'channel', id: channel.id } })
+    await waitFor(() => !entry.state.loading.value)
+    assert.equal(entry.state.loadError.value, '')
+    await entry.state.run(); await settle()
+    assert.equal(entry.state.rows.value[0].error, '')
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+    assert.ok(requests.some(request => request.method === 'POST' && request.path.includes('/acme.synthetic/invocations')))
+  })
+
+  it('keeps scalar zero false and empty-number null and resets text to the active configuration', async () => {
+    const numberEvents = []
+    const number = await mount('PluginFieldInput', { field: makeField('factor', '比例', 'number', { min: 0, max: 5 }), modelValue: 2, 'onUpdate:modelValue': value => numberEvents.push(value) })
+    await change(field(number.container, '比例'), 0)
+    await change(field(number.container, '比例'), '')
+    assert.deepEqual(numberEvents, [0, null])
+    const booleanEvents = []
+    const toggle = await mount('PluginFieldInput', { field: makeField('flag', '开关', 'boolean'), modelValue: true, 'onUpdate:modelValue': value => booleanEvents.push(value) })
+    await change(field(toggle.container, '开关'), false)
+    assert.deepEqual(booleanEvents, [false])
+    const fixture = makePluginFixture({ state: { configuration: { defaultPrompt: 'pending default', threshold: 0.5 }, activeConfiguration: { defaultPrompt: 'active default', threshold: 0.5 } } })
+    const entry = await hostFor(fixture)
+    assert.equal(field(entry.container, '本次提示词').value, 'active default')
+    await change(field(entry.container, '本次提示词'), 'draft override')
+    const meta = field(entry.container, '本次提示词').closest('label').nextElementSibling
+    button(meta, '恢复默认').click(); await settle()
+    assert.equal(field(entry.container, '本次提示词').value, 'active default')
+  })
+
+  it('uses real scalar events and descriptor validation to block invalid diagnostics', async () => {
+    const entry = await hostFor()
+    const runButton = () => entry.container.querySelector('.test-workbench-actions .button.primary')
+    assert.equal(entry.state.form.verbose, false)
+    assert.equal(entry.state.form.samples, 2)
+    assert.equal(field(entry.container, '观察标签').required, true)
+    assert.equal(field(entry.container, '观察标签').maxLength, 80)
+    assert.equal(field(entry.container, '样本数量').min, '1')
+    assert.equal(field(entry.container, '样本数量').max, '5')
+    const input = field(entry.container, '观察标签')
+    assert.match(text(entry.container.querySelector(`[id="${input.getAttribute('aria-describedby')}"]`)), /普通文本/)
+    await change(input, '   ')
+    assert.equal(runButton().disabled, true)
+    assert.match(entry.state.formError.value, /观察标签/)
+    await entry.state.run()
+    await change(input, 'valid label')
+    for (const value of [0, 6, '']) {
+      await change(field(entry.container, '样本数量'), value)
+      assert.equal(runButton().disabled, true)
+      assert.match(entry.state.formError.value, /样本数量/)
+      await entry.state.run()
+    }
+    assert.equal(entry.state.form.samples, null)
+    await change(field(entry.container, '样本数量'), 2)
+    entry.state.form.style = 'undeclared-option'
+    await nextTick()
+    assert.equal(runButton().disabled, true)
+    assert.match(entry.state.formError.value, /报告风格/)
+    await entry.state.run()
+    assert.equal(calls.invocations.length, 0)
+    await change(field(entry.container, '报告风格'), 'full')
+    assert.equal(runButton().disabled, false)
+    await entry.state.run(); await settle()
+    assert.equal(calls.invocations[0].payload.values.verbose, false)
+    assert.equal(calls.invocations[0].payload.values.samples, 2)
+  })
+
+  it('binds a single global-page invocation to the selected model protocol and opaque credential', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [makeTarget({ model: 'model-a' }), makeTarget({ channelId: 'channel-2', model: 'model-b', protocols: ['gemini', 'responses'], credentials: [
+      { id: 'default-b', name: 'Default B', priority: 1 }, { id: 'selected-b', name: 'Selected B', priority: 2 },
+    ] })]
+    const entry = await hostFor(fixture, { contribution: fixture.pageContribution, context: undefined, initialModel: 'model-b' })
+    assert.equal(entry.state.selectedTargetKey.value, modelTestTargetKey('channel-2', 'model-b'))
+    await change(field(entry.container, '模型'), modelTestTargetKey(channel.id, 'model-a'))
+    await change(field(entry.container, '模型'), modelTestTargetKey('channel-2', 'model-b'))
+    await change(field(entry.container, '上游凭据'), 'selected-b')
+    await change(field(entry.container, '协议'), 'responses')
+    await entry.state.run(); await settle()
+    assert.equal(calls.invocations.length, 1)
+    assert.deepEqual(calls.invocations[0].payload.context, { kind: 'channel', id: 'channel-2' })
+    assert.equal(calls.invocations[0].payload.actionId, fixture.pageContribution.entry.action.id)
+    assert.equal(calls.invocations[0].payload.values.model, 'model-b')
+    assert.equal(calls.invocations[0].payload.values.protocol, 'responses')
+    assert.equal(calls.invocations[0].payload.values.keyId, 'selected-b')
+    assert.equal(calls.invocations[0].payload.values.scope, 'single')
+    assert.equal(entry.state.rows.value[0].keyName, 'Selected B')
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+  })
+
+  it('keeps active-old diagnostics separate from desired-new configuration metadata', async () => {
+    const old = makePluginFixture({ version: '1.0.0' })
+    const next = makePluginFixture({ version: '2.0.0',
+      configurationFields: [makeField('futurePrompt', '新版本配置', 'textarea', { required: true, defaultValue: 'new default', maxLength: 4000 })],
+      extraFields: [makeField('futureField', '未来诊断参数', 'text', { defaultValue: 'future descriptor default' })],
+    })
+    next.state = { ...next.state, activeVersion: '1.0.0', activeUi: clonePluginData(old.ui), activeConfiguration: { defaultPrompt: 'old running configuration', threshold: 0.5 }, configuration: { futurePrompt: 'pending new configuration' }, requiresRestart: true, status: 'pending-restart' }
+    setFixtures(old, next)
+    mock.states.set(next.state.id, clonePluginData(next.state))
+    mock.contributions = old.contributions
+    const host = await mount('PluginDiagnosticHost', { contribution: old.contribution, context: { kind: 'channel', id: channel.id } })
+    await waitFor(() => !host.state.loading.value)
+    assert.equal(host.state.form.prompt, 'old running configuration')
+    assert.equal(host.state.fields.value.some(field => field.key === 'futurePrompt'), false)
+    await host.state.run(); await settle()
+    assert.equal(calls.invocations[0].payload.expectedActiveVersion, '1.0.0')
+    assert.equal(calls.invocations[0].payload.values.prompt, 'old running configuration')
+    host.unmount(); mounted.splice(mounted.indexOf(host), 1)
+    const market = await mount('PluginMarketplaceView')
+    await waitFor(() => !market.state.loading.value)
+    assert.ok(field(market.container, '新版本配置'))
+    assert.match(text(market.container.querySelector('.plugin-market-restart')), /重启/)
+    assert.equal(fact(market.container, '安装选择'), '2.0.0')
+    assert.equal(fact(market.container, '当前生效'), '1.0.0')
+    assert.equal(market.state.pageEntries.value[0].action.id, old.pageContribution.entry.action.id)
+    market.state.diagnosticEntryId.value = old.pageContribution.entry.id
+    await settle()
+    assert.equal(market.state.diagnosticContribution.value.activeVersion, '1.0.0')
+    assert.deepEqual(market.state.diagnosticContribution.value.entry, old.pageContribution.entry)
+    await change(field(market.container, '新版本配置'), 'saved future configuration')
+    button(market.container, '保存配置').click()
+    await waitFor(() => calls.configuration.length === 1 && !market.state.busy.value)
+    assert.deepEqual(calls.configuration[0].payload.values, { futurePrompt: 'saved future configuration' })
+    assert.equal(market.state.selectedState.value.activeConfiguration.defaultPrompt, 'old running configuration')
+    assert.equal(market.state.diagnosticContribution.value.activeVersion, '1.0.0')
+    assert.equal(captures.get('PluginDiagnosticHost').defaultValues.value.prompt, 'old running configuration')
+  })
+
+  it('refreshes same-version defaults for future inputs without changing a captured invocation', async () => {
+    const fixture = makePluginFixture()
+    const entry = await hostFor(fixture)
+    const oldPrompt = entry.state.form.prompt
+    const pending = deferred()
+    mock.invoke = () => pending.promise
+    const run = entry.state.run()
+    await waitFor(() => calls.invocations.length === 1)
+    const oldCall = calls.invocations[0]
+    const newConfiguration = { defaultPrompt: 'new active default', threshold: 0.75 }
+    setState(fixture.manifest.id, { configuration: newConfiguration, activeConfiguration: newConfiguration })
+    window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+    await waitFor(() => !entry.state.loading.value && entry.state.defaultValues.value.prompt === newConfiguration.defaultPrompt)
+    assert.equal(entry.state.form.prompt, oldPrompt, 'Refresh preserves the current invocation input')
+    assert.equal(oldCall.payload.values.prompt, oldPrompt)
+    pending.resolve(responseFor(oldCall))
+    await run; await settle()
+    const meta = field(entry.container, '本次提示词').closest('label').nextElementSibling
+    button(meta, '恢复默认').click(); await settle()
+    assert.equal(entry.state.form.prompt, newConfiguration.defaultPrompt)
+    mock.invoke = undefined
+    await entry.state.run(); await settle()
+    assert.equal(calls.invocations[1].payload.values.prompt, newConfiguration.defaultPrompt)
+    assert.equal(oldCall.payload.values.prompt, oldPrompt)
+  })
+
+  it('preserves the pre-resolved account model and protocol subset without a credential selector', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [
+      makeTarget({ channelId: 'account-1', model: 'allowed-model', protocols: ['chat_completions', 'responses'], credentials: [{ id: 'account-1', name: '账号原生授权', priority: 1 }] }),
+      makeTarget({ channelId: 'account-1', model: 'not-in-pre-resolved-list', protocols: ['responses'] }),
+      makeTarget({ channelId: 'account-1', model: 'no-supported-protocol', protocols: ['gemini'] }),
+      makeTarget({ channelId: 'other-account', model: 'allowed-model', protocols: ['responses'] }),
+    ]
+    const entry = await hostFor(fixture, { contribution: fixture.accountContribution, context: { kind: 'oauth-account', id: 'account-1' }, accountModels: ['allowed-model', 'no-supported-protocol'], accountProtocols: ['responses'] })
+    assert.deepEqual(entry.state.targets.value.map(target => target.model), ['allowed-model'])
+    assert.deepEqual([...field(entry.container, '协议').options].map(option => option.value), ['responses'])
+    assert.equal([...entry.container.querySelectorAll('label')].some(label => text(label).includes('上游凭据')), false)
+    assert.equal(Object.hasOwn(entry.state.form, 'keyId'), false)
+    await entry.state.run(); await settle()
+    const request = calls.invocations[0].payload
+    assert.deepEqual(request.context, { kind: 'oauth-account', id: 'account-1' })
+    assert.equal(request.values.model, 'allowed-model')
+    assert.equal(request.values.protocol, 'responses')
+    assert.equal(Object.hasOwn(request.values, 'keyId'), false)
+    assert.equal(Object.hasOwn(request.values, 'scope'), false)
+  })
+
+  it('keeps official channel and account wrappers thin and descriptor-driven', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    const wrapper = await mount('ChannelConnectivityPanel', { channel })
+    await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
+    await captures.get('PluginDiagnosticHost').run(); await settle()
+    assert.equal(calls.invocations[0].id, 'prism.connectivity')
+    assert.equal(calls.invocations[0].payload.actionId, fixture.contribution.entry.action.id)
+    wrapper.unmount(); mounted.splice(mounted.indexOf(wrapper), 1)
+    const unknown = makePluginFixture()
+    setFixtures(unknown)
+    mock.targets = [makeTarget({ channelId: 'account-1', model: 'pre-resolved', protocols: ['responses', 'gemini'], credentials: [{ id: 'account-1', name: '账号原生授权', priority: 1 }] })]
+    const account = { id: 'account-1', name: 'Synthetic account', accountEmail: 'test@example.invalid', provider: 'chatgpt' }
+    const modal = await mount('OAuthModelTestModal', { account, models: ['pre-resolved'] })
+    await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
+    const state = captures.get('PluginDiagnosticHost')
+    assert.deepEqual(state.targets.value[0].protocols, ['responses'])
+    assert.equal(modal.container.querySelectorAll('input[type="password"]').length, 0)
+    assert.equal([...modal.container.querySelectorAll('label')].some(label => text(label).includes('上游凭据')), false)
+    await state.run(); await settle()
+    assert.equal(calls.invocations.at(-1).id, unknown.manifest.id)
+    assert.equal(calls.invocations.at(-1).payload.actionId, unknown.accountContribution.entry.action.id)
+    assert.deepEqual(calls.legacy, [])
+  })
+
+  it('renders missing resources and permits manual diagnostics on a disabled channel', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [makeTarget({ credentials: [] }), makeTarget({ model: 'no-protocol', protocols: [] })]
+    const empty = await hostFor(fixture)
+    assert.match(text(empty.container), /没有可测试的模型/)
+    assert.equal(empty.container.querySelector('.test-workbench-actions'), null)
+    await empty.state.run()
+    assert.equal(calls.invocations.length, 0)
+    empty.unmount(); mounted.splice(mounted.indexOf(empty), 1)
+    mock.targets = [makeTarget({ channelEnabled: false })]
+    const disabled = await hostFor(fixture, { channelEnabled: false })
+    assert.match(text(disabled.container), /渠道已停用.*仍可.*诊断/)
+    assert.equal(disabled.container.querySelector('.test-workbench-actions .button.primary').disabled, false)
+    await disabled.state.run(); await settle()
+    assert.equal(calls.invocations.length, 1)
+  })
+
+  for (const admission of ['disabled', 'new-version']) {
+    it(`rejects ${admission} admission before dispatching any invocation`, async () => {
+      const fixture = makePluginFixture()
+      const unavailable = []
+      const entry = await hostFor(fixture, { onUnavailable: () => unavailable.push(true) })
+      setState(fixture.manifest.id, admission === 'disabled'
+        ? { admissionEnabled: false, desiredEnabled: false, status: 'disabled', activeUi: null }
+        : { activeVersion: '2.0.0' })
+      await entry.state.run(); await settle()
+      assert.equal(calls.invocations.length, 0)
+      assert.equal(unavailable.length, 1)
+      assert.match(entry.state.runError.value, /停用|版本/)
+      assert.equal(toasts.at(-1).type, 'error')
+    })
+  }
+
+  it('orchestrates all targets with at most two workers and publishes incremental reactive DOM progress', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [0, 1, 2, 3].map(index => makeTarget({ model: `batch-${index}`, credentials: [{ id: `default-${index}`, name: `Default ${index}`, priority: 1 }, { id: `secondary-${index}`, name: `Secondary ${index}`, priority: 2 }] }))
+    const entry = await hostFor(fixture)
+    entry.state.form.keyId = 'secondary-0'
+    await change(field(entry.container, '检测范围'), 'all')
+    let inFlight = 0, peak = 0
+    const pending = []
+    mock.invoke = call => {
+      const result = deferred()
+      inFlight++; peak = Math.max(peak, inFlight)
+      pending.push({ ...result, call })
+      return result.promise.finally(() => { inFlight-- })
+    }
+    const run = entry.state.run()
+    await waitFor(() => pending.length === 2)
+    assert.equal(entry.container.querySelectorAll('.plugin-diagnostic-pending').length, 4)
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 0)
+    assert.equal(field(entry.container, '协议').disabled, true)
+    pending[0].resolve(responseFor(pending[0].call))
+    await waitFor(() => pending.length === 3 && entry.container.querySelectorAll('.plugin-result').length === 1)
+    assert.equal(entry.state.running.value, true)
+    assert.equal(entry.container.querySelectorAll('.plugin-diagnostic-pending').length, 3)
+    pending[1].resolve(responseFor(pending[1].call, { outcome: { success: false, statusCode: 401 } }))
+    await waitFor(() => pending.length === 4 && entry.container.querySelectorAll('.plugin-result').length === 2)
+    pending[2].resolve(responseFor(pending[2].call))
+    pending[3].resolve(responseFor(pending[3].call))
+    await run; await settle()
+    assert.equal(peak, 2)
+    assert.equal(calls.invocations.length, 4)
+    assert.deepEqual(calls.invocations.map(call => call.payload.values.keyId), ['default-0', 'default-1', 'default-2', 'default-3'])
+    assert.ok(calls.invocations.every(call => call.payload.values.scope === 'single'))
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 4)
+    assert.equal(entry.container.querySelectorAll('.plugin-diagnostic-pending').length, 0)
+    assert.equal(entry.state.running.value, false)
+    assert.match(toasts.at(-1).message, /3 个探测成功，1 个失败/)
+  })
+
+  it('freezes input context version and target credentials before awaiting the preflight response', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [makeTarget({ credentials: [{ id: 'original-key', name: 'Original credential', priority: 1 }] })]
+    const entry = await hostFor(fixture)
+    entry.state.form.prompt = 'original prompt'
+    entry.state.form.label = 'original label'
+    const preflight = deferred()
+    mock.getState = () => preflight.promise
+    const run = entry.state.run()
+    await waitFor(() => calls.state.length === 2)
+    entry.state.form.prompt = 'mutated prompt'
+    entry.state.form.label = 'mutated label'
+    entry.state.form.protocol = 'responses'
+    entry.state.form.keyId = 'new-key'
+    entry.state.targets.value[0].protocols.splice(0, 2, 'responses')
+    entry.state.targets.value[0].credentials[0].id = 'new-key'
+    entry.state.targets.value[0].credentials[0].name = 'Mutated credential'
+    mock.invoke = call => makeExecution({ pluginId: call.id, activeVersion: call.payload.expectedActiveVersion, context: call.payload.context, values: call.payload.values, target: makeTarget({ credentials: [{ id: 'original-key', name: 'Original credential', priority: 1 }] }) })
+    preflight.resolve(stateFor(fixture.manifest.id))
+    await run; await settle()
+    const payload = calls.invocations[0].payload
+    assert.deepEqual(payload.context, { kind: 'channel', id: channel.id })
+    assert.equal(payload.expectedActiveVersion, '1.0.0')
+    assert.equal(payload.values.prompt, 'original prompt')
+    assert.equal(payload.values.label, 'original label')
+    assert.equal(payload.values.protocol, 'chat_completions')
+    assert.equal(payload.values.keyId, 'original-key')
+    assert.equal(entry.state.rows.value[0].keyName, 'Original credential')
+    assert.equal(entry.state.rows.value[0].error, '')
+  })
+
+  it('stops waiting without claiming upstream cancellation and never starts queued targets afterward', async () => {
+    mock.targets = [0, 1, 2].map(index => makeTarget({ model: `stop-${index}` }))
+    const entry = await hostFor()
+    entry.state.form.scope = 'all'
+    const pending = []
+    mock.invoke = call => { const result = deferred(); pending.push({ ...result, call }); return result.promise }
+    const run = entry.state.run()
+    await waitFor(() => pending.length === 2)
+    button(entry.container, '停止等待').click(); await settle()
+    assert.equal(entry.state.running.value, false)
+    assert.ok(pending.every(item => item.call.options.signal.aborted))
+    assert.match(text(entry.container), /已发给上游的请求可能继续执行/)
+    assert.match(text(entry.container), /此项尚未发送/)
+    assert.ok(entry.state.rows.value.every(row => row.waitingStopped && !row.execution))
+    assert.equal(toasts.length, 0)
+    // A fresh run may finish while earlier remote requests ignore their abort signal.
+    entry.state.form.scope = 'single'
+    entry.state.form.prompt = 'fresh after stop'
+    mock.invoke = undefined
+    await entry.state.run(); await settle()
+    assert.equal(calls.invocations.length, 3)
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+    assert.equal(toasts.length, 1)
+    const freshExecution = clonePluginData(entry.state.rows.value[0].execution)
+    pending[0].resolve(responseFor(pending[0].call))
+    pending[1].reject(new ApiError('late stopped failure', 409, 'stale'))
+    await run; await settle()
+    assert.equal(pending.length, 2, 'The stopped run never starts its third queued target')
+    assert.equal(calls.invocations.length, 3)
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+    assert.deepEqual(clonePluginData(entry.state.rows.value[0].execution), freshExecution)
+    assert.equal(entry.state.rows.value[0].values.prompt, 'fresh after stop')
+    assert.equal(toasts.length, 1, 'Late completions do not publish another toast')
+  })
+
+  for (const completion of ['response', 'error']) {
+    it(`suppresses a stale ${completion} and toast after switching plugin context/version`, async () => {
+      const old = makePluginFixture()
+      const unavailable = []
+      const entry = await hostFor(old, { onUnavailable: () => unavailable.push(true) })
+      const late = deferred()
+      mock.invoke = () => late.promise
+      const run = entry.state.run()
+      await waitFor(() => calls.invocations.length === 1)
+      const oldCall = calls.invocations[0]
+      const next = makePluginFixture({ id: 'acme.other', version: '2.0.0' })
+      mock.states.set(next.manifest.id, clonePluginData(next.state))
+      mock.targets = [makeTarget({ channelId: 'channel-2', model: 'new-context-model' })]
+      await entry.setProps({ contribution: next.contribution, context: { kind: 'channel', id: 'channel-2' } })
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(oldCall.options.signal.aborted, true)
+      if (completion === 'response') late.resolve(makeExecution({ pluginId: oldCall.id, context: oldCall.payload.context, values: oldCall.payload.values }))
+      else late.reject(new ApiError('PRIVATE_STALE_ERROR', 409, 'stale'))
+      await run; await settle()
+      assert.equal(entry.state.rows.value.length, 0)
+      assert.equal(entry.state.loadError.value, '')
+      assert.equal(entry.state.runError.value, '')
+      assert.equal(entry.state.form.model, 'new-context-model')
+      assert.equal(entry.container.querySelectorAll('.plugin-result').length, 0)
+      assert.equal(toasts.length, 0)
+      assert.equal(unavailable.length, 0)
+      assert.doesNotMatch(text(entry.container), /PRIVATE_STALE_ERROR/)
+    })
+  }
+
+  for (const completion of ['response', 'error']) {
+    it(`suppresses a late resource-load ${completion} after switching context`, async () => {
+      const fixture = makePluginFixture()
+      const next = makePluginFixture({ id: 'acme.new-context', version: '2.0.0' })
+      setFixtures(fixture, next)
+      const stateResponse = deferred()
+      const targetsResponse = deferred()
+      const unavailable = []
+      mock.getState = id => id === fixture.manifest.id ? stateResponse.promise : stateFor(id)
+      mock.getTargets = id => id === fixture.manifest.id ? targetsResponse.promise : [makeTarget({ channelId: 'channel-2', model: 'fresh-resource' })]
+      const entry = await mount('PluginDiagnosticHost', { contribution: fixture.contribution, context: { kind: 'channel', id: channel.id }, onUnavailable: () => unavailable.push(true) })
+      assert.equal(entry.state.loading.value, true)
+      const oldStateCall = calls.state[0]
+      const oldTargetsCall = calls.targets[0]
+      await entry.setProps({ contribution: next.contribution, context: { kind: 'channel', id: 'channel-2' } })
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(oldStateCall.options.signal.aborted, true)
+      assert.equal(oldTargetsCall.options.signal.aborted, true)
+      targetsResponse.resolve([makeTarget({ model: 'stale-resource' })])
+      if (completion === 'response') stateResponse.resolve(fixture.state)
+      else stateResponse.reject(new ApiError('STALE_RESOURCE_ERROR', 503))
+      await settle()
+      assert.equal(entry.state.state.value.id, next.manifest.id)
+      assert.equal(entry.state.form.model, 'fresh-resource')
+      assert.deepEqual(entry.state.targets.value.map(target => target.model), ['fresh-resource'])
+      assert.equal(entry.state.loadError.value, '')
+      assert.equal(toasts.length, 0)
+      assert.equal(unavailable.length, 0)
+      assert.doesNotMatch(text(entry.container), /stale-resource|STALE_RESOURCE_ERROR/)
+    })
+  }
+
+  it('suppresses late load and invocation errors after unmount', async () => {
+    const fixture = makePluginFixture()
+    const entry = await hostFor(fixture)
+    const late = deferred()
+    mock.invoke = () => late.promise
+    const run = entry.state.run()
+    await waitFor(() => calls.invocations.length === 1)
+    entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+    assert.equal(calls.invocations[0].options.signal.aborted, true)
+    late.reject(new ApiError('UNMOUNTED_ERROR', 503))
+    await run; await settle()
+    assert.equal(toasts.length, 0)
+    const loadCallsAfterUnmount = calls.state.length
+    window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED)); await settle()
+    assert.equal(calls.state.length, loadCallsAfterUnmount, 'Unmount removes the plugin-change listener')
+    const load = deferred()
+    mock.getState = () => load.promise
+    const second = await mount('PluginDiagnosticHost', { contribution: fixture.contribution, context: { kind: 'channel', id: channel.id } })
+    second.unmount(); mounted.splice(mounted.indexOf(second), 1)
+    load.reject(new ApiError('UNMOUNTED_LOAD', 503))
+    await settle()
+    assert.equal(second.state.loadError.value, '')
+    assert.equal(toasts.length, 0)
+  })
+
+  for (const [binding, mismatch] of [
+    ['plugin', execution => { execution.pluginId = 'acme.wrong-plugin' }],
+    ['version', execution => { execution.activeVersion = '2.0.0' }],
+    ['context', execution => { execution.target.id = 'wrong-channel' }],
+    ['model', execution => { execution.target.model = 'wrong-model' }],
+    ['protocol', execution => { execution.target.protocol = 'responses' }],
+    ['credential', execution => { execution.target.credentialId = 'wrong-credential' }],
+  ]) {
+    it(`discards a mismatched ${binding} response instead of rendering or retrying it`, async () => {
+      const entry = await hostFor()
+      mock.invoke = call => { const execution = responseFor(call); mismatch(execution); return execution }
+      await entry.state.run(); await settle()
+      assert.equal(calls.invocations.length, 1)
+      assert.equal(entry.container.querySelectorAll('.plugin-result').length, 0)
+      assert.match(entry.state.rows.value[0].error, /不一致.*丢弃/)
+      assert.equal(toasts.at(-1).type, 'error')
+    })
+  }
+
+  it('escapes report response metrics and upstream-401 details as literal text', async () => {
+    const payload = '<img src=x onerror="globalThis.injected=true"><script>globalThis.injected=true</script>'
+    const execution = makeExecution({ outcome: { success: false, statusCode: 401, responseText: payload, errorMessage: payload, upstreamReportedModel: payload },
+      report: { title: payload, text: `report ${payload}`, notices: [payload], metrics: [{ label: payload, value: payload }] } })
+    const entry = await mount('PluginDiagnosticResult', { execution })
+    assert.equal(entry.container.querySelectorAll('img,script').length, 0)
+    assert.equal(entry.container.querySelector('.plugin-report-title').textContent, payload)
+    assert.equal(entry.container.querySelector('pre').textContent, payload)
+    assert.equal(entry.container.querySelectorAll('pre')[1].textContent, `report ${payload}`)
+    assert.match(text(entry.container), /HTTP 401/)
+    assert.equal(globalThis.injected, undefined)
+  })
+
+  it('navigates real dynamic tabs and keeps legacy views available when connectivity disappears', async () => {
+    const official = makeOfficialPluginFixture()
+    const unknown = makePluginFixture()
+    setFixtures(official, unknown)
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => entry.state.tabs.value.length === 5 && entry.container.querySelectorAll('[role="tab"]').length === 5)
+    const tabs = () => [...entry.container.querySelectorAll('[role="tab"]')]
+    assert.deepEqual(tabs().map(tab => text(tab)), ['连通性', '合成诊断', '智商', '指纹', '记录'])
+    tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true })); await settle()
+    assert.equal(document.activeElement, tabs().at(-1))
+    assert.equal(entry.state.activeTab.value, 'records')
+    assert.equal(recordMounts, 1)
+    tabs().at(-1).dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true })); await settle()
+    assert.equal(recordMounts, 1)
+    tabs().at(-1).dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true })); await settle()
+    assert.equal(document.activeElement, tabs()[0])
+    tabs()[0].dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); await settle()
+    assert.equal(text(tabs()[1]), '合成诊断')
+    assert.equal(document.activeElement, tabs()[1])
+    mock.contributions = []
+    await entry.state.load(); await settle()
+    assert.deepEqual(tabs().map(tab => text(tab)), ['智商', '指纹', '记录'])
+    assert.match(text(entry.container), /智商、指纹与记录仍可使用/)
+    assert.ok(entry.container.querySelector('[data-legacy-view="iq"]'))
+    tabs()[1].click(); await settle()
+    assert.ok(entry.container.querySelector('[data-legacy-view="fingerprint"]'))
+    tabs()[2].click(); await settle()
+    assert.ok(entry.container.querySelector('[data-legacy-view="records"]'))
+    assert.equal(recordMounts, 2)
+  })
+
+  it('restores the marketplace diagnostic trigger after the rendered modal closes', async () => {
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    const trigger = button(entry.container, entry.state.pageEntries.value[0].label)
+    trigger.focus()
+    trigger.click()
+    await waitFor(() => entry.container.querySelector('.synthetic-dialog'))
+    const close = button(entry.container, '关闭模拟窗口')
+    close.focus()
+    assert.equal(document.activeElement, close)
+    close.click()
+    await settle()
+    assert.equal(entry.container.querySelector('.synthetic-dialog'), null)
+    assert.equal(document.activeElement, trigger)
+  })
+
+  it('does not restore diagnostic focus after the marketplace has unmounted', async () => {
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    const trigger = button(entry.container, entry.state.pageEntries.value[0].label)
+    trigger.focus()
+    trigger.click()
+    await waitFor(() => entry.container.querySelector('.synthetic-dialog'))
+    const close = button(entry.container, '关闭模拟窗口')
+    close.focus()
+    let focusCalls = 0
+    trigger.focus = () => { focusCalls++ }
+    close.click()
+    entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+    await settle()
+    assert.equal(focusCalls, 0)
+  })
+
+  it('requires complete grants and displays authoritative install enable disable and uninstall states without hot enable', async () => {
+    const fixture = makePluginFixture()
+    setFixtures(fixture); mock.states.delete(fixture.manifest.id)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    assert.equal(button(entry.container, '安装此版本').disabled, true)
+    const grants = [...entry.container.querySelectorAll('.plugin-market-permissions input')]
+    await change(grants[0], true)
+    assert.equal(button(entry.container, '安装此版本').disabled, true)
+    await change(grants[1], true)
+    button(entry.container, '安装此版本').click()
+    await waitFor(() => calls.install.length === 1 && !entry.state.busy.value)
+    assert.deepEqual(calls.install[0], { id: fixture.manifest.id, payload: { version: '1.0.0', approvedPermissions: fixture.manifest.permissions } })
+    assert.equal(text(entry.container.querySelector('.plugin-market-detail-head .badge')), '已禁用')
+    assert.equal(fact(entry.container, '当前生效'), '无可执行入口')
+    const installedGrants = [...entry.container.querySelectorAll('.plugin-market-permissions input')]
+    await change(installedGrants[1], false)
+    assert.equal(button(entry.container, '启用（重启生效）').disabled, true)
+    entry.state.toggleEnabled()
+    assert.equal(calls.enabled.length, 0, 'Enable requires all declared capabilities, not a partial grant')
+    await change(installedGrants[1], true)
+    button(entry.container, '启用（重启生效）').click()
+    await waitFor(() => calls.enabled.length === 1 && !entry.state.busy.value)
+    assert.deepEqual(calls.enabled[0].payload, { enabled: true, approvedPermissions: fixture.manifest.permissions })
+    assert.equal(entry.state.selectedState.value.admissionEnabled, false)
+    assert.equal(entry.state.selectedState.value.activeVersion, null)
+    assert.equal(entry.state.pageEntries.value.length, 0)
+    assert.match(text(entry.container), /待重启/)
+    assert.ok(entry.container.querySelector('.plugin-market-restart'))
+    button(entry.container, '禁用').click()
+    await waitFor(() => calls.enabled.length === 2 && !entry.state.busy.value)
+    assert.deepEqual(calls.enabled[1].payload, { enabled: false })
+    confirmResult = true
+    button(entry.container, '卸载').click()
+    await waitFor(() => calls.uninstall.length === 1 && !entry.state.busy.value)
+    assert.equal(entry.state.selectedState.value.installed, false)
+    assert.equal(entry.state.selectedState.value.installedVersion, '1.0.0')
+    assert.match(text(entry.container), /已卸载，保留历史选择/)
+    assert.deepEqual(entry.state.selectedState.value.configuration, fixture.state.configuration)
+  })
+
+  it('saves configuration without a discard prompt and protects unsaved drafts across selection and canLeave', async () => {
+    const first = makePluginFixture()
+    const second = makePluginFixture({ id: 'acme.second', displayName: 'Second unknown plugin' })
+    setFixtures(first, second)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'draft configuration')
+    assert.equal(entry.state.dirty.value, true)
+    assert.equal(entry.state.canLeave(), false)
+    assert.equal(confirmCalls.length, 1)
+    pluginItem(entry.container, second.manifest.id).click()
+    await settle()
+    assert.equal(entry.state.selectedId.value, first.manifest.id)
+    assert.equal(entry.state.configuration.defaultPrompt, 'draft configuration')
+    const prompts = confirmCalls.length
+    button(entry.container, '保存配置').click()
+    await waitFor(() => calls.configuration.length === 1 && !entry.state.busy.value)
+    assert.equal(confirmCalls.length, prompts, 'Saving is not a discard operation')
+    assert.equal(calls.configuration[0].payload.values.defaultPrompt, 'draft configuration')
+    assert.equal(entry.state.dirty.value, false)
+    assert.equal(entry.state.selectedState.value.activeConfiguration.defaultPrompt, 'draft configuration')
+    assert.equal(entry.state.canLeave(), true)
+    entry.state.selectPlugin(second.manifest.id); await settle()
+    assert.equal(entry.state.selectedId.value, second.manifest.id)
+    assert.equal(entry.state.configuration.defaultPrompt, second.state.configuration.defaultPrompt)
+  })
+
+  it('preserves a dirty configuration on refresh and leaves only after actual discard confirmation', async () => {
+    const first = makePluginFixture()
+    const second = makePluginFixture({ id: 'acme.other-draft', displayName: 'Other draft target' })
+    setFixtures(first, second)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'local dirty draft')
+    const original = entry.state.originalConfiguration.value
+    setState(first.manifest.id, { configuration: { defaultPrompt: 'remote refreshed configuration', threshold: 0.8 } })
+    button(entry.container, '刷新').click()
+    await waitFor(() => calls.plugins.length === 2 && !entry.state.loading.value)
+    assert.equal(confirmCalls.length, 0, 'Refresh does not discard or confirm the local draft')
+    assert.equal(entry.state.configuration.defaultPrompt, 'local dirty draft')
+    assert.equal(entry.state.originalConfiguration.value, original)
+    assert.equal(entry.state.dirty.value, true)
+    assert.equal(entry.state.selectedState.value.configuration.defaultPrompt, 'remote refreshed configuration')
+    pluginItem(entry.container, second.manifest.id).click(); await settle()
+    assert.equal(entry.state.selectedId.value, first.manifest.id)
+    assert.match(confirmCalls.at(-1), /插件配置尚未保存/)
+    confirmResult = true
+    pluginItem(entry.container, second.manifest.id).click(); await settle()
+    assert.equal(entry.state.selectedId.value, second.manifest.id)
+    assert.equal(entry.state.configuration.defaultPrompt, second.state.configuration.defaultPrompt)
+    assert.equal(entry.state.dirty.value, false)
+    assert.equal(confirmCalls.length, 2)
+  })
+
+  it('validates configuration scalars and sends an immutable save snapshot with numeric zero and false', async () => {
+    const fixture = makePluginFixture({ configurationFields: [
+      makeField('defaultPrompt', '默认提示词', 'textarea', { required: true, defaultValue: 'default prompt', maxLength: 4000 }),
+      makeField('count', '配置数量', 'number', { required: true, defaultValue: 2, min: 0, max: 5 }),
+      makeField('flag', '配置开关', 'boolean', { defaultValue: false }),
+    ] })
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '配置数量'), 6)
+    assert.equal(button(entry.container, '保存配置').disabled, true)
+    assert.match(entry.state.configurationError.value, /配置数量/)
+    entry.state.saveConfiguration()
+    assert.equal(calls.configuration.length, 0)
+    await change(field(entry.container, '配置数量'), 0)
+    await change(field(entry.container, '配置开关'), true)
+    await change(field(entry.container, '配置开关'), false)
+    await change(field(entry.container, '默认提示词'), 'snapshot configuration')
+    let submitted
+    const pending = deferred()
+    mock.configure = (_id, payload) => { submitted = payload; return pending.promise }
+    button(entry.container, '保存配置').click(); await settle()
+    assert.notEqual(submitted.values, entry.state.configuration)
+    assert.deepEqual(submitted.values, { defaultPrompt: 'snapshot configuration', count: 0, flag: false })
+    entry.state.configuration.defaultPrompt = 'late mutation of reactive draft'
+    assert.equal(submitted.values.defaultPrompt, 'snapshot configuration')
+    assert.equal(entry.state.canLeave(), false)
+    pending.resolve(setState(fixture.manifest.id, { configuration: submitted.values, activeConfiguration: submitted.values }))
+    await waitFor(() => !entry.state.busy.value)
+    assert.equal(entry.state.configuration.defaultPrompt, 'snapshot configuration')
+    assert.equal(entry.state.dirty.value, false)
+    assert.equal(confirmCalls.length, 0)
+  })
+
+  it('suppresses late marketplace mutation notifications and state-change events after unmount', async () => {
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'unmounted configuration')
+    const pending = deferred()
+    mock.configure = () => pending.promise
+    button(entry.container, '保存配置').click(); await settle()
+    const changes = []
+    const listener = () => changes.push(true)
+    window.addEventListener(PLUGIN_STATE_CHANGED, listener)
+    try {
+      entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+      pending.resolve(stateFor('acme.synthetic'))
+      await settle()
+      assert.equal(toasts.length, 0)
+      assert.equal(changes.length, 0)
+    } finally { window.removeEventListener(PLUGIN_STATE_CHANGED, listener) }
+  })
+
+  it('blocks leaving while configuration save is pending and preserves drafts on a failed save', async () => {
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'unsaved input')
+    const pending = deferred()
+    mock.configure = () => pending.promise
+    button(entry.container, '保存配置').click(); await settle()
+    assert.equal(entry.state.busy.value, true)
+    assert.equal(entry.state.canLeave(), false)
+    assert.equal(confirmCalls.length, 0)
+    assert.equal(field(entry.container, '默认提示词').disabled, true)
+    pending.reject(new ApiError('synthetic configuration conflict', 409))
+    await waitFor(() => !entry.state.busy.value)
+    assert.equal(entry.state.dirty.value, true)
+    assert.equal(entry.state.configuration.defaultPrompt, 'unsaved input')
+    assert.equal(toasts.at(-1).type, 'error')
+    assert.match(toasts.at(-1).message, /configuration conflict/)
+  })
+})

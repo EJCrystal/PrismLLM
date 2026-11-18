@@ -52,6 +52,7 @@ import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.io.TempDir
 import org.testcontainers.containers.PostgreSQLContainer
 import java.math.BigDecimal
+import java.nio.file.Files
 import java.nio.file.Path
 import java.sql.DriverManager
 import kotlin.test.assertEquals
@@ -80,6 +81,30 @@ abstract class GatewayIntegrationTestBase {
     lateinit var quotaPluginDirectory: Path
     @TempDir
     lateinit var iqJudgePluginDirectory: Path
+    @TempDir
+    lateinit var pluginInstallationDirectory: Path
+
+    /** 使用独立 verify 产物；缺少包时明确失败，不能用应用 classpath 上的实现替代。 */
+    protected val connectivityPluginCatalogDirectory: Path by lazy {
+        val override = System.getenv("PRISM_TEST_PLUGIN_CATALOG_DIR")?.trim()?.takeIf { it.isNotEmpty() }
+        val directory = if (override != null) {
+            Path.of(override).toAbsolutePath().normalize()
+        } else {
+            val classes = Path.of(GatewayIntegrationTestBase::class.java.protectionDomain.codeSource.location.toURI())
+                .toAbsolutePath().normalize()
+            val root = generateSequence(classes) { it.parent }
+                .firstOrNull { Files.isRegularFile(it.resolve("prism-app/pom.xml")) }
+                ?: error("Cannot locate the independent connectivity package fixture; set PRISM_TEST_PLUGIN_CATALOG_DIR")
+            root.resolve("extensions/connectivity-diagnostic/target")
+        }
+        check(Files.isRegularFile(directory.resolve("catalog.json")) &&
+            Files.isRegularFile(directory.resolve("prism-connectivity-1.0.0.prismplugin"))) {
+            "Missing real connectivity integration fixture in $directory. " +
+                "Verify extensions/connectivity-diagnostic first, or set PRISM_TEST_PLUGIN_CATALOG_DIR to its catalogue directory. " +
+                "Packaging acceptance must not be skipped or replaced with a classpath provider."
+        }
+        directory
+    }
 
     protected lateinit var postgres: PostgreSQLContainer<*>
     protected lateinit var databaseUrl: String
@@ -97,6 +122,8 @@ abstract class GatewayIntegrationTestBase {
 
     @BeforeAll
     fun startInfrastructure() {
+        // 在启动数据库之前检查打包前置条件，不能把关键验收用例静默跳过。
+        connectivityPluginCatalogDirectory
         postgres = IntegrationPostgres.container
         databaseUrl = IntegrationPostgres.newDatabase()
         fake = FakeUpstream().apply { start() }
@@ -338,6 +365,8 @@ abstract class GatewayIntegrationTestBase {
         iqDefaultJudge = "local",
         iqJudgeTimeoutMs = 5_000,
         iqJudgePluginDir = iqJudgePluginDirectory,
+        pluginCatalogDir = connectivityPluginCatalogDirectory,
+        pluginInstallDir = pluginInstallationDirectory,
         cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false),
         cooldown = CooldownPolicy(

@@ -48,6 +48,9 @@ data class GatewayConfig(
     val iqDefaultJudge: String = "local",
     val iqJudgeTimeoutMs: Long = 60_000,
     val iqJudgePluginDir: Path = Path.of("plugins/iq-judges"),
+    /** 管理员受信任目录与独立可写安装区；不与旧 JAR 扩展混用。 */
+    val pluginCatalogDir: Path = Path.of("bundled-plugins"),
+    val pluginInstallDir: Path = Path.of("plugin-state"),
     /**
      * 智商检测单次等待上游的默认超时；为空时使用题目内置默认值（图形题 180 秒、推理题 120 秒）。
      * 单次检测的 timeoutMs 仍可覆盖它，但任何来源都不能超过 [IQ_TEST_TIMEOUT_MAX_MS]。
@@ -218,6 +221,8 @@ data class GatewayConfig(
                 iqDefaultJudge = iqDefaultJudge,
                 iqJudgeTimeoutMs = iqJudgeTimeoutMs,
                 iqJudgePluginDir = Path.of(value("IQ_JUDGE_PLUGIN_DIR", "plugins/iq-judges")),
+                pluginCatalogDir = Path.of(value("PLUGIN_CATALOG_DIR", "bundled-plugins")),
+                pluginInstallDir = Path.of(value("PLUGIN_INSTALL_DIR", "plugin-state")),
                 iqTestTimeoutMs = iqTestTimeoutMs,
                 trustedProxyNetworks = runCatching { TrustedProxyNetwork.parseList(value("TRUSTED_PROXY_CIDRS", "")) }
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },

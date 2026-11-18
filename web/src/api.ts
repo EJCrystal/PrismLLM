@@ -76,6 +76,9 @@ import type {
   OAuthProviderModelsResponse,
   OAuthProviderModelMappingsResponse,
   PageOptions,
+  PluginInvocationContext,
+  PluginInvocationRequest,
+  PluginValues,
   ProtocolProbeResponse,
   RequestLog,
   RetentionPolicy,
@@ -85,6 +88,10 @@ import type {
   UsageReport,
   UsageReportQuery,
 } from './types/api'
+import {
+  parsePluginCatalog, parsePluginContributions, parsePluginExecution, parsePluginRuntimeState,
+  parsePluginTargets, parsePlugins,
+} from './utils/plugin'
 
 const API_BASE = '/admin/api'
 
@@ -95,6 +102,11 @@ function readCookie(name: string): string | null {
 }
 
 type RequestOptions = Omit<RequestInit, 'body'> & { body?: BodyInit | null }
+type PluginRequestOptions = { signal?: AbortSignal }
+
+function pluginRequestOptions(options: PluginRequestOptions = {}): Pick<RequestInit, 'signal'> {
+  return { signal: options.signal }
+}
 
 async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = (options.method || 'GET').toUpperCase()
@@ -169,6 +181,38 @@ export const api = {
     request<MeResponse>('/account/avatar', { method: 'PUT', body: JSON.stringify(payload) }),
   changePassword: (payload: ChangePasswordRequest) =>
     request<null>('/account/password', { method: 'PUT', body: JSON.stringify(payload) }),
+
+  listPluginCatalog: (options: PluginRequestOptions = {}) =>
+    request<unknown>('/plugin-catalog', pluginRequestOptions(options)).then(parsePluginCatalog),
+  listPlugins: (options: PluginRequestOptions = {}) =>
+    request<unknown>('/plugins', pluginRequestOptions(options)).then(parsePlugins),
+  getPlugin: (id: string, options: PluginRequestOptions = {}) =>
+    request<unknown>(`/plugins/${encodeURIComponent(id)}`, pluginRequestOptions(options)).then(parsePluginRuntimeState),
+  getPluginContributions: (options: PluginRequestOptions = {}) =>
+    request<unknown>('/plugins/ui', pluginRequestOptions(options)).then(parsePluginContributions),
+  installPlugin: (id: string, payload: { version: string; approvedPermissions: string[] }) =>
+    request<unknown>(`/plugins/${encodeURIComponent(id)}/installation`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    }).then(parsePluginRuntimeState),
+  setPluginEnabled: (id: string, payload: { enabled: boolean; approvedPermissions?: string[] }) =>
+    request<unknown>(`/plugins/${encodeURIComponent(id)}/enabled`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    }).then(parsePluginRuntimeState),
+  configurePlugin: (id: string, payload: { values: PluginValues }) =>
+    request<unknown>(`/plugins/${encodeURIComponent(id)}/configuration`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    }).then(parsePluginRuntimeState),
+  uninstallPlugin: (id: string) =>
+    request<unknown>(`/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(parsePluginRuntimeState),
+  listPluginTargets: (id: string, context?: PluginInvocationContext, options: PluginRequestOptions = {}) => {
+    const query = context ? '?' + new URLSearchParams({ contextKind: context.kind, contextId: context.id }) : ''
+    return request<unknown>(`/plugins/${encodeURIComponent(id)}/resources/model-test-targets${query}`, pluginRequestOptions(options))
+      .then(data => parsePluginTargets(data, context))
+  },
+  invokePlugin: (id: string, payload: PluginInvocationRequest, options: PluginRequestOptions = {}) =>
+    request<unknown>(`/plugins/${encodeURIComponent(id)}/invocations`, {
+      ...pluginRequestOptions(options), method: 'POST', body: JSON.stringify(payload),
+    }).then(parsePluginExecution),
 
   listModelRoutes: (options: ModelRouteListOptions = {}) => {
     const params = new URLSearchParams({ offset: String(options.offset ?? 0), limit: String(options.limit ?? 100) })

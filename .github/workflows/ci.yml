@@ -27,6 +27,8 @@ jobs:
       deps: ${{ steps.filter.outputs.deps }}
       ci: ${{ steps.filter.outputs.ci }}
       shared: ${{ steps.filter.outputs.shared }}
+      pluginsdk: ${{ steps.filter.outputs.pluginsdk }}
+      pluginhost: ${{ steps.filter.outputs.pluginhost }}
       protocol: ${{ steps.filter.outputs.protocol }}
       channel: ${{ steps.filter.outputs.channel }}
       routing: ${{ steps.filter.outputs.routing }}
@@ -62,6 +64,8 @@ jobs:
               - 'prism-db-migrations/**'
               - 'prism-test-support/**'
               - 'prism-shared/**'
+              - 'prism-plugin-sdk/**'
+              - 'prism-plugin-host/**'
               - 'prism-protocol/**'
               - 'prism-channel/**'
               - 'prism-routing/**'
@@ -75,6 +79,7 @@ jobs:
               - 'extensions/**'
               - 'pom.xml'
               - 'Dockerfile'
+              - 'docker-compose.yml'
               - '.github/workflows/ci.yml'
               - '.github/scripts/ci_test_modules.py'
               - '.github/scripts/test_ci_test_modules.py'
@@ -82,6 +87,10 @@ jobs:
               - '.github/scripts/test_ci_test_report.py'
             shared:
               - 'prism-shared/**'
+            pluginsdk:
+              - 'prism-plugin-sdk/**'
+            pluginhost:
+              - 'prism-plugin-host/**'
             protocol:
               - 'prism-protocol/**'
             channel:
@@ -107,6 +116,7 @@ jobs:
               - 'prism-test-support/**'
               - 'pom.xml'
               - 'Dockerfile'
+              - 'docker-compose.yml'
               - '.github/workflows/ci.yml'
               - '.github/scripts/ci_test_modules.py'
               - '.github/scripts/test_ci_test_modules.py'
@@ -224,6 +234,9 @@ jobs:
         env:
           CHANGED_BUILD: ${{ needs.changes.outputs.build }}
           CHANGED_SHARED: ${{ needs.changes.outputs.shared }}
+          CHANGED_PLUGINSDK: ${{ needs.changes.outputs.pluginsdk }}
+          CHANGED_PLUGINHOST: ${{ needs.changes.outputs.pluginhost }}
+          CHANGED_EXTENSIONS: ${{ needs.changes.outputs.extensions }}
           CHANGED_PROTOCOL: ${{ needs.changes.outputs.protocol }}
           CHANGED_CHANNEL: ${{ needs.changes.outputs.channel }}
           CHANGED_ROUTING: ${{ needs.changes.outputs.routing }}
@@ -251,10 +264,17 @@ jobs:
           mvn --batch-mode --no-transfer-progress -pl "$TEST_MODULES" surefire:test
           -DfailIfNoTests=true
 
+      - name: Verify official connectivity package and app fixture
+        if: steps.modules.outputs.app_tests == 'true'
+        run: >-
+          python3 .github/scripts/ci_test_report.py run extensions --
+          mvn --batch-mode --no-transfer-progress -f extensions/connectivity-diagnostic/pom.xml verify
+
       - name: Test app module
         if: steps.modules.outputs.app_tests == 'true'
         env:
           APP_TAGS: ${{ steps.modules.outputs.app_tags }}
+          PRISM_TEST_PLUGIN_CATALOG_DIR: ${{ github.workspace }}/extensions/connectivity-diagnostic/target
         run: |
           if [ -z "$APP_TAGS" ]; then
             python3 .github/scripts/ci_test_report.py run app -- \
