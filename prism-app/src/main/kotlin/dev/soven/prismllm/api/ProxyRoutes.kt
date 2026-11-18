@@ -18,8 +18,10 @@ import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.channel.domain.UpstreamEnvelope
 import dev.soven.prismllm.channel.domain.upstreamEnvelope
+import dev.soven.prismllm.proxy.codeassist.AntigravityModels
 import dev.soven.prismllm.proxy.codeassist.CodeAssistEnvelope
 import dev.soven.prismllm.proxy.codeassist.CodeAssistCloak
+import dev.soven.prismllm.proxy.codeassist.CodeAssistModelCatalog
 import dev.soven.prismllm.proxy.codeassist.CodeAssistSuspension
 import dev.soven.prismllm.channel.domain.authTypeFor
 import dev.soven.prismllm.domain.effective
@@ -1477,24 +1479,15 @@ private suspend fun proxyStream(
         null
     }
     val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        val sentModel = codeAssistCatalog?.sentId(
-            candidate.upstreamModel,
-            ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
-        ) ?: candidate.upstreamModel
-        val request = CodeAssistCloak.apply(bodyJson)
-        // 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不再用请求正文派生，
-        // 否则不同客户端只要首条用户文本相同就会共用一个上游会话。
-        CodeAssistEnvelope.wrap(
-            request,
-            sentModel,
+        codeAssistRequestBody(
+            bodyJson,
+            candidate,
+            alias,
+            call,
+            clientKeyId,
             codeAssistProject,
-            CodeAssistEnvelope.sessionScope(
-                alias,
-                candidate.channel.id,
-                clientKeyId,
-                clientSessionId(call),
-            ),
-        ).toString()
+            codeAssistCatalog,
+        )
     } else {
         bodyJson.toString()
     }
@@ -1517,8 +1510,10 @@ private suspend fun proxyStream(
                     anthropicBeta = call.request.headers["anthropic-beta"],
                 )
                 header("traceparent", traceparent)
+                if (envelope != UpstreamEnvelope.CODE_ASSIST) {
+                    header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
+                }
                 header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
                 policy.applyHeaders(this)
                 if (envelope == UpstreamEnvelope.CODE_ASSIST) {
                     // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
@@ -1790,24 +1785,15 @@ private suspend fun proxyJson(
         null
     }
     val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-        val sentModel = codeAssistCatalog?.sentId(
-            candidate.upstreamModel,
-            ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI),
-        ) ?: candidate.upstreamModel
-        val request = CodeAssistCloak.apply(bodyJson)
-        // 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不再用请求正文派生，
-        // 否则不同客户端只要首条用户文本相同就会共用一个上游会话。
-        CodeAssistEnvelope.wrap(
-            request,
-            sentModel,
+        codeAssistRequestBody(
+            bodyJson,
+            candidate,
+            alias,
+            call,
+            clientKeyId,
             codeAssistProject,
-            CodeAssistEnvelope.sessionScope(
-                alias,
-                candidate.channel.id,
-                clientKeyId,
-                clientSessionId(call),
-            ),
-        ).toString()
+            codeAssistCatalog,
+        )
     } else {
         bodyJson.toString()
     }
@@ -1946,6 +1932,37 @@ internal fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?):
 private fun clientSessionId(call: ApplicationCall): String? =
     listOf("x-session-id", "x-conversation-id", "conversation-id", "session-id")
         .firstNotNullOfOrNull { call.request.headers[it]?.trim()?.takeIf(String::isNotEmpty) }
+
+/**
+ * Code Assist 信封的公共组装：流式/非流式共用，避免两侧的档位与目录字段漂移。
+ * 会话 id 绑定客户端凭据、渠道、模型别名与调用方会话标识；不用请求正文派生。
+ */
+private fun codeAssistRequestBody(
+    bodyJson: JsonObject,
+    candidate: RouteCandidate,
+    alias: String,
+    call: ApplicationCall,
+    clientKeyId: String?,
+    codeAssistProject: String?,
+    codeAssistCatalog: CodeAssistModelCatalog.Catalog?,
+): String {
+    val effort = ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI)
+    val sentModel = codeAssistCatalog?.sentId(candidate.upstreamModel, effort) ?: candidate.upstreamModel
+    val request = CodeAssistCloak.apply(bodyJson)
+    return CodeAssistEnvelope.wrap(
+        request,
+        sentModel,
+        codeAssistProject,
+        CodeAssistEnvelope.sessionScope(
+            alias,
+            candidate.channel.id,
+            clientKeyId,
+            clientSessionId(call),
+        ),
+        effort = AntigravityModels.effortOf(sentModel).ifEmpty { effort.orEmpty() },
+        maxOutputTokens = codeAssistCatalog?.outputLimit(sentModel),
+    ).toString()
+}
 
 /**
  * 目录补拉失败只降级为 null（请求照常发出），但协程取消必须原样抛出，

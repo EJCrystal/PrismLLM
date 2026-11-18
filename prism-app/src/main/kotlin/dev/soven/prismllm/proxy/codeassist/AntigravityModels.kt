@@ -43,6 +43,19 @@ object AntigravityModels {
         return id to ""
     }
 
+    /** 模型 id 里带的档位；flash-lite 没有后缀但实际按 low 跑，没有档位时返回空串。 */
+    fun effortOf(model: String): String =
+        splitId(model).second.ifEmpty { if (model.contains("flash-lite")) "low" else "" }
+
+    /** 把调用方/模型 id 里的档位收成内部等级；未知值按 high 处理，与 sentId 的兜底保持一致。 */
+    fun normalizeEffort(effort: String?): String = when (effort?.lowercase()) {
+        "none", "minimal", "extra-low" -> "minimal"
+        "low" -> "low"
+        "medium" -> "medium"
+        "xhigh", "max", "extra-high" -> "xhigh"
+        else -> "high"
+    }
+
     /** 名称末尾括号里的等级，例如 "Gemini 3.7 Flash (High)"。 */
     fun nameLevel(name: String): Pair<String, String> {
         val open = name.lastIndexOf(" (")
@@ -127,20 +140,11 @@ object AntigravityModels {
             return variants[""] ?: model
         }
         // 只在家族真实拥有的等级里取最近的一级，避免落到不存在的档位。
-        val wanted = levelRank.indexOf(normalize(effort)).takeIf { it >= 0 } ?: levelRank.indexOf("high")
+        val wanted = levelRank.indexOf(normalizeEffort(effort)).takeIf { it >= 0 } ?: levelRank.indexOf("high")
         val available = family.efforts.filter { it.isNotEmpty() }.distinct()
         val nearest = available.minWithOrNull(
             compareBy({ level -> kotlin.math.abs(levelRank.indexOf(level) - wanted) }, { level -> -levelRank.indexOf(level) }),
         )
         return variants[nearest ?: ""] ?: variants[""] ?: model
-    }
-
-    private fun normalize(effort: String): String = when (effort.lowercase()) {
-        "none", "minimal" -> "minimal"
-        "low" -> "low"
-        "medium" -> "medium"
-        "high" -> "high"
-        "xhigh", "max" -> "xhigh"
-        else -> "high"
     }
 }

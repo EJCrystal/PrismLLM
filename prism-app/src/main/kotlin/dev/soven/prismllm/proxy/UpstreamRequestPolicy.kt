@@ -8,6 +8,7 @@ import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.protocol.ChatReasoningContentNormalizer
 import dev.soven.prismllm.protocol.DeveloperRoleNormalizer
 import dev.soven.prismllm.protocol.MessagesThinkingNormalizer
+import dev.soven.prismllm.proxy.codeassist.antigravityUserAgent
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.http.HttpStatusCode
@@ -45,8 +46,8 @@ object UpstreamHeaderProfiles {
             ), "npm:@google/genai",
         ),
         UpstreamHeaderProfile(
-            "antigravity", "Antigravity", "2.30.0", linkedMapOf(
-                "User-Agent" to "antigravity/hub/2.30.0 windows/amd64",
+            "antigravity", "Antigravity", "2.32.1", linkedMapOf(
+                "User-Agent" to antigravityUserAgent("2.32.1"),
             ), "antigravity:hub",
         ),
     )

@@ -118,6 +118,7 @@ class TestClassificationTest {
             "ChannelQuotaIntegrationTest" to setOf("shard-1", "channel"),
             "ClientKeyAccessPolicyIntegrationTest" to setOf("shard-1", "channel"),
             "ClientKeyRoutingAccessIntegrationTest" to setOf("shard-1", "channel", "protocol"),
+            "CodeAssistIntegrationTest" to setOf("shard-3", "protocol"),
             "GeminiNativeIntegrationTest" to setOf("shard-3", "protocol"),
             "GracefulShutdownIntegrationTest" to setOf("shard-4"),
             "IqQuestionBankIntegrationTest" to setOf("shard-3"),
