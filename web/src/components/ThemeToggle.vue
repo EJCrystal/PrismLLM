@@ -57,13 +57,13 @@ async function closeMenu(restoreFocus = false): Promise<void> {
 
 function toggleMenu(): void {
   if (open.value) {
-    void closeMenu(false)
+    void closeMenu(true)
   } else {
     void openMenu(false)
   }
 }
 
-function selectPalette(id: ThemePaletteId, restoreFocus = false): void {
+function selectPalette(id: ThemePaletteId, restoreFocus = true): void {
   setPalette(id)
   void closeMenu(restoreFocus)
 }
@@ -200,7 +200,7 @@ onBeforeUnmount(() => {
           :class="{ 'is-active': palette === item.id }"
           :aria-checked="palette === item.id"
           :tabindex="activeIndex === index ? 0 : -1"
-          @click="selectPalette(item.id, $event.detail === 0)"
+          @click="selectPalette(item.id)"
         >
           <ThemePaletteIcon :palette="item.id" :size="16" />
           <span class="theme-menu-copy">

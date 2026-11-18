@@ -176,6 +176,24 @@ describe('ThemeToggle keyboard accessibility & focus management', () => {
     assert.equal(document.activeElement, trigger)
   })
 
+  it('鼠标点击选定配色（detail=1）后也将焦点恢复到胶囊触发器而非落回 body', async () => {
+    const { trigger } = await mountToggle()
+
+    trigger.dispatchEvent(new MouseEvent('click', { detail: 1, bubbles: true, cancelable: true }))
+    await settle()
+
+    const items = [...host.querySelectorAll('[role="menuitemradio"]')]
+    assert.equal(items.length, 6)
+    assert.equal(document.activeElement, items[0])
+
+    items[3].dispatchEvent(new MouseEvent('click', { detail: 1, bubbles: true, cancelable: true }))
+    await settle()
+
+    assert.equal(host.querySelector('.theme-menu'), null)
+    assert.equal(document.documentElement.getAttribute('data-palette'), 'orange')
+    assert.equal(document.activeElement, trigger)
+  })
+
   it('外部指针关闭菜单时不强行抢回触发器焦点', async () => {
     const { trigger } = await mountToggle()
     const outsideButton = document.createElement('button')
