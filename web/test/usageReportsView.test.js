@@ -126,6 +126,17 @@ describe('usage reports layout and contracts', () => {
     assert.ok(document.querySelector('.usage-chart-legend').textContent.includes('无请求不连线'))
     assert.ok(document.querySelector('.usage-chart-y-axis.is-right').textContent.includes('%'))
     assert.ok(document.querySelector('.usage-chart').getAttribute('aria-label').includes('百分比'))
+
+    const splitData = report()
+    splitData.trend = [
+      { ...baseTotal, bucketStart: firstBucket, requests: 100, errors: 10 },
+      { ...baseTotal, bucketStart: firstBucket + 86_400_000, requests: 0, errors: 0 },
+      { ...baseTotal, bucketStart: firstBucket + 2 * 86_400_000, requests: 100, errors: 20 },
+    ]
+    const split = await render(splitData, state => { state.chartIndex.value = 0 })
+    assert.equal(split.querySelectorAll('.usage-chart-line.rate').length, 2)
+    assert.equal(split.querySelectorAll('.usage-chart-point.rate:not(.is-ring)').length, 2)
+    assert.ok(split.querySelector('.usage-chart-point.rate.is-ring'))
   })
 
   it('scales small error rates and fees to their actual range', async () => {

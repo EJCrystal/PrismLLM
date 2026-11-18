@@ -8050,6 +8050,7 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart-point.tertiary { fill: var(--success-fill); }
 .usage-chart-point.quaternary { fill: var(--reasoning); }
 .usage-chart-point.rate { fill: var(--danger); }
+.usage-chart-point.rate.is-ring { fill: none; stroke: var(--danger); stroke-width: 2; }
 .usage-chart-axis { margin-left: 48px; }
 .usage-chart-with-axis.has-right-axis + .usage-chart-axis { margin-right: 44px; }
 
