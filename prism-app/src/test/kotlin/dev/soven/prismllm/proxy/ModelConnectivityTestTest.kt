@@ -2,16 +2,27 @@ package dev.soven.prismllm.proxy
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import dev.soven.prismllm.channel.domain.ChannelKeyRecord
+import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.protocol.extractReportedModel
 import dev.soven.prismllm.shared.domain.GatewayProtocol
+import dev.soven.prismllm.shared.domain.KeyCredentialResolver
 import dev.soven.prismllm.shared.domain.OAuthProvider
+import dev.soven.prismllm.shared.domain.Usage
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.headersOf
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -160,7 +171,7 @@ class ModelConnectivityTestTest {
                 kind = ChannelKind.PROVIDER,
                 provider = OAuthProvider.CHATGPT,
             )
-            val result = testOAuthAccountModelConnectivity(
+            val result = prepareOAuthAccountModelConnectivity(
                 channel = channel,
                 accessToken = "access-token",
                 project = null,
@@ -168,7 +179,7 @@ class ModelConnectivityTestTest {
                 protocol = GatewayProtocol.RESPONSES,
                 prompt = "say ok",
                 httpClient = HttpClient(Java),
-            )
+            )()
             assertFalse(result.success)
             assertEquals(200, result.statusCode)
             assertEquals("stream boom", result.errorMessage)
@@ -231,7 +242,7 @@ class ModelConnectivityTestTest {
                 kind = ChannelKind.PROVIDER,
                 provider = OAuthProvider.CHATGPT,
             )
-            val result = testOAuthAccountModelConnectivity(
+            val result = prepareOAuthAccountModelConnectivity(
                 channel = channel,
                 accessToken = "access-token",
                 project = null,
@@ -239,7 +250,7 @@ class ModelConnectivityTestTest {
                 protocol = GatewayProtocol.RESPONSES,
                 prompt = "say ok",
                 httpClient = HttpClient(Java),
-            )
+            )()
             assertFalse(result.success)
             assertEquals("上游流式响应未收到终止事件，连接可能中断", result.errorMessage)
         } finally {
@@ -275,7 +286,7 @@ class ModelConnectivityTestTest {
                 kind = ChannelKind.PROVIDER,
                 provider = OAuthProvider.CHATGPT,
             )
-            val result = testOAuthAccountModelConnectivity(
+            val result = prepareOAuthAccountModelConnectivity(
                 channel = channel,
                 accessToken = "access-token",
                 project = null,
@@ -283,7 +294,7 @@ class ModelConnectivityTestTest {
                 protocol = GatewayProtocol.RESPONSES,
                 prompt = "say ok",
                 httpClient = HttpClient(Java),
-            )
+            )()
             assertFalse(result.success)
             assertTrue(result.errorMessage!!.contains("未收到终止事件"))
         } finally {
@@ -314,7 +325,7 @@ class ModelConnectivityTestTest {
                 kind = ChannelKind.PROVIDER,
                 provider = OAuthProvider.CHATGPT,
             )
-            val result = testOAuthAccountModelConnectivity(
+            val result = prepareOAuthAccountModelConnectivity(
                 channel = channel,
                 accessToken = "access-token",
                 project = null,
@@ -322,7 +333,7 @@ class ModelConnectivityTestTest {
                 protocol = GatewayProtocol.RESPONSES,
                 prompt = "say ok",
                 httpClient = HttpClient(Java),
-            )
+            )()
             assertFalse(result.success)
             assertTrue(result.errorMessage!!.contains("未收到终止事件"))
         } finally {
@@ -424,7 +435,7 @@ class ModelConnectivityTestTest {
                 provider = OAuthProvider.ANTIGRAVITY,
             )
 
-            val result = testOAuthAccountModelConnectivity(
+            val result = prepareOAuthAccountModelConnectivity(
                 channel = channel,
                 accessToken = "access-token",
                 project = "aicode-consumers",
@@ -433,7 +444,7 @@ class ModelConnectivityTestTest {
                 prompt = "say ok",
                 httpClient = HttpClient(Java),
                 codeAssistUserAgent = "antigravity/hub/2.30.0 windows/amd64",
-            )
+            )()
 
             assertTrue(result.success)
             assertEquals("model ok", result.responseText)
@@ -462,7 +473,7 @@ class ModelConnectivityTestTest {
             provider = OAuthProvider.ANTIGRAVITY,
         )
 
-        val result = testOAuthAccountModelConnectivity(
+        val result = prepareOAuthAccountModelConnectivity(
             channel = channel,
             accessToken = "access-token",
             project = null,
@@ -470,7 +481,7 @@ class ModelConnectivityTestTest {
             protocol = GatewayProtocol.GEMINI,
             prompt = "say ok",
             httpClient = HttpClient(Java),
-        )
+        )()
 
         assertFalse(result.success)
         assertNull(result.statusCode)
@@ -514,6 +525,423 @@ class ModelConnectivityTestTest {
         assertEquals("responses-model", extractReportedModel(GatewayProtocol.RESPONSES, responses))
         assertEquals("messages-model", extractReportedModel(GatewayProtocol.MESSAGES, messages))
     }
+
+    @Test
+    fun both_entry_points_redact_success_text_and_reported_model_without_changing_usage() = runBlocking {
+        val credential = "sk-synthetic-success-secret"
+        val body = """{"choices":[{"message":{"content":"before $credential after $credential"}}],"model":"model-$credential","usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}"""
+
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(credential, oauth = oauth, responseBody = body)
+
+            assertSuccessfulDiagnostic(result, "before [REDACTED] after [REDACTED]", "model-[REDACTED]")
+        }
+    }
+
+    @Test
+    fun both_entry_points_preserve_numeric_usage_encoded_as_strings() = runBlocking {
+        val credential = "7"
+        val body = """{"choices":[{"message":{"content":"before $credential after"}}],"model":"public-model","usage":{"prompt_tokens":"7","completion_tokens":"3","total_tokens":"10"}}"""
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(credential, oauth = oauth, responseBody = body)
+            assertSuccessfulDiagnostic(
+                result, "before [REDACTED] after", "public-model",
+                usage = Usage(input = 7, output = 3, cached = null, reasoning = null, total = 10),
+            )
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_credentials_from_json_error_keys_without_changing_structure() = runBlocking {
+        val credential = "synthetic-error-key"
+        val escaped = unicodeEscapedCredential(credential)
+        val body = """{"outer":[{"$escaped":"before $escaped after","status":502}]}"""
+        assertFalse(body.contains(credential))
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(credential, oauth = oauth, responseBody = body, status = HttpStatusCode.BadGateway)
+            assertFailedDiagnostic(result, 502, """{"outer":[{"[REDACTED]":"before [REDACTED] after","status":502}]}""")
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_json_escaped_success_fields() = runBlocking {
+        val credential = "sk-synthetic-escaped-secret"
+        val escaped = unicodeEscapedCredential(credential)
+        val body = """{"choices":[{"message":{"content":[{"type":"text","text":"before $escaped after"}]}}],"model":"model-$escaped","usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}"""
+        assertFalse(body.contains(credential), "The credential must appear only after JSON decoding")
+
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(credential, oauth = oauth, responseBody = body)
+
+            assertSuccessfulDiagnostic(result, "before [REDACTED] after", "model-[REDACTED]")
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_plaintext_http_errors_before_truncation() = runBlocking {
+        val credential = "sk-synthetic-http-secret"
+        for (oauth in listOf(false, true)) {
+            for (offset in listOf(0, 493, 503)) {
+                val prefix = "e".repeat(offset)
+                val result = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = "$prefix$credential tail",
+                    status = HttpStatusCode.BadGateway,
+                    contentType = ContentType.Text.Plain,
+                )
+
+                assertFailedDiagnostic(result, 502, (prefix + "[REDACTED] tail").take(500))
+            }
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_decoded_http_errors_before_truncation() = runBlocking {
+        val credential = "sk-synthetic-decoded-error"
+        val escaped = unicodeEscapedCredential(credential)
+        for (oauth in listOf(false, true)) {
+            for (offset in listOf(0, 493, 503)) {
+                val prefix = "e".repeat(offset)
+                val result = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = """{"error":{"message":"$prefix$escaped tail"}}""",
+                    status = HttpStatusCode.Unauthorized,
+                )
+
+                assertFailedDiagnostic(result, 401, (prefix + "[REDACTED] tail").take(500))
+            }
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_transport_exception_messages_before_truncation() = runBlocking {
+        val credential = "sk-synthetic-exception-secret"
+        for (oauth in listOf(false, true)) {
+            for (offset in listOf(0, 193, 203)) {
+                val prefix = "e".repeat(offset)
+                val result = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    failure = IllegalStateException("$prefix$credential tail"),
+                )
+
+                assertFailedDiagnostic(result, null, "无法连接上游：" + (prefix + "[REDACTED] tail").take(200))
+            }
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_success_fields_before_their_independent_limits() = runBlocking {
+        val credential = "sk-synthetic-boundary-secret"
+        val escaped = unicodeEscapedCredential(credential)
+        for (oauth in listOf(false, true)) {
+            for ((textOffset, modelOffset) in listOf(0 to 0, 24 to 193, 34 to 203)) {
+                val textPrefix = "t".repeat(textOffset)
+                val modelPrefix = "m".repeat(modelOffset)
+                val result = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = """{"choices":[{"message":{"content":"$textPrefix$credential tail"}}],"model":"$modelPrefix$escaped tail"}""",
+                    maxResponseChars = 31,
+                )
+
+                assertSuccessfulDiagnostic(
+                    result,
+                    (textPrefix + "[REDACTED] tail").take(31),
+                    (modelPrefix + "[REDACTED] tail").take(200),
+                    usage = null,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_credentials_assembled_from_text_chunks() = runBlocking {
+        val credential = "sk-synthetic-chunk-secret"
+        val first = credential.take(10)
+        val last = credential.drop(10)
+        val prefix = "e".repeat(493)
+        for (oauth in listOf(false, true)) {
+            val success = diagnosticTransport(
+                credential,
+                oauth = oauth,
+                responseBody = """{"choices":[{"message":{"content":[{"text":"before $first"},{"text":"$last after"}]}}],"model":"public-model"}""",
+            )
+            val failure = diagnosticTransport(
+                credential,
+                oauth = oauth,
+                responseBody = """{"error":{"message":[{"text":"$prefix$first"},{"text":"$last tail"}]}}""",
+                status = HttpStatusCode.BadRequest,
+            )
+
+            assertSuccessfulDiagnostic(success, "before [REDACTED] after", "public-model", usage = null)
+            assertFailedDiagnostic(failure, 400, (prefix + "[REDACTED] tail").take(500))
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_credentials_assembled_across_responses_deltas() = runBlocking {
+        val credential = "sk-synthetic-delta-secret"
+        val first = credential.take(10)
+        val last = credential.drop(10)
+        val escaped = unicodeEscapedCredential(credential)
+        val prefix = "t".repeat(24)
+        val body = listOf(
+            """data: {"type":"response.output_text.delta","delta":"$prefix$first"}""",
+            """data: {"type":"response.output_text.delta","delta":"$last tail"}""",
+            """data: {"type":"response.completed","response":{"model":"model-$escaped","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}}}""",
+        ).joinToString("\n")
+        assertFalse(body.contains(credential), "The credential must be decoded or assembled from separate events")
+
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                credential,
+                protocol = GatewayProtocol.RESPONSES,
+                oauth = oauth,
+                responseBody = body,
+                contentType = ContentType.Text.EventStream,
+                maxResponseChars = 31,
+            )
+
+            assertSuccessfulDiagnostic(result, (prefix + "[REDACTED] tail").take(31), "model-[REDACTED]")
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_failed_stream_errors_with_http_200() = runBlocking {
+        val credential = "sk-synthetic-stream-error"
+        val escaped = unicodeEscapedCredential(credential)
+        val body = listOf(
+            """data: {"type":"response.output_text.delta","delta":"partial $credential"}""",
+            """data: {"type":"response.failed","response":{"error":{"code":"server_error","message":"denied $escaped"}}}""",
+        ).joinToString("\n")
+
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                credential,
+                protocol = GatewayProtocol.RESPONSES,
+                oauth = oauth,
+                responseBody = body,
+                contentType = ContentType.Text.EventStream,
+            )
+
+            assertFailedDiagnostic(result, 200, "denied [REDACTED]", responseText = "partial [REDACTED]")
+        }
+    }
+
+    @Test
+    fun native_code_assist_entry_redacts_unwrapped_success_and_error_fields() = runBlocking {
+        val credential = "oauth-synthetic-code-assist-token"
+        val escaped = unicodeEscapedCredential(credential)
+        val success = diagnosticTransport(
+            credential,
+            protocol = GatewayProtocol.GEMINI,
+            oauth = true,
+            provider = OAuthProvider.ANTIGRAVITY,
+            responseBody = """{"response":{"candidates":[{"content":{"parts":[{"text":"before $escaped after"}]}}],"modelVersion":"gemini-$escaped","usageMetadata":{"promptTokenCount":7,"candidatesTokenCount":2,"thoughtsTokenCount":1,"cachedContentTokenCount":2,"totalTokenCount":10}}}""",
+        )
+        val failure = diagnosticTransport(
+            credential,
+            protocol = GatewayProtocol.GEMINI,
+            oauth = true,
+            provider = OAuthProvider.ANTIGRAVITY,
+            responseBody = """{"response":null,"error":{"message":"denied $escaped"}}""",
+            status = HttpStatusCode.Forbidden,
+        )
+
+        assertSuccessfulDiagnostic(success, "before [REDACTED] after", "gemini-[REDACTED]")
+        assertFailedDiagnostic(failure, 403, "denied [REDACTED]")
+    }
+
+    @Test
+    fun both_entry_points_preserve_nonsecret_diagnostics_and_empty_credentials() = runBlocking {
+        for (credential in listOf("sk-synthetic-unused-secret", "")) {
+            for (oauth in listOf(false, true)) {
+                val success = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = """{"choices":[{"message":{"content":"ordinary response"}}],"model":"public-model","usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}""",
+                )
+                val plainError = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = "  ordinary error: other-token  ",
+                    status = HttpStatusCode.BadGateway,
+                    contentType = ContentType.Text.Plain,
+                )
+                val jsonError = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = """{"error":{"message":"ordinary error: other-token"}}""",
+                    status = HttpStatusCode.Forbidden,
+                )
+                val exception = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    failure = IllegalStateException("ordinary connection failure: other-token"),
+                )
+
+                assertSuccessfulDiagnostic(success, "ordinary response", "public-model")
+                assertFailedDiagnostic(plainError, 502, "ordinary error: other-token")
+                assertFailedDiagnostic(jsonError, 403, "ordinary error: other-token")
+                assertFailedDiagnostic(exception, null, "无法连接上游：ordinary connection failure: other-token")
+            }
+        }
+    }
+
+    @Test
+    fun both_entry_points_replace_only_the_exact_credential() = runBlocking {
+        val credential = "sk.test+[x](\$1)"
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                credential,
+                oauth = oauth,
+                responseBody = """{"choices":[{"message":{"content":"keep sk.test+ and other-token; remove $credential"}}],"model":"public-model"}""",
+            )
+
+            assertSuccessfulDiagnostic(result, "keep sk.test+ and other-token; remove [REDACTED]", "public-model", usage = null)
+        }
+    }
+
+    @Test
+    fun both_entry_points_redact_credentials_without_rewriting_json_structure() = runBlocking {
+        for (credential in listOf("model", "7", "sk-synthetic-quote\"-slash\\-token")) {
+            val text = JsonPrimitive("before $credential after")
+            val reportedModel = JsonPrimitive("reported-$credential")
+            for (oauth in listOf(false, true)) {
+                val success = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = """{"choices":[{"message":{"content":$text}}],"model":$reportedModel,"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}""",
+                )
+                val fallback = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = """{"detail":$text}""",
+                    status = HttpStatusCode.BadGateway,
+                )
+
+                assertSuccessfulDiagnostic(success, "before [REDACTED] after", "reported-[REDACTED]")
+                assertFailedDiagnostic(fallback, 502, """{"detail":"before [REDACTED] after"}""")
+            }
+        }
+    }
+
+    private suspend fun diagnosticTransport(
+        credential: String,
+        protocol: GatewayProtocol = GatewayProtocol.CHAT_COMPLETIONS,
+        oauth: Boolean = false,
+        responseBody: String = "",
+        status: HttpStatusCode = HttpStatusCode.OK,
+        contentType: ContentType = ContentType.Application.Json,
+        maxResponseChars: Int = MAX_RESPONSE_CHARS,
+        failure: Throwable? = null,
+        provider: OAuthProvider? = null,
+    ): ModelConnectivityTestResult {
+        val channel = ChannelRecord(
+            id = "diagnostic-channel",
+            name = "diagnostic-channel",
+            baseUrl = "https://diagnostic.example.test",
+            authType = "bearer",
+            protocols = listOf(protocol),
+            enabled = true,
+            createdAt = 0,
+            updatedAt = 0,
+            kind = if (oauth) ChannelKind.PROVIDER else ChannelKind.CUSTOM,
+            provider = if (oauth) provider ?: OAuthProvider.CHATGPT else null,
+        )
+        val savedKey = ChannelKeyRecord(
+            id = "diagnostic-key",
+            channelId = channel.id,
+            name = "synthetic-key",
+            credentialCiphertext = "synthetic-ciphertext",
+            credentialNonce = "synthetic-nonce",
+            credentialKeyVersion = 1,
+            state = ChannelKeyState.ACTIVE,
+            priority = 0,
+            createdAt = 0,
+            updatedAt = 0,
+        )
+        var requests = 0
+        var resolutions = 0
+        return HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    requests += 1
+                    assertEquals("diagnostic.example.test", request.url.host)
+                    assertEquals("Bearer $credential", request.headers[HttpHeaders.Authorization])
+                    failure?.let { throw it }
+                    respond(responseBody, status, headersOf(HttpHeaders.ContentType, contentType.toString()))
+                }
+            }
+        }.use { client ->
+            val result = if (oauth) {
+                prepareOAuthAccountModelConnectivity(
+                    channel = channel,
+                    accessToken = credential,
+                    project = if (provider == OAuthProvider.ANTIGRAVITY) "synthetic-project" else null,
+                    model = "diagnostic-model",
+                    protocol = protocol,
+                    prompt = "say ok",
+                    httpClient = client,
+                    maxResponseChars = maxResponseChars,
+                )()
+            } else {
+                testChannelModelConnectivity(
+                    channel = channel,
+                    credentialRef = savedKey,
+                    model = "diagnostic-model",
+                    protocol = protocol,
+                    prompt = "say ok",
+                    credentials = KeyCredentialResolver {
+                        assertEquals(savedKey, it)
+                        resolutions += 1
+                        credential
+                    },
+                    httpClient = client,
+                    maxResponseChars = maxResponseChars,
+                )
+            }
+            assertEquals(1, requests, "The public entry must send one request through the neutral transport")
+            assertEquals(if (oauth) 0 else 1, resolutions, "The channel entry must resolve its saved credential")
+            result
+        }
+    }
+
+    private fun assertSuccessfulDiagnostic(
+        result: ModelConnectivityTestResult,
+        responseText: String,
+        reportedModel: String,
+        usage: Usage? = Usage(input = 7, output = 3, cached = 2, reasoning = 1, total = 10),
+    ) {
+        assertTrue(result.success)
+        assertEquals(200, result.statusCode)
+        assertEquals(responseText, result.responseText)
+        assertEquals(reportedModel, result.upstreamReportedModel)
+        assertEquals(usage, result.usage)
+        assertNull(result.errorMessage)
+        assertTrue(result.latencyMs >= 0)
+    }
+
+    private fun assertFailedDiagnostic(
+        result: ModelConnectivityTestResult,
+        statusCode: Int?,
+        errorMessage: String,
+        responseText: String? = null,
+    ) {
+        assertFalse(result.success)
+        assertEquals(statusCode, result.statusCode)
+        assertEquals(errorMessage, result.errorMessage)
+        assertEquals(responseText, result.responseText)
+        assertNull(result.upstreamReportedModel)
+        assertNull(result.usage)
+        assertTrue(result.latencyMs >= 0)
+    }
+
+    private fun unicodeEscapedCredential(credential: String): String =
+        credential.map { "\\u${it.code.toString(16).padStart(4, '0')}" }.joinToString("")
 
     private fun reply(exchange: HttpExchange, body: String) {
         val bytes = body.toByteArray()

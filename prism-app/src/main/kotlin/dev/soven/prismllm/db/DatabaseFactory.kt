@@ -30,7 +30,7 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
         },
     )
 
-    val database: Database = Database.connect(dataSource)
+    val database: Database = Database.connect(dataSource, manager = { DiagnosticPreparationDeadline.transactionManager(it) })
 
     /** Register one migration-scoped prerequisite, committed before its SQL script is run. */
     fun beforeMigration(version: String, action: () -> Unit) {

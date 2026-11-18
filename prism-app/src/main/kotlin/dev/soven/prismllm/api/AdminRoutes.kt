@@ -32,8 +32,6 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.pricing.domain.PricingMode
-import dev.soven.prismllm.channel.domain.UpstreamEnvelope
-import dev.soven.prismllm.channel.domain.upstreamEnvelope
 import dev.soven.prismllm.channel.domain.authTypeFor
 import dev.soven.prismllm.oauth.OAuthLoginResult
 import dev.soven.prismllm.oauth.ProviderModelMappingChange
@@ -67,7 +65,6 @@ import dev.soven.prismllm.proxy.resolveSavedCredential
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
 import dev.soven.prismllm.proxy.resolveTimeoutMs
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
-import dev.soven.prismllm.proxy.testOAuthAccountModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.channel.persistence.KeyAutoDisableSettingsAuditContext
@@ -2586,8 +2583,6 @@ private const val DEFAULT_CHANNEL_KEY_NAME = "默认密钥"
 
 /** 管理面刷新模型目录的总上限：覆盖 project 探测、开通轮询与目录请求。 */
 private const val MODEL_REFRESH_TIMEOUT_MS = 60_000L
-/** 订阅账号连通性测试前的 project 发现预算；对话本身另有 45 秒上限。 */
-private const val MODEL_TEST_PREPARE_TIMEOUT_MS = 20_000L
 
 private fun normalizeModelMappings(request: ChannelRequest): List<ChannelModelRecord>? {
     val raw = when {

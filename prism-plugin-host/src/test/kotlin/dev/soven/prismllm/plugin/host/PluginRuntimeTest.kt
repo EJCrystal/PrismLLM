@@ -504,20 +504,71 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
-    fun `host binds one probe and clamps prompt token and timeout limits while keeping upstream 401 in outcome`(): Unit = runBlocking {
+    fun `oversized invocation prompts fail before plan probe and report`(): Unit = runBlocking {
         val packaged = fixture()
         publish(packaged)
         val host = runtime()
         host.initialize(packaged.manifest.id)
         val probes = AtomicInteger()
+        val values = buildJsonObject { put("prompt", "  " + "x".repeat(4_001) + "  ") }
+        failure("PLUGIN_INVALID_INPUT") {
+            host.execute(packaged.manifest.id, "1.0.0", DiagnosticInput("probe", values), target, ProbeLimits(maxPromptChars = 20_000)) {
+                probes.incrementAndGet()
+                ok
+            }
+        }
+        assertEquals(0, packaged.count("planned"))
+        assertEquals(0, probes.get())
+        assertEquals(0, packaged.count("reported"))
+    }
+
+    @Test
+    fun `invocation prompts obey tighter host and field limits after trimming`(): Unit = runBlocking {
+        val ui = defaultUi().let { descriptor -> descriptor.copy(entries = descriptor.entries.map { entry ->
+            entry.copy(action = entry.action.copy(fields = entry.action.fields.map { field ->
+                if (field.key == "prompt") field.copy(maxLength = 16) else field
+            }))
+        }) }
+        val packaged = fixture(ui = ui)
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        suspend fun execute(prompt: String, limits: ProbeLimits) = host.execute(
+            packaged.manifest.id, "1.0.0", DiagnosticInput("probe", buildJsonObject { put("prompt", prompt) }), target, limits,
+        ) { probes.incrementAndGet(); ok }
+        val cases = listOf(ProbeLimits(maxPromptChars = 8) to 8, ProbeLimits(maxPromptChars = 32) to 16)
+        cases.forEach { (limits, maximum) ->
+            failure("PLUGIN_INVALID_INPUT") { execute("  " + "测".repeat(maximum + 1) + "  ", limits) }
+        }
+        assertEquals(0, packaged.count("planned"))
+        assertEquals(0, probes.get())
+        assertEquals(0, packaged.count("reported"))
+        cases.forEach { (limits, maximum) ->
+            val prompt = "测".repeat(maximum)
+            assertEquals(prompt, execute("  $prompt  ", limits).plan.prompt)
+        }
+        assertEquals(2, packaged.count("planned"))
+        assertEquals(2, probes.get())
+        assertEquals(2, packaged.count("reported"))
+    }
+
+    @Test
+    fun `host trims a boundary prompt and clamps token and timeout limits while keeping upstream 401 in outcome`(): Unit = runBlocking {
+        val packaged = fixture(planPrefix = { "if (prompt.length() != 4000) throw new IllegalStateException(\"Input prompt must be trimmed before planning\");" })
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
         var actualPlan: ProbePlan? = null
-        val values = buildJsonObject { put("prompt", "  " + "x".repeat(5_000) + "  ") }
+        val prompt = "测".repeat(4_000)
+        val values = buildJsonObject { put("prompt", "  $prompt  ") }
         val execution = host.execute(packaged.manifest.id, "1.0.0", DiagnosticInput("probe", values), target, ProbeLimits(20_000, 2_048, 90_000)) {
             actualPlan = it
             probes.incrementAndGet()
             ProbeOutcome(false, 401, 10, errorMessage = "upstream authentication failed")
         }
-        assertEquals("x".repeat(4_000), execution.plan.prompt)
+        assertEquals(prompt, execution.plan.prompt)
         assertEquals(128, execution.plan.maxOutputTokens)
         assertEquals(45_000L, execution.plan.timeoutMs)
         assertEquals(actualPlan, execution.plan)
@@ -526,6 +577,101 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertEquals(1, probes.get())
         assertEquals(1, packaged.count("planned"))
         assertEquals(1, packaged.count("reported"))
+    }
+
+    @Test
+    fun `oversized plugin plans fail before probe and report while boundary plans retain trimming`(): Unit = runBlocking {
+        val packaged = fixture(planPrefix = { property -> "prompt = System.getProperty(\"$property.plan-prompt\");" })
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val probes = AtomicInteger()
+        for (maximum in listOf(4_000, 16)) {
+            System.setProperty("${packaged.property}.plan-prompt", "  " + "测".repeat(maximum + 1) + "  ")
+            failure("PLUGIN_INVALID_PLAN") {
+                host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(maxPromptChars = maximum)) {
+                    probes.incrementAndGet()
+                    ok
+                }
+            }
+        }
+        assertEquals(2, packaged.count("planned"))
+        assertEquals(0, probes.get())
+        assertEquals(0, packaged.count("reported"))
+        val prompt = "测".repeat(4_000)
+        System.setProperty("${packaged.property}.plan-prompt", "  $prompt  ")
+        val execution = host.execute(packaged.manifest.id, "1.0.0", input, target) {
+            probes.incrementAndGet()
+            assertEquals(prompt, it.prompt)
+            ok
+        }
+        assertEquals(prompt, execution.plan.prompt)
+        assertEquals(3, packaged.count("planned"))
+        assertEquals(1, probes.get())
+        assertEquals(1, packaged.count("reported"))
+    }
+
+    @Test
+    fun `returned plans honor the active prompt field limit and use the host limit when prompt is absent`(): Unit = runBlocking {
+        val limitedUi = defaultUi().let { descriptor -> descriptor.copy(entries = descriptor.entries.map { entry ->
+            entry.copy(action = entry.action.copy(fields = entry.action.fields.map { field ->
+                if (field.key == "prompt") field.copy(maxLength = 16) else field
+            }))
+        }) }
+        val fieldLimited = fixture(
+            id = "field.limited",
+            ui = limitedUi,
+            planPrefix = { property ->
+                "if (context.getLimits().getMaxPromptChars() != 16) throw new IllegalStateException(\"Wrong effective prompt limit\"); " +
+                    "prompt = System.getProperty(\"$property.plan-prompt\");"
+            },
+        )
+        val noPromptUi = defaultUi().let { descriptor -> descriptor.copy(entries = descriptor.entries.map { entry ->
+            entry.copy(action = entry.action.copy(fields = entry.action.fields.filterNot { it.key == "prompt" }))
+        }) }
+        val withoutPrompt = fixture(
+            id = "without.prompt",
+            ui = noPromptUi,
+            planPrefix = { property ->
+                "if (context.getLimits().getMaxPromptChars() != 4000) throw new IllegalStateException(\"Wrong effective prompt limit\"); " +
+                    "prompt = System.getProperty(\"$property.plan-prompt\");"
+            },
+        )
+        val store = installedStore(fieldLimited, withoutPrompt)
+        val host = runtime(store)
+        host.initialize()
+
+        val fieldProbes = AtomicInteger()
+        System.setProperty("${fieldLimited.property}.plan-prompt", "  ${"测".repeat(17)}  ")
+        failure("PLUGIN_INVALID_PLAN") {
+            host.execute(fieldLimited.manifest.id, "1.0.0", input, target) { fieldProbes.incrementAndGet(); ok }
+        }
+        assertEquals(1, fieldLimited.count("planned"))
+        assertEquals(0, fieldProbes.get())
+        assertEquals(0, fieldLimited.count("reported"))
+
+        val fieldBoundary = "测".repeat(16)
+        System.setProperty("${fieldLimited.property}.plan-prompt", "  $fieldBoundary  ")
+        val fieldExecution = host.execute(fieldLimited.manifest.id, "1.0.0", input, target) { fieldProbes.incrementAndGet(); ok }
+        assertEquals(fieldBoundary, fieldExecution.plan.prompt)
+        assertEquals(1, fieldProbes.get())
+        assertEquals(1, fieldLimited.count("reported"))
+
+        val hostProbes = AtomicInteger()
+        System.setProperty("${withoutPrompt.property}.plan-prompt", "  ${"测".repeat(4_001)}  ")
+        failure("PLUGIN_INVALID_PLAN") {
+            host.execute(withoutPrompt.manifest.id, "1.0.0", input, target) { hostProbes.incrementAndGet(); ok }
+        }
+        assertEquals(1, withoutPrompt.count("planned"))
+        assertEquals(0, hostProbes.get())
+        assertEquals(0, withoutPrompt.count("reported"))
+
+        val hostBoundary = "测".repeat(4_000)
+        System.setProperty("${withoutPrompt.property}.plan-prompt", "  $hostBoundary  ")
+        val hostExecution = host.execute(withoutPrompt.manifest.id, "1.0.0", input, target) { hostProbes.incrementAndGet(); ok }
+        assertEquals(hostBoundary, hostExecution.plan.prompt)
+        assertEquals(1, hostProbes.get())
+        assertEquals(1, withoutPrompt.count("reported"))
     }
 
     @Test

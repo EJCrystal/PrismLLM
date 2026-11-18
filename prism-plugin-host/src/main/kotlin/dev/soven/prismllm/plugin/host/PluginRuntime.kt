@@ -268,16 +268,22 @@ class PluginRuntime(
                 }
                 val action = loaded.staged.item.ui.entries.firstOrNull { it.action.id == input.actionId && target.kind in it.contexts }?.action
                     ?: throw PluginHostException("PLUGIN_ACTION_NOT_AVAILABLE", "Action is not available for this active plugin/context", 400)
+                val actionLimits = boundedLimits.copy(
+                    maxPromptChars = minOf(
+                        boundedLimits.maxPromptChars,
+                        action.fields.firstOrNull { it.key == "prompt" }?.maxLength ?: boundedLimits.maxPromptChars,
+                    ),
+                )
                 val configuration = PluginValidation.snapshot(loaded.configuration)
                 val values = try {
-                    PluginValidation.input(action, input.values, target, configuration, boundedLimits.maxPromptChars)
+                    PluginValidation.input(action, input.values, target, configuration, actionLimits.maxPromptChars)
                 } catch (error: PluginHostException) {
                     throw PluginHostException("PLUGIN_INVALID_INPUT", error.message ?: "Invalid invocation values")
                 }
-                ExecutionSnapshot(loaded, DiagnosticInput(input.actionId, values), DiagnosticContext(target.copy(), configuration, boundedLimits))
+                ExecutionSnapshot(loaded, DiagnosticInput(input.actionId, values), DiagnosticContext(target.copy(), configuration, actionLimits))
             }
             val rawPlan = runCode("plan", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader) { snapshot.loaded.plugin.plan(snapshot.input, snapshot.context) }
-            val plan = plan(rawPlan, boundedLimits)
+            val plan = plan(rawPlan, snapshot.context.limits)
             val boundedOutcome = withProbePermit(plan.timeoutMs) {
                 mutex.withLock {
                     checkReady()
@@ -447,10 +453,11 @@ class PluginRuntime(
     )
 
     private fun plan(plan: ProbePlan, limits: ProbeLimits): ProbePlan {
-        if (plan.prompt.isBlank() || plan.prompt.contains('\u0000') || plan.maxOutputTokens <= 0 || plan.timeoutMs <= 0) {
+        val prompt = plan.prompt.trim()
+        if (prompt.isBlank() || prompt.length > limits.maxPromptChars || prompt.contains('\u0000') || plan.maxOutputTokens <= 0 || plan.timeoutMs <= 0) {
             throw PluginHostException("PLUGIN_INVALID_PLAN", "Plugin returned an invalid probe plan")
         }
-        return ProbePlan(plan.prompt.trim().take(limits.maxPromptChars), minOf(plan.maxOutputTokens, limits.maxOutputTokens), minOf(plan.timeoutMs, limits.timeoutMs))
+        return ProbePlan(prompt, minOf(plan.maxOutputTokens, limits.maxOutputTokens), minOf(plan.timeoutMs, limits.timeoutMs))
     }
 
     private fun limits(limits: ProbeLimits): ProbeLimits {

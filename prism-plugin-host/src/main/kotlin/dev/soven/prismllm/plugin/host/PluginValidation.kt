@@ -254,7 +254,9 @@ internal object PluginValidation {
             if (field.key == "prompt") {
                 if (value == null && field.required) value = configuration["defaultPrompt"]
                 if (value is JsonPrimitive && value.isString) {
-                    value = JsonPrimitive(value.content.trim().take(minOf(maxPromptChars, field.maxLength ?: MAX_PROMPT_CHARS)))
+                    val prompt = value.content.trim()
+                    requireData(prompt.length <= maxPromptChars, "Field ${field.key} exceeds its text limit")
+                    value = JsonPrimitive(prompt)
                 }
             }
             if (value == null) {

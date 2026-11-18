@@ -3,6 +3,7 @@ package dev.soven.prismllm.api
 import dev.soven.prismllm.channel.domain.ProviderEndpoints
 import dev.soven.prismllm.channel.domain.UpstreamEnvelope
 import dev.soven.prismllm.channel.domain.upstreamEnvelope
+import dev.soven.prismllm.db.DiagnosticPreparationDeadline
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import dev.soven.prismllm.plugin.host.PluginExecution
@@ -11,17 +12,15 @@ import dev.soven.prismllm.plugin.host.PluginUiContribution
 import dev.soven.prismllm.plugin.sdk.DiagnosticInput
 import dev.soven.prismllm.plugin.sdk.DiagnosticTarget
 import dev.soven.prismllm.plugin.sdk.ProbeOutcome
-import dev.soven.prismllm.plugin.sdk.ProbePlan
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
+import dev.soven.prismllm.proxy.prepareOAuthAccountModelConnectivity
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
-import dev.soven.prismllm.proxy.testOAuthAccountModelConnectivity
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.error.GatewayError
 import dev.soven.prismllm.shared.error.badRequest
 import dev.soven.prismllm.shared.error.notFound
 import io.ktor.http.HttpStatusCode
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -32,6 +31,7 @@ import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 
 internal const val CONNECTIVITY_PLUGIN_ID = "prism.connectivity"
+internal const val OAUTH_DIAGNOSTIC_PREPARATION_TIMEOUT_MS = 20_000L
 
 /** 只用于旧接口桥接；插件的选择与 UI 贡献本身由运行时描述决定。 */
 internal suspend fun GatewayApplication.requirePluginEntry(
@@ -115,33 +115,37 @@ internal suspend fun GatewayApplication.executePluginProbe(
                 "model" to JsonPrimitive(model), "protocol" to JsonPrimitive(protocol.value),
             )))
             pluginRuntime.execute(id, expectedActiveVersion, normalized, target) { plan ->
-                val channelId = providerChannelProvisioner.ensure(account.provider)
-                    ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + account.provider.value)
-                val channel = channelRepository.find(channelId) ?: throw notFound("channel_not_found", "系统端点渠道不存在")
-                if (model !in channel.models) throw badRequest("model_not_authorized", "系统端点渠道尚未配置模型「$model」")
-                val proxy = try {
-                    account.proxyUrl?.trim()?.takeIf { it.isNotEmpty() }?.let { proxyAddress(it, config.oauth.proxyAllowedHosts) }
-                } catch (cause: OAuthRefreshException) {
-                    throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
-                }
-                val token = try {
-                    oauthTokenService.accessToken(account.id)
-                } catch (cause: CancellationException) {
-                    throw cause
-                } catch (cause: Throwable) {
-                    if (cause is VirtualMachineError) throw cause
-                    throw GatewayError(HttpStatusCode.BadGateway, "oauth_credential_unavailable", "读取账号凭据失败", "upstream_error", retryable = true)
-                } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
-                val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
-                    withTimeoutOrNull(20_000) { codeAssistProjectResolver.context(account, token.accessToken, proxy) }?.project
-                } else null
-                testOAuthAccountModelConnectivity(
-                    channel, token.accessToken, project, model, protocol, plan.prompt, upstreamClient(this, proxy),
-                    codeAssistUserAgent = currentAntigravityUserAgent(), timeoutMs = plan.timeoutMs,
-                    maxOutputTokens = plan.maxOutputTokens,
-                    globalOverrides = upstreamRequestSettingsRepository.load().overrides,
-                    headerProfiles = upstreamHeaderCatalogService.profiles(),
-                ).toPluginOutcome()
+                // 原生准备共享 20s；网络探测在准备完成后单独使用计划中的期限。
+                val probe = DiagnosticPreparationDeadline.within(oauthDiagnosticPreparationTimeoutMs) {
+                    val channelId = providerChannelProvisioner.ensure(account.provider)
+                        ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + account.provider.value)
+                    val channel = channelRepository.find(channelId) ?: throw notFound("channel_not_found", "系统端点渠道不存在")
+                    if (model !in channel.models) throw badRequest("model_not_authorized", "系统端点渠道尚未配置模型「$model」")
+                    val proxy = try {
+                        proxyAddress(account.proxyUrl, config.oauth.proxyAllowedHosts)
+                    } catch (cause: OAuthRefreshException) {
+                        throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
+                    }
+                    val token = try {
+                        oauthTokenService.accessToken(account.id)
+                    } catch (cause: CancellationException) {
+                        throw cause
+                    } catch (cause: Exception) {
+                        if (DiagnosticPreparationDeadline.isTimeout(cause)) throw cause
+                        throw GatewayError(HttpStatusCode.BadGateway, "oauth_credential_unavailable", "读取账号凭据失败", "upstream_error", retryable = true)
+                    } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
+                    val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
+                        codeAssistProjectResolver.context(account, token.accessToken, proxy).project
+                    } else null
+                    prepareOAuthAccountModelConnectivity(
+                        channel, token.accessToken, project, model, protocol, plan.prompt, upstreamClient(this, proxy),
+                        codeAssistUserAgent = currentAntigravityUserAgent(), timeoutMs = plan.timeoutMs,
+                        maxOutputTokens = plan.maxOutputTokens,
+                        globalOverrides = upstreamRequestSettingsRepository.load().overrides,
+                        headerProfiles = upstreamHeaderCatalogService.profiles(),
+                    )
+                } ?: throw GatewayError(HttpStatusCode.GatewayTimeout, "oauth_preparation_timeout", "账号准备超时", "upstream_error", retryable = true)
+                probe().toPluginOutcome()
             }
         }
         else -> throw badRequest("invalid_plugin_context", "插件目标类型无效")

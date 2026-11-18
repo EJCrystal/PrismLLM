@@ -43,9 +43,15 @@ internal class OfficialPluginPackageComponentTest : PluginTestSupport() {
         host.initialize()
         assertEquals(3, host.contributions().size)
         val channel = DiagnosticTarget("channel", "channel-1", "model-1", "responses", credentialId = "opaque-key-1")
-        val values = buildJsonObject { put("prompt", "  " + "x".repeat(5_000) + "  ") }
+        val oversizedValues = buildJsonObject { put("prompt", "  " + "x".repeat(4_001) + "  ") }
+        failure("PLUGIN_INVALID_INPUT") {
+            host.execute(item.manifest.id, "1.0.0", DiagnosticInput("probe-channel", oversizedValues), channel) {
+                error("Oversized prompts must not reach the transport")
+            }
+        }
+        val values = buildJsonObject { put("prompt", "  " + "x".repeat(4_000) + "  ") }
         val failed = host.execute(item.manifest.id, "1.0.0", DiagnosticInput("probe-channel", values), channel) { plan ->
-            assertEquals(4_000, plan.prompt.length)
+            assertEquals("x".repeat(4_000), plan.prompt)
             assertEquals(128, plan.maxOutputTokens)
             assertEquals(45_000L, plan.timeoutMs)
             ProbeOutcome(false, 401, 5, errorMessage = "Local fake upstream rejection")

@@ -286,11 +286,18 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
  * @author 文杰
  * @since 2026-10-21
  */
-class GatewayApplication(
+class GatewayApplication internal constructor(
     val config: GatewayConfig,
-    notificationTransport: NotificationTransport? = null,
-    httpClientOverride: HttpClient? = null,
+    notificationTransport: NotificationTransport?,
+    httpClientOverride: HttpClient?,
+    internal val oauthDiagnosticPreparationTimeoutMs: Long,
 ) : AutoCloseable {
+    constructor(
+        config: GatewayConfig,
+        notificationTransport: NotificationTransport? = null,
+        httpClientOverride: HttpClient? = null,
+    ) : this(config, notificationTransport, httpClientOverride, OAUTH_DIAGNOSTIC_PREPARATION_TIMEOUT_MS)
+
     init {
         // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
         ProtocolConversion.selfCheck()

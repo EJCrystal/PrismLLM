@@ -19,17 +19,20 @@ import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.shared.domain.KeyCredentialResolver
 import io.ktor.client.HttpClient
+import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
+import io.ktor.client.request.url
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.content.TextContent
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.TimeoutCancellationException
-import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -73,31 +76,16 @@ suspend fun testChannelModelConnectivity(
     isolatedIqRequest: Boolean = false,
 ): ModelConnectivityTestResult {
     val credential = resolveSavedCredential(credentials, credentialRef)
-    return runModelConnectivityTest(
-        channel = channel,
-        credential = credential,
-        model = model,
-        protocol = protocol,
-        prompt = prompt,
-        httpClient = httpClient,
-        envelope = UpstreamEnvelope.NONE,
-        project = null,
-        codeAssistUserAgent = DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT,
-        timeoutMs = timeoutMs,
-        maxOutputTokens = maxOutputTokens,
-        maxResponseChars = maxResponseChars,
-        globalOverrides = globalOverrides,
-        headerProfiles = headerProfiles,
-        isolatedIqRequest = isolatedIqRequest,
-    )
+    return runModelConnectivityTest(credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars) {
+        buildModelTestRequest(
+            channel, credential, model, protocol, prompt, UpstreamEnvelope.NONE, null,
+            DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT, maxOutputTokens, globalOverrides, headerProfiles, isolatedIqRequest,
+        )
+    }
 }
 
-/**
- * 订阅账号的连通性测试：使用账号自己的 access token 与官方端点。
- * Antigravity 的请求必须带上账号 project 并包一层 Code Assist 信封，
- * 与数据面保持一致，否则测出来的结果不能代表真实调用。
- */
-suspend fun testOAuthAccountModelConnectivity(
+/** Build the native OAuth request during preparation; the returned probe owns only the HTTP phase. */
+internal fun prepareOAuthAccountModelConnectivity(
     channel: ChannelRecord,
     accessToken: String,
     project: String?,
@@ -111,123 +99,112 @@ suspend fun testOAuthAccountModelConnectivity(
     maxResponseChars: Int = MAX_RESPONSE_CHARS,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
-): ModelConnectivityTestResult = runModelConnectivityTest(
-    channel = channel,
-    credential = accessToken,
-    model = model,
-    protocol = protocol,
-    prompt = prompt,
-    httpClient = httpClient,
-    envelope = channel.upstreamEnvelope,
-    project = project,
-    codeAssistUserAgent = codeAssistUserAgent,
-    timeoutMs = timeoutMs,
-    maxOutputTokens = maxOutputTokens,
-    maxResponseChars = maxResponseChars,
-    globalOverrides = globalOverrides,
-    headerProfiles = headerProfiles,
-)
+): suspend () -> ModelConnectivityTestResult {
+    val envelope = channel.upstreamEnvelope
+    if (envelope == UpstreamEnvelope.CODE_ASSIST && project.isNullOrBlank()) {
+        return {
+            ModelConnectivityTestResult(
+                success = false,
+                statusCode = null,
+                latencyMs = 0,
+                responseText = null,
+                errorMessage = "未获取到 Antigravity 项目，无法发起请求；请确认账号已完成开通",
+                usage = null,
+            )
+        }
+    }
+    val request = try {
+        buildModelTestRequest(
+            channel, accessToken, model, protocol, prompt, envelope, project, codeAssistUserAgent,
+            maxOutputTokens, globalOverrides, headerProfiles,
+        )
+    } catch (cause: Exception) {
+        if (cause is CancellationException) throw cause
+        val failure = modelTestConnectionFailure(cause, accessToken, latencyMs = 0)
+        return { failure }
+    }
+    return { runModelConnectivityTest(accessToken, protocol, httpClient, envelope, timeoutMs, maxResponseChars) { request } }
+}
 
-private suspend fun runModelConnectivityTest(
+private fun buildModelTestRequest(
     channel: ChannelRecord,
     credential: String,
     model: String,
     protocol: GatewayProtocol,
     prompt: String,
-    httpClient: HttpClient,
     envelope: UpstreamEnvelope,
     project: String?,
     codeAssistUserAgent: String,
-    timeoutMs: Long,
     maxOutputTokens: Int,
-    maxResponseChars: Int,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
     isolatedIqRequest: Boolean = false,
-): ModelConnectivityTestResult {
-    if (envelope == UpstreamEnvelope.CODE_ASSIST && project.isNullOrBlank()) {
-        return ModelConnectivityTestResult(
-            success = false,
-            statusCode = null,
-            latencyMs = 0,
-            responseText = null,
-            errorMessage = "未获取到 Antigravity 项目，无法发起请求；请确认账号已完成开通",
-            usage = null,
-        )
+): HttpRequestBuilder {
+    val authType = channel.authTypeFor(protocol)
+    val policy = UpstreamRequestPolicy(globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl)
+    val original = Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject
+    val overridden = policy.body(original, model)
+    val requestBody = if (isolatedIqRequest) isolateIqRequestBody(original, overridden, protocol) else overridden
+    val limited = limitModelTestTokens(requestBody, protocol, maxOutputTokens)
+    val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+        // 连通性探测只验证信封可达，不参与真实对话的档位/编号；labels/sessionId 用默认派生值。
+        CodeAssistEnvelope.wrap(CodeAssistCloak.apply(limited), model, project).toString()
+    } else {
+        limited.toString()
     }
+    return HttpRequestBuilder().apply {
+        url(upstreamRequestUrl(channel.baseUrl, protocol, model, envelope = envelope))
+        applyUpstreamAuthentication(credential, authType, protocol)
+        header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+        policy.applyHeaders(this)
+        if (envelope == UpstreamEnvelope.CODE_ASSIST) applyCodeAssistIdentity(codeAssistUserAgent)
+        setBody(TextContent(body, ContentType.Application.Json))
+    }
+}
+
+private suspend fun runModelConnectivityTest(
+    credential: String,
+    protocol: GatewayProtocol,
+    httpClient: HttpClient,
+    envelope: UpstreamEnvelope,
+    timeoutMs: Long,
+    maxResponseChars: Int,
+    request: () -> HttpRequestBuilder,
+): ModelConnectivityTestResult {
     val startedAt = System.currentTimeMillis()
     return try {
-        withTimeout(timeoutMs) {
-            val authType = channel.authTypeFor(protocol)
-            val policy = UpstreamRequestPolicy(
-                globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
-            )
-            val original = Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject
-            val overridden = policy.body(original, model)
-            val requestBody = if (isolatedIqRequest) isolateIqRequestBody(original, overridden, protocol) else overridden
-            val limited = limitModelTestTokens(requestBody, protocol, maxOutputTokens)
-            val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                // 连通性探测只验证信封可达，不参与真实对话的档位/编号；labels/sessionId 用默认派生值。
-                CodeAssistEnvelope.wrap(CodeAssistCloak.apply(limited), model, project).toString()
-            } else {
-                limited.toString()
-            }
-            val response = httpClient.post(
-                upstreamRequestUrl(channel.baseUrl, protocol, model, envelope = envelope),
-            ) {
-                applyUpstreamAuthentication(credential, authType, protocol)
-                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                policy.applyHeaders(this)
-                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    applyCodeAssistIdentity(codeAssistUserAgent)
-                }
-                setBody(TextContent(body, ContentType.Application.Json))
-            }
-            val bodyText = response.bodyAsText()
+        withTimeoutOrNull(timeoutMs) {
+            val prepared = request()
+            currentCoroutineContext().ensureActive()
+            val response = httpClient.post(prepared)
+            val rawBody = response.bodyAsText()
             val latencyMs = System.currentTimeMillis() - startedAt
             val status = response.status.value
-            val parsed = parseJsonObject(bodyText)
-                ?: if (protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(bodyText) else null
-            val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) {
-                CodeAssistEnvelope.unwrap(parsed)
-            } else {
-                parsed
-            }
-            // Responses 流可能在 HTTP 2xx 后以 response.failed 终止：只要流内带错误，
-            // 即使已收到部分文本也不能报成功。
-            val streamError = if (protocol == GatewayProtocol.RESPONSES && status in 200..299) {
-                json?.get("error") as? JsonObject
-            } else {
-                null
-            }
-            if (status in 200..299) {
-                ModelConnectivityTestResult(
-                    success = streamError == null,
-                    statusCode = status,
-                    latencyMs = latencyMs,
-                    responseText = extractModelTestResponseText(protocol, json)?.take(maxResponseChars),
-                    errorMessage = streamError?.let { extractModelTestError(json, bodyText, status) },
-                    usage = extractModelTestUsage(protocol, json),
-                    upstreamReportedModel = extractReportedModel(protocol, json),
-                )
-            } else {
-                val errorText = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    CodeAssistEnvelope.errorBody(bodyText)
-                } else {
-                    bodyText
-                }
-                ModelConnectivityTestResult(
-                    success = false,
-                    statusCode = status,
-                    latencyMs = latencyMs,
-                    responseText = null,
-                    errorMessage = extractModelTestError(parseJsonObject(errorText), errorText, status),
-                    usage = null,
-                )
-            }
-        }
-    } catch (cause: TimeoutCancellationException) {
-        ModelConnectivityTestResult(
+            val ok = status in 200..299
+            val body = if (!ok && envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(rawBody) else rawBody
+            val parsedBody = runCatching { Json.parseToJsonElement(body) }.getOrNull()
+            val parsed = parsedBody as? JsonObject
+                ?: if (ok && protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(body) else null
+            val json = if (ok && envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) CodeAssistEnvelope.unwrap(parsed) else parsed
+            // Parse status and usage on the original JSON. Redact only the decoded display values.
+            val streamError = ok && protocol == GatewayProtocol.RESPONSES && json?.get("error") is JsonObject
+            ModelConnectivityTestResult(
+                success = ok && !streamError,
+                statusCode = status,
+                latencyMs = latencyMs,
+                responseText = if (ok) extractModelTestResponseText(protocol, json)
+                    ?.let { redactModelTestCredential(it, credential).take(maxResponseChars) } else null,
+                errorMessage = if (!ok || streamError) extractModelTestError(json, status, credential) {
+                    if (parsedBody == null && parsed != null) {
+                        redactModelTestJsonPreview(parsed, credential).toString()
+                    } else {
+                        redactModelTestErrorPreview(body, parsedBody, credential)
+                    }
+                } else null,
+                usage = if (ok) extractModelTestUsage(protocol, json) else null,
+                upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
+            )
+        } ?: ModelConnectivityTestResult(
             success = false,
             statusCode = null,
             latencyMs = System.currentTimeMillis() - startedAt,
@@ -237,17 +214,20 @@ private suspend fun runModelConnectivityTest(
         )
     } catch (cause: CancellationException) {
         throw cause
-    } catch (cause: Throwable) {
-        ModelConnectivityTestResult(
-            success = false,
-            statusCode = null,
-            latencyMs = System.currentTimeMillis() - startedAt,
-            responseText = null,
-            errorMessage = "无法连接上游：${cause.message?.take(200) ?: cause::class.simpleName}",
-            usage = null,
-        )
+    } catch (cause: Exception) {
+        modelTestConnectionFailure(cause, credential, System.currentTimeMillis() - startedAt)
     }
 }
+
+private fun modelTestConnectionFailure(cause: Throwable, credential: String, latencyMs: Long): ModelConnectivityTestResult =
+    ModelConnectivityTestResult(
+        success = false,
+        statusCode = null,
+        latencyMs = latencyMs,
+        responseText = null,
+        errorMessage = "无法连接上游：${redactModelTestCredential(cause.message ?: cause::class.simpleName.orEmpty(), credential).take(200)}",
+        usage = null,
+    )
 
 /** Allow only decoding settings from body overrides: tools, search flags, history and alternate inputs cannot enter an IQ test. */
 internal fun isolateIqRequestBody(original: JsonObject, overridden: JsonObject, protocol: GatewayProtocol): JsonObject {
@@ -371,16 +351,39 @@ internal fun extractModelTestResponseText(protocol: GatewayProtocol, json: JsonO
     }
 }
 
-internal fun extractModelTestError(json: JsonObject?, body: String, statusCode: Int): String {
+private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential: String, preview: () -> String): String {
     val error = json?.get("error")
     val message = when (error) {
         is JsonObject -> collectText(error["message"]) ?: collectText(error)
         is JsonPrimitive -> error.contentOrNull
         else -> null
     }
-    return message?.take(MAX_ERROR_CHARS)
-        ?: body.trim().take(MAX_ERROR_CHARS).takeIf { it.isNotEmpty() }
+    // An error message can span text blocks. Redact the joined value before bounding it.
+    return message?.let { redactModelTestCredential(it, credential).take(MAX_ERROR_CHARS) }
+        ?: preview().trim().take(MAX_ERROR_CHARS).takeIf { it.isNotEmpty() }
         ?: "上游返回 HTTP $statusCode"
+}
+
+private fun redactModelTestCredential(text: String, credential: String): String =
+    if (credential.isEmpty()) text else text.replace(credential, "[REDACTED]")
+
+private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String): String {
+    if (credential.isEmpty()) return body
+    if (json == null || (json is JsonPrimitive && !json.isString)) return redactModelTestCredential(body, credential)
+    val safe = redactModelTestJsonPreview(json, credential)
+    return if (safe == json) body else safe.toString()
+}
+
+/** Display-only copy: keys can also contain JSON-escaped echoes. Never use this copy for parsing. */
+private fun redactModelTestJsonPreview(element: JsonElement, credential: String): JsonElement {
+    if (credential.isEmpty()) return element
+    return when (element) {
+        is JsonObject -> JsonObject(element.entries.associate { (key, value) ->
+            redactModelTestCredential(key, credential) to redactModelTestJsonPreview(value, credential)
+        })
+        is JsonArray -> JsonArray(element.map { redactModelTestJsonPreview(it, credential) })
+        is JsonPrimitive -> if (element.isString) JsonPrimitive(redactModelTestCredential(element.content, credential)) else element
+    }
 }
 
 private fun extractModelTestUsage(protocol: GatewayProtocol, json: JsonObject?): Usage? {

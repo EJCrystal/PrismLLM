@@ -8,6 +8,7 @@ import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
+import dev.soven.prismllm.oauth.infra.OAuthTokenResponse
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.plugin.host.PluginCatalogItem
 import dev.soven.prismllm.plugin.host.PluginExecution
@@ -24,6 +25,9 @@ import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.spi.iq.IqJudge
 import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
+import io.mockk.coEvery
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
@@ -43,10 +47,14 @@ import io.ktor.http.contentType
 import io.ktor.http.headersOf
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
@@ -70,8 +78,13 @@ import java.net.URI
 import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
+import java.sql.DriverManager
 import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import java.util.jar.JarEntry
 import java.util.jar.JarInputStream
@@ -384,6 +397,102 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `generic and legacy channel and native OAuth responses redact echoed credentials in outcomes and reports`() = runBlocking {
+        val upstreamStatus = AtomicReference(HttpStatusCode.OK)
+        val echoedTokens = ConcurrentLinkedQueue<String>()
+        val base = app.config
+        app.close()
+        app = mockedApplication(base, probeResponse = { request ->
+            val authorization = assertNotNull(request.headers[HttpHeaders.Authorization])
+            assertTrue(authorization.startsWith("Bearer "))
+            val token = authorization.removePrefix("Bearer ")
+            assertTrue(token.isNotBlank())
+            echoedTokens.add(token)
+            val body = if (upstreamStatus.get() == HttpStatusCode.Unauthorized) {
+                buildJsonObject {
+                    put("error", buildJsonObject {
+                        put("message", "upstream denied $token")
+                        put("code", "invalid_api_key")
+                    })
+                }.toString()
+            } else {
+                val fixture = when {
+                    request.url.host + request.url.encodedPath == NATIVE_GEMINI_ENDPOINT -> """{"response":$GEMINI_RESPONSE}"""
+                    request.url.encodedPath.endsWith("/responses") -> RESPONSES_RESPONSE
+                    else -> CHAT_RESPONSE
+                }
+                fixture.replace("\"OK\"", JsonPrimitive("OK echoed $token").toString())
+                    .replace("\"reported-fixture-model\"", JsonPrimitive("reported-$token").toString())
+            }
+            upstreamStatus.get() to body
+        })
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val secrets = listOf(STATIC_TOKEN) + OAuthProvider.entries.flatMap {
+                listOf(accessToken(it), "refresh-${it.value}")
+            }
+            suspend fun verifyTarget(kind: String, id: String, model: String, protocol: GatewayProtocol, keyId: String? = null) {
+                for (status in listOf(HttpStatusCode.OK, HttpStatusCode.Unauthorized)) {
+                    upstreamStatus.set(status)
+                    for (legacy in listOf(false, true)) {
+                        val response = if (legacy) {
+                            client.legacyProbe(session, if (kind == "channel") "/channels/$id/model-test" else "/oauth-accounts/$id/model-test",
+                                model, protocol, keyId, "echo safeguard")
+                        } else {
+                            client.invokePlugin(session, kind, id, values(model, protocol, keyId, "echo safeguard"))
+                        }
+                        val text = response.bodyAsText()
+                        val body = response.objectPayload()
+                        val outcome = if (legacy) body else body["outcome"]!!.jsonObject
+                        val report = if (legacy) null else body["report"]!!.jsonObject
+                        secrets.forEach { secret ->
+                            assertFalse(text.contains(secret), "$kind legacy=$legacy $status leaked a credential in the HTTP response")
+                            assertFalse(outcome.toString().contains(secret), "Outcome leaked an echoed credential")
+                            assertFalse(report?.toString()?.contains(secret) == true, "Plugin report leaked an echoed credential")
+                        }
+                        assertEquals(JsonPrimitive(status.value), outcome["statusCode"])
+                        assertEquals(JsonPrimitive(status == HttpStatusCode.OK), outcome["success"])
+                        report?.let {
+                            assertEquals(outcome["success"], it["success"])
+                            val prefix = if (status == HttpStatusCode.OK) "OK echoed" else "upstream denied"
+                            assertTrue(it["text"]!!.jsonPrimitive.content.contains(prefix))
+                            val metrics = it["metrics"]!!.jsonArray.associate { metric ->
+                                metric.jsonObject["label"]!!.jsonPrimitive.content to metric.jsonObject["value"]!!.jsonPrimitive.content
+                            }
+                            assertEquals(status.value.toString(), metrics["HTTP 状态"])
+                            if (status == HttpStatusCode.OK) assertEquals(listOf("10", "2", "12"),
+                                listOf(metrics["输入 Token"], metrics["输出 Token"], metrics["总 Token"]))
+                        }
+                        if (status == HttpStatusCode.OK) {
+                            assertTrue(outcome["responseText"]!!.jsonPrimitive.content.contains("OK echoed"))
+                            assertTrue(outcome["upstreamReportedModel"]!!.jsonPrimitive.content.startsWith("reported-"))
+                            assertEquals(JsonPrimitive(10L), outcome["usage"]!!.jsonObject["inputTokens"])
+                            assertEquals(JsonPrimitive(2L), outcome["usage"]!!.jsonObject["outputTokens"])
+                            assertEquals(JsonPrimitive(12L), outcome["usage"]!!.jsonObject["totalTokens"])
+                        } else {
+                            assertTrue(outcome["errorMessage"]!!.jsonPrimitive.content.contains("upstream denied"))
+                        }
+                    }
+                }
+            }
+            val channel = directChannel("echo-channel", GatewayProtocol.CHAT_COMPLETIONS)
+            verifyTarget("channel", channel.id, MODEL, GatewayProtocol.CHAT_COMPLETIONS, channel.keys.single().id)
+            for (provider in OAuthProvider.entries) {
+                val model = if (provider == OAuthProvider.CHATGPT) "gpt-6-luna" else "gemini-plugin-native"
+                val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+                val account = oauthAccount("echo-${provider.value}", provider, listOf(model), listOf(channelId))
+                assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+                verifyTarget("oauth-account", account.id, model, ProviderEndpoints.of(provider).protocols.single())
+                assertEquals(4, echoedTokens.count { it == accessToken(provider) })
+            }
+            assertEquals(4, echoedTokens.count { it == STATIC_TOKEN })
+            assertEquals(12, probes.size, "Each generic/legacy success or 401 probe must be sent exactly once")
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `corrupted saved channel credential retains gateway 502 for generic and legacy probes without transport or settlement`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -491,6 +600,162 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `OAuth native preparation shares one budget across token and project while HTTP keeps its plan timeout`() = runBlocking {
+        assertEquals(20_000L, app.oauthDiagnosticPreparationTimeoutMs)
+        val prepareBudgetMs = 1_200L
+        val scheduledTimeouts = ConcurrentLinkedQueue<Long>()
+        val executor = object : ScheduledThreadPoolExecutor(2) {
+            override fun schedule(command: Runnable, delay: Long, unit: TimeUnit): ScheduledFuture<*> {
+                scheduledTimeouts.add(unit.toMillis(delay))
+                return super.schedule(command, delay, unit)
+            }
+        }
+        executor.asCoroutineDispatcher().use { prepareDispatcher ->
+            val tokenDelayMs = AtomicLong()
+            val projectDelayMs = AtomicLong()
+            val tokenRefreshes = AtomicInteger()
+            val cancelledRefreshes = AtomicInteger()
+            val base = app.config
+            app.close()
+            app = mockedApplication(base, projectDelayMs = projectDelayMs::get, beforeProbe = {
+                assertTrue(45_000L in scheduledTimeouts, "HTTP must receive the unmodified plan timeout")
+                delay(prepareBudgetMs + 100) // A timely preparation must not shorten the subsequent HTTP phase.
+            }, preparationTimeoutMs = prepareBudgetMs)
+            val provider = OAuthProvider.ANTIGRAVITY
+            val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
+            mockkObject(tokens)
+            try {
+                coEvery { tokens.refresh("refresh-${provider.value}", null) } coAnswers {
+                    tokenRefreshes.incrementAndGet()
+                    try {
+                        delay(tokenDelayMs.get())
+                        OAuthTokenResponse(accessToken(provider))
+                    } catch (cause: kotlinx.coroutines.CancellationException) {
+                        cancelledRefreshes.incrementAndGet()
+                        throw cause
+                    }
+                }
+                testApplication {
+                    engine { dispatcher = prepareDispatcher }
+                    application { app.install(this) }
+                    val session = client.adminSession()
+                    val model = "gemini-plugin-native"
+                    val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+                    suspend fun account(name: String): OAuthAccountRecord {
+                        val account = oauthAccount(name, provider, listOf(model), listOf(channelId), cached = false)
+                        assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id,
+                            listOf(OAuthAccountModelCatalogEntry(model, model))))
+                        return account
+                    }
+                    val fast = account("prepare-within-budget")
+                    val slowToken = account("prepare-slow-token")
+                    val cumulative = account("prepare-cumulative")
+
+                    val success = client.invokePlugin(session, "oauth-account", fast.id,
+                        values(model, GatewayProtocol.GEMINI, prompt = "independent HTTP budget")).decoded<PluginExecution>()
+                    assertTrue(success.outcome.success)
+                    assertEquals(45_000L, success.plan.timeoutMs)
+                    assertTrue(prepareBudgetMs in scheduledTimeouts, "Exercise the adapter's preparation deadline")
+                    assertEquals(1, probes.size)
+                    assertNativeRequest(probes.remove(), provider, model, "independent HTTP budget")
+                    preparations.clear()
+
+                    tokenDelayMs.set(prepareBudgetMs + 250)
+                    assertPreparationTimeout(
+                        client.invokePlugin(session, "oauth-account", slowToken.id, values(model, GatewayProtocol.GEMINI)), provider,
+                    )
+                    assertEquals(1, cancelledRefreshes.get(), "A slow token refresh must be cancelled")
+                    assertTrue(preparations.isEmpty(), "A timed-out token cannot proceed to project discovery")
+
+                    // Each phase would fit on its own, but the cumulative wait exceeds the preparation budget.
+                    tokenDelayMs.set(prepareBudgetMs * 2 / 3)
+                    projectDelayMs.set(prepareBudgetMs * 2 / 3)
+                    assertPreparationTimeout(
+                        client.invokePlugin(session, "oauth-account", cumulative.id, values(model, GatewayProtocol.GEMINI)), provider,
+                    )
+                    assertEquals(1, preparations.size, "The same deadline must also cover project discovery")
+                    assertEquals(3, tokenRefreshes.get())
+                }
+            } finally {
+                unmockkObject(tokens)
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `OAuth native preparation cancels a blocked token write before starting a model probe`() = runBlocking {
+        val base = app.config
+        app.close()
+        app = mockedApplication(base, preparationTimeoutMs = 1_500)
+        val provider = OAuthProvider.CHATGPT
+        val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
+        val refreshes = AtomicInteger()
+        mockkObject(tokens)
+        try {
+            coEvery { tokens.refresh("refresh-${provider.value}", null) } coAnswers {
+                refreshes.incrementAndGet()
+                OAuthTokenResponse(accessToken(provider))
+            }
+            testApplication {
+                application { app.install(this) }
+                val session = client.adminSession()
+                val model = "gpt-6-plugin-native"
+                val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+                val account = oauthAccount("prepare-blocked-token-write", provider, listOf(model), listOf(channelId), cached = false)
+                assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+                val input = values(model, GatewayProtocol.RESPONSES, prompt = "probe after lock release")
+
+                DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
+                    lock.autoCommit = false
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
+                        statement.setString(1, account.id)
+                        statement.executeQuery().use { assertTrue(it.next()) }
+                    }
+                    coroutineScope {
+                        val pending = async(Dispatchers.Default) { client.invokePlugin(session, "oauth-account", account.id, input) }
+                        val response = try {
+                            // The request must finish while the lock is still held. Always release the lock on a regression.
+                            withTimeoutOrNull(5_000) { pending.await() }
+                        } finally {
+                            lock.rollback()
+                        }
+                        assertPreparationTimeout(assertNotNull(response, "JDBC must stop waiting before the lock is released"), provider)
+                    }
+                }
+                assertEquals(1, refreshes.get(), "The lock must block saving a refreshed token, not the initial read")
+                assertFalse(assertNotNull(app.oauthAccountRepository.findDetailed(account.id)).hasAccessToken)
+
+                val success = client.invokePlugin(session, "oauth-account", account.id, input).decoded<PluginExecution>()
+                assertTrue(success.outcome.success, "A failed transaction must not affect the next probe")
+                assertEquals(2, refreshes.get())
+                assertNativeRequest(probes.single(), provider, model, "probe after lock release")
+            }
+        } finally {
+            unmockkObject(tokens)
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    private suspend fun assertPreparationTimeout(response: HttpResponse, provider: OAuthProvider) {
+        assertTrue(probes.isEmpty(), "Timed-out preparation must not enter model transport")
+        response.assertError(HttpStatusCode.GatewayTimeout, "oauth_preparation_timeout")
+        val text = response.bodyAsText()
+        val body = Json.parseToJsonElement(text).jsonObject
+        assertEquals(JsonPrimitive("upstream_error"), body["error"]!!.jsonObject["type"])
+        assertTrue(body["error"]!!.jsonObject["message"]!!.jsonPrimitive.content.contains("超时"))
+        assertFalse("outcome" in body, "Preparation timeout must remain an auditable gateway failure")
+        val audit = app.adminAuditRepository.list(20).single { it.requestId == response.headers["X-Request-Id"] }
+        assertEquals(504, audit.statusCode)
+        assertEquals("failure", audit.result)
+        assertEquals("oauth_preparation_timeout", audit.errorCode)
+        listOf(accessToken(provider), "refresh-${provider.value}", PROJECT).forEach { secret ->
+            assertFalse(text.contains(secret), "Preparation failure must sanitize credentials and project")
+            assertFalse(audit.toString().contains(secret), "Audit must not contain preparation secrets")
+        }
+    }
+
+    @Test
     fun `invalid inputs grants stale active version and oversized legacy prompt reject before transport or token preparation`() = runBlocking {
         testApplication {
             application { app.install(this) }
@@ -507,6 +772,10 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 client.invokePlugin(session, kind, id, if (kind == "channel") channelValues else accountValues,
                     actionId = "unknown-action").assertError(HttpStatusCode.BadRequest, "invalid_plugin_input")
                 val tooLong = "x".repeat(4_001)
+                client.invokePlugin(session, kind, id, if (kind == "channel") {
+                    values("gpt-6-luna", GatewayProtocol.RESPONSES, account.id, tooLong)
+                } else values("gpt-6-luna", GatewayProtocol.RESPONSES, prompt = tooLong))
+                    .assertError(HttpStatusCode.BadRequest, "PLUGIN_INVALID_INPUT")
                 client.legacyProbe(session, if (kind == "channel") "/channels/$id/model-test" else "/oauth-accounts/$id/model-test",
                     "gpt-6-luna", GatewayProtocol.RESPONSES, if (kind == "channel") account.id else null, "  $tooLong  ")
                     .assertError(HttpStatusCode.BadRequest, "invalid_model_test_prompt")
@@ -758,7 +1027,13 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
-    private fun mockedApplication(config: GatewayConfig): GatewayApplication {
+    private fun mockedApplication(
+        config: GatewayConfig,
+        projectDelayMs: () -> Long = { 0 },
+        beforeProbe: suspend () -> Unit = {},
+        probeResponse: ((HttpRequestData) -> Pair<HttpStatusCode, String>)? = null,
+        preparationTimeoutMs: Long? = null,
+    ): GatewayApplication {
         val mock = HttpClient(MockEngine) {
             engine {
                 reuseHandlers = true
@@ -769,6 +1044,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                             respond("{}", headers = JSON_HEADERS)
                         request.method == HttpMethod.Post && request.url.protocol.name == "https" && endpoint == LOAD_ENDPOINT -> {
                             preparations.add(observe(request))
+                            delay(projectDelayMs())
                             respond("""{"cloudaicompanionProject":"$PROJECT","currentTier":{"id":"standard-tier"},"paidTier":{"id":"standard-tier"}}""", headers = JSON_HEADERS)
                         }
                         isProbe(request) -> {
@@ -777,7 +1053,11 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                             maximumRunningProbes.updateAndGet { maxOf(it, active) }
                             try {
                                 probeHold.get()?.await()
-                                if (request.url.encodedPath.startsWith("/401/")) {
+                                beforeProbe()
+                                if (probeResponse != null) {
+                                    val (status, body) = probeResponse(request)
+                                    respond(body, status, JSON_HEADERS)
+                                } else if (request.url.encodedPath.startsWith("/401/")) {
                                     respond("""{"error":{"message":"upstream denied","code":"invalid_api_key"}}""", HttpStatusCode.Unauthorized, JSON_HEADERS)
                                 } else {
                                     val response = when {
@@ -802,7 +1082,12 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
         }
-        return GatewayApplication(config, httpClientOverride = mock)
+        return if (preparationTimeoutMs == null) {
+            GatewayApplication(config, httpClientOverride = mock)
+        } else {
+            GatewayApplication(config, notificationTransport = null, httpClientOverride = mock,
+                oauthDiagnosticPreparationTimeoutMs = preparationTimeoutMs)
+        }
     }
 
     private fun isProbe(request: HttpRequestData): Boolean {
