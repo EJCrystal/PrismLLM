@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { nextTick, onBeforeUnmount, onMounted, ref, useId } from 'vue'
 import { useTheme } from '../composables/useTheme'
 import { getPaletteDisplayName, type ThemePaletteId } from '../utils/theme'
 import Icon from './Icon.vue'
@@ -16,24 +16,134 @@ const {
   toggleTheme,
 } = useTheme()
 
+const menuId = useId()
 const open = ref(false)
+const activeIndex = ref(0)
 const rootRef = ref<HTMLElement | null>(null)
+const triggerRef = ref<HTMLButtonElement | null>(null)
+const menuRef = ref<HTMLElement | null>(null)
 
-function selectPalette(id: ThemePaletteId): void {
-  setPalette(id)
+function getMenuItems(): HTMLButtonElement[] {
+  return [...(menuRef.value?.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]') ?? [])]
+}
+
+function focusMenuItem(index: number): void {
+  const items = getMenuItems()
+  if (!items.length) return
+  const normalized = ((index % items.length) + items.length) % items.length
+  activeIndex.value = normalized
+  items[normalized]?.focus()
+}
+
+async function openMenu(preferLast = false): Promise<void> {
+  open.value = true
+  await nextTick()
+  const items = getMenuItems()
+  if (!items.length) return
+  const selectedIndex = palettes.findIndex((item) => item.id === palette.value)
+  const targetIndex = selectedIndex >= 0 ? selectedIndex : preferLast ? items.length - 1 : 0
+  activeIndex.value = targetIndex
+  items[targetIndex]?.focus()
+}
+
+async function closeMenu(restoreFocus = false): Promise<void> {
+  if (!open.value) return
   open.value = false
+  if (restoreFocus) {
+    await nextTick()
+    triggerRef.value?.focus()
+  }
+}
+
+function toggleMenu(): void {
+  if (open.value) {
+    void closeMenu(false)
+  } else {
+    void openMenu(false)
+  }
+}
+
+function selectPalette(id: ThemePaletteId, restoreFocus = false): void {
+  setPalette(id)
+  void closeMenu(restoreFocus)
+}
+
+function handleTriggerKeydown(event: KeyboardEvent): void {
+  if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault()
+    if (open.value && event.key !== 'ArrowDown') {
+      void closeMenu(true)
+    } else {
+      void openMenu(false)
+    }
+    return
+  }
+  if (event.key === 'ArrowUp') {
+    event.preventDefault()
+    void openMenu(true)
+    return
+  }
+  if (event.key === 'Escape' && open.value) {
+    event.preventDefault()
+    event.stopPropagation()
+    void closeMenu(true)
+  }
+}
+
+function handleMenuKeydown(event: KeyboardEvent): void {
+  const items = getMenuItems()
+  if (!items.length) return
+  const focusedIndex = items.findIndex((item) => item === document.activeElement)
+  const currentIndex = focusedIndex >= 0 ? focusedIndex : activeIndex.value
+
+  switch (event.key) {
+    case 'ArrowDown':
+      event.preventDefault()
+      focusMenuItem(currentIndex + 1)
+      break
+    case 'ArrowUp':
+      event.preventDefault()
+      focusMenuItem(currentIndex - 1)
+      break
+    case 'Home':
+      event.preventDefault()
+      focusMenuItem(0)
+      break
+    case 'End':
+      event.preventDefault()
+      focusMenuItem(items.length - 1)
+      break
+    case 'Enter':
+    case ' ': {
+      event.preventDefault()
+      const selected = palettes[currentIndex]
+      if (selected) {
+        selectPalette(selected.id, true)
+      }
+      break
+    }
+    case 'Escape':
+      event.preventDefault()
+      event.stopPropagation()
+      void closeMenu(true)
+      break
+    case 'Tab':
+      void closeMenu(false)
+      break
+  }
 }
 
 function handleDocumentPointerDown(event: PointerEvent): void {
   if (!open.value) return
   if (rootRef.value && event.target instanceof Node && !rootRef.value.contains(event.target)) {
-    open.value = false
+    void closeMenu(false)
   }
 }
 
 function handleKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && open.value) {
-    open.value = false
+    event.preventDefault()
+    void closeMenu(true)
   }
 }
 
@@ -52,33 +162,45 @@ onBeforeUnmount(() => {
   <div ref="rootRef" class="theme-controls">
     <div class="theme-capsule-wrap">
       <button
+        ref="triggerRef"
         type="button"
         class="theme-capsule-btn"
         :aria-expanded="open"
+        :aria-controls="open ? menuId : undefined"
         aria-haspopup="menu"
         :title="`切换配色主题（当前：${currentPaletteName}）`"
         :aria-label="`切换配色主题，当前 ${currentPaletteName}`"
-        @click="open = !open"
+        @click="toggleMenu"
+        @keydown="handleTriggerKeydown"
       >
         <ThemePaletteIcon :palette="palette" :size="15" />
         <span class="theme-capsule-label">{{ currentPaletteName }}</span>
         <Icon name="chevron" :size="12" class="theme-capsule-caret" />
       </button>
 
-      <div v-if="open" class="theme-menu" role="menu" aria-label="主题配色方案">
+      <div
+        v-if="open"
+        :id="menuId"
+        ref="menuRef"
+        class="theme-menu"
+        role="menu"
+        aria-label="主题配色方案"
+        @keydown="handleMenuKeydown"
+      >
         <div class="theme-menu-head">
           <span>主题配色</span>
           <small>{{ isDark ? '深色模式' : '浅色模式' }}</small>
         </div>
         <button
-          v-for="item in palettes"
+          v-for="(item, index) in palettes"
           :key="item.id"
           type="button"
           role="menuitemradio"
           class="theme-menu-item"
           :class="{ 'is-active': palette === item.id }"
           :aria-checked="palette === item.id"
-          @click="selectPalette(item.id)"
+          :tabindex="activeIndex === index ? 0 : -1"
+          @click="selectPalette(item.id, $event.detail === 0)"
         >
           <ThemePaletteIcon :palette="item.id" :size="16" />
           <span class="theme-menu-copy">

@@ -137,5 +137,31 @@ describe('PrismLLM 主题系统（Antigravity 六配色 × 浅深双模式）', 
       assert.equal(refreshedDoc.getAttribute('data-theme'), 'dark')
       assert.equal(refreshedDoc.getAttribute('data-palette'), 'purple')
     })
+
+    it('当全局 localStorage 访问本身抛出异常时，读取与应用均安全回退而不中断', (t) => {
+      const originalDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'localStorage')
+      Object.defineProperty(globalThis, 'localStorage', {
+        configurable: true,
+        get() {
+          throw new Error('SecurityError: storage blocked')
+        },
+      })
+      t.after(() => {
+        if (originalDescriptor) {
+          Object.defineProperty(globalThis, 'localStorage', originalDescriptor)
+        } else {
+          delete globalThis.localStorage
+        }
+      })
+
+      assert.equal(getSavedTheme(), DEFAULT_THEME)
+      assert.equal(getSavedPalette(), DEFAULT_PALETTE)
+
+      const docEl = createMockDocElement()
+      assert.equal(applyTheme('dark', docEl), 'dark')
+      assert.equal(applyPalette('sky', docEl), 'sky')
+      assert.equal(docEl.getAttribute('data-theme'), 'dark')
+      assert.equal(docEl.getAttribute('data-palette'), 'sky')
+    })
   })
 })

@@ -76,23 +76,32 @@ export function getPaletteDisplayName(paletteId: string | null | undefined, mode
   return mode === THEMES.DARK ? palette.nameDark : palette.name
 }
 
-export function getSavedTheme(storage: Pick<Storage, 'getItem'> | undefined = typeof localStorage !== 'undefined' ? localStorage : undefined): ThemeMode {
+function resolveStorage<T>(storage?: T): T | Storage | undefined {
+  if (storage !== undefined) {
+    return storage
+  }
+  return typeof localStorage !== 'undefined' ? localStorage : undefined
+}
+
+export function getSavedTheme(storage?: Pick<Storage, 'getItem'>): ThemeMode {
   try {
-    const saved = storage?.getItem(THEME_STORAGE_KEY) || storage?.getItem(LEGACY_THEME_STORAGE_KEY)
+    const targetStorage = resolveStorage(storage)
+    const saved = targetStorage?.getItem(THEME_STORAGE_KEY) || targetStorage?.getItem(LEGACY_THEME_STORAGE_KEY)
     return normalizeTheme(saved)
   } catch {
     return DEFAULT_THEME
   }
 }
 
-export function getSavedPalette(storage: Pick<Storage, 'getItem'> | undefined = typeof localStorage !== 'undefined' ? localStorage : undefined): ThemePaletteId {
+export function getSavedPalette(storage?: Pick<Storage, 'getItem'>): ThemePaletteId {
   try {
-    const savedPalette = storage?.getItem(PALETTE_STORAGE_KEY)
+    const targetStorage = resolveStorage(storage)
+    const savedPalette = targetStorage?.getItem(PALETTE_STORAGE_KEY)
     if (savedPalette && THEME_PALETTES.some((item) => item.id === savedPalette)) {
       return savedPalette as ThemePaletteId
     }
     // Migrate legacy sepia preference to the warm Sunset Orange palette.
-    const savedTheme = storage?.getItem(THEME_STORAGE_KEY) || storage?.getItem(LEGACY_THEME_STORAGE_KEY)
+    const savedTheme = targetStorage?.getItem(THEME_STORAGE_KEY) || targetStorage?.getItem(LEGACY_THEME_STORAGE_KEY)
     if (savedTheme === 'sepia') {
       return PALETTES.ORANGE
     }
@@ -109,14 +118,14 @@ export function nextTheme(current: string): ThemeMode {
 export function applyTheme(
   targetTheme: string | null | undefined,
   docEl: Pick<HTMLElement, 'setAttribute'> | undefined = typeof document !== 'undefined' ? document.documentElement : undefined,
-  storage: Pick<Storage, 'setItem'> | undefined = typeof localStorage !== 'undefined' ? localStorage : undefined,
+  storage?: Pick<Storage, 'setItem'>,
 ): ThemeMode {
   const target = normalizeTheme(targetTheme)
   if (docEl) {
     docEl.setAttribute('data-theme', target)
   }
   try {
-    storage?.setItem(THEME_STORAGE_KEY, target)
+    resolveStorage(storage)?.setItem(THEME_STORAGE_KEY, target)
   } catch {
     // 忽略无痕/禁用存储异常
   }
@@ -126,14 +135,14 @@ export function applyTheme(
 export function applyPalette(
   targetPalette: string | null | undefined,
   docEl: Pick<HTMLElement, 'setAttribute'> | undefined = typeof document !== 'undefined' ? document.documentElement : undefined,
-  storage: Pick<Storage, 'setItem'> | undefined = typeof localStorage !== 'undefined' ? localStorage : undefined,
+  storage?: Pick<Storage, 'setItem'>,
 ): ThemePaletteId {
   const target = normalizePalette(targetPalette)
   if (docEl) {
     docEl.setAttribute('data-palette', target)
   }
   try {
-    storage?.setItem(PALETTE_STORAGE_KEY, target)
+    resolveStorage(storage)?.setItem(PALETTE_STORAGE_KEY, target)
   } catch {
     // 忽略无痕/禁用存储异常
   }

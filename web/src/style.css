@@ -658,6 +658,11 @@
   background: color-mix(in srgb, var(--brand) 9%, transparent);
 }
 
+.theme-menu-item:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: -2px;
+}
+
 .theme-menu-item.is-active {
   background: color-mix(in srgb, var(--brand) 12%, var(--glass-field));
   border-color: color-mix(in srgb, var(--brand) 32%, var(--glass-line));
