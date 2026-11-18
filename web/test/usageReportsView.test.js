@@ -135,8 +135,13 @@ describe('usage reports layout and contracts', () => {
     ]
     const split = await render(splitData, state => { state.chartIndex.value = 0 })
     assert.equal(split.querySelectorAll('.usage-chart-line.rate').length, 2)
-    assert.equal(split.querySelectorAll('.usage-chart-point.rate:not(.is-ring)').length, 2)
-    assert.ok(split.querySelector('.usage-chart-point.rate.is-ring'))
+    assert.equal(split.querySelectorAll('.usage-chart-markers .usage-chart-point.rate:not(.is-ring)').length, 2)
+    assert.ok(split.querySelector('.usage-chart-markers .usage-chart-point.rate.is-ring'))
+    assert.equal(split.querySelectorAll('.usage-chart circle').length, 0)
+    const axisSpans = [...split.querySelectorAll('.usage-chart-axis > span')]
+    assert.equal(axisSpans[0].classList.contains('is-first'), true)
+    assert.equal(axisSpans[1].style.left, '50%')
+    assert.equal(axisSpans[2].classList.contains('is-last'), true)
   })
 
   it('scales small error rates and fees to their actual range', async () => {

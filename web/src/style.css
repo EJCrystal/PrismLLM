@@ -7626,6 +7626,7 @@ textarea:disabled {
   stroke: var(--glass-line);
   stroke-width: 1;
   stroke-dasharray: 3 5;
+  vector-effect: non-scaling-stroke;
 }
 
 .usage-chart-area {
@@ -7635,9 +7636,10 @@ textarea:disabled {
 .usage-chart-line {
   fill: none;
   stroke: var(--brand);
-  stroke-width: 2.2;
+  stroke-width: 2;
   stroke-linecap: round;
   stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
 }
 
 .usage-chart-line.secondary {
@@ -7669,22 +7671,26 @@ textarea:disabled {
 }
 
 .usage-chart-axis {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 4px;
-  margin-top: 5px;
+  position: relative;
+  height: 16px;
+  margin-top: 6px;
   color: var(--muted);
   font-size: 10px;
 }
 
 .usage-chart-axis span {
-  flex: 1 1 0;
-  min-width: 0;
-  overflow: hidden;
-  text-align: center;
-  text-overflow: ellipsis;
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
   white-space: nowrap;
+}
+
+.usage-chart-axis span.is-first {
+  transform: translateX(0);
+}
+
+.usage-chart-axis span.is-last {
+  transform: translateX(-100%);
 }
 
 .usage-chart-axis .is-hidden {
@@ -8039,18 +8045,21 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart-readout b { margin-left: 5px; font-variant-numeric: tabular-nums; }
 .usage-chart-with-axis { position: relative; padding-left: 48px; }
 .usage-chart-with-axis.has-right-axis { padding-right: 44px; }
+.usage-chart-canvas { position: relative; width: 100%; }
+.usage-chart-markers { position: absolute; inset: 0; pointer-events: none; }
 .usage-chart-y-axis { position: absolute; inset: 0 auto 0 0; width: 42px; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 .usage-chart-y-axis.is-right { inset: 0 0 0 auto; width: 38px; }
 .usage-chart-y-axis > span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
 .usage-chart-y-axis.is-right > span { right: auto; left: 0; }
 .usage-chart { touch-action: pan-y; cursor: crosshair; border-radius: 4px; outline: none; }
-.usage-chart-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; }
-.usage-chart-point { fill: var(--brand); stroke: var(--panel); stroke-width: 2; }
-.usage-chart-point.secondary { fill: var(--warning-fill); }
-.usage-chart-point.tertiary { fill: var(--success-fill); }
-.usage-chart-point.quaternary { fill: var(--reasoning); }
-.usage-chart-point.rate { fill: var(--danger); }
-.usage-chart-point.rate.is-ring { fill: none; stroke: var(--danger); stroke-width: 2; }
+.usage-chart-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
+.usage-chart-point { position: absolute; width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--panel); background: var(--brand); box-sizing: border-box; transform: translate(-50%, -50%); }
+.usage-chart-point.is-isolated { width: 6px; height: 6px; border-width: 1.5px; }
+.usage-chart-point.secondary { background: var(--warning-fill); }
+.usage-chart-point.tertiary { background: var(--success-fill); }
+.usage-chart-point.quaternary { background: var(--reasoning); }
+.usage-chart-point.rate { background: var(--danger); }
+.usage-chart-point.rate.is-ring { width: 12px; height: 12px; border: 2px solid var(--danger); background: transparent; }
 .usage-chart-axis { margin-left: 48px; }
 .usage-chart-with-axis.has-right-axis + .usage-chart-axis { margin-right: 44px; }
 
@@ -8098,8 +8107,10 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
   .usage-chart-y-axis.is-right { width: 34px; }
   .usage-chart-readout { min-height: 64px; gap: 4px 12px; }
   .usage-chart-readout > strong { width: 100%; }
-  .usage-chart-axis { display: flex; margin-left: 42px; }
+  .usage-chart-axis { display: flex; justify-content: space-between; height: auto; margin-left: 42px; }
   .usage-chart-with-axis.has-right-axis + .usage-chart-axis { margin-right: 38px; }
+  .usage-chart-axis span { position: static; transform: none; }
+  .usage-chart-axis span.is-first, .usage-chart-axis span.is-last { transform: none; }
   .usage-chart-axis span:not(:first-child):not(:last-child) { display: none; }
   .usage-chart-axis span:first-child { text-align: left; }
   .usage-chart-axis span:last-child { text-align: right; }

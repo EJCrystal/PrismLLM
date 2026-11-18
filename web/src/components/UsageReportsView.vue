@@ -181,6 +181,17 @@ const chartErrorRatePoint = computed(() => {
   if (rate == null) return null
   return usageChartPoint(chartIndex.value!, trendRows.value.length, rate, errorRateScale.value.max)
 })
+function pointStyle(x: number, y: number): Record<string, string> {
+  return { left: `${(x / 640) * 100}%`, top: `${(y / 150) * 100}%` }
+}
+function isolatedPointStyle(points: string): Record<string, string> {
+  const [x, y] = points.split(',').map(Number)
+  return pointStyle(x || 0, y || 0)
+}
+function axisTickStyle(index: number): Record<string, string> {
+  const { x } = usageChartPoint(index, trendRows.value.length, 0, 1)
+  return { left: `${(x / 640) * 100}%` }
+}
 const chartSeriesPoints = computed(() => {
   const row = chartRow.value
   if (!row) return []
@@ -599,17 +610,24 @@ onMounted(() => {
           <div class="usage-chart-with-axis" :class="{ 'has-right-axis': trendMetric === 'requests' }">
           <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
           <div v-if="trendMetric === 'requests'" class="usage-chart-y-axis is-right" aria-hidden="true"><span v-for="tick in errorRateScale.ticks" :key="'rate-' + tick" :style="{ top: `${(142 - tick / errorRateScale.max * 134) / 150 * 100}%` }">{{ tick }}%</span></div>
-          <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次与百分比'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
-            <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
-            <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
-            <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
-            <template v-for="series in trendSeriesPoints" :key="series.id"><template v-for="(points, index) in series.segments" :key="index"><polyline :points="points" :class="['usage-chart-line', series.className]" /><circle v-if="!points.includes(' ')" :cx="points.split(',')[0]" :cy="points.split(',')[1]" r="3" :class="['usage-chart-point', series.className]" /></template></template>
-            <template v-for="(points, index) in errorRateSegments" :key="'rate-' + index"><polyline :points="points" class="usage-chart-line rate" /><circle v-if="!points.includes(' ')" :cx="points.split(',')[0]" :cy="points.split(',')[1]" r="3" class="usage-chart-point rate" /></template>
-            <template v-if="chartSeriesPoints.length"><line :x1="chartSeriesPoints[0].x" :x2="chartSeriesPoints[0].x" y1="8" y2="142" class="usage-chart-crosshair" /><circle v-for="point in chartSeriesPoints" :key="point.id" :cx="point.x" :cy="point.y" :r="point.className ? 3.5 : 4" :class="['usage-chart-point', point.className]" /><circle v-if="chartErrorRatePoint" :cx="chartErrorRatePoint.x" :cy="chartErrorRatePoint.y" r="5.5" class="usage-chart-point rate is-ring" /></template>
-          </svg>
+          <div class="usage-chart-canvas">
+            <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次与百分比'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
+              <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
+              <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
+              <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
+              <template v-for="series in trendSeriesPoints" :key="series.id"><polyline v-for="(points, index) in series.segments" :key="index" :points="points" :class="['usage-chart-line', series.className]" /></template>
+              <polyline v-for="(points, index) in errorRateSegments" :key="'rate-' + index" :points="points" class="usage-chart-line rate" />
+              <line v-if="chartSeriesPoints.length" :x1="chartSeriesPoints[0].x" :x2="chartSeriesPoints[0].x" y1="8" y2="142" class="usage-chart-crosshair" />
+            </svg>
+            <div class="usage-chart-markers" aria-hidden="true">
+              <template v-for="series in trendSeriesPoints" :key="'m-' + series.id"><template v-for="(points, index) in series.segments" :key="index"><span v-if="!points.includes(' ')" :class="['usage-chart-point', 'is-isolated', series.className]" :style="isolatedPointStyle(points)"></span></template></template>
+              <template v-for="(points, index) in errorRateSegments" :key="'mr-' + index"><span v-if="!points.includes(' ')" class="usage-chart-point is-isolated rate" :style="isolatedPointStyle(points)"></span></template>
+              <template v-if="chartSeriesPoints.length"><span v-for="point in chartSeriesPoints" :key="point.id" :class="['usage-chart-point', point.className]" :style="pointStyle(point.x, point.y)"></span><span v-if="chartErrorRatePoint" class="usage-chart-point rate is-ring" :style="pointStyle(chartErrorRatePoint.x, chartErrorRatePoint.y)"></span></template>
+            </div>
+          </div>
           </div>
           <div class="usage-chart-axis">
-            <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': trendRows.length > 12 && index % Math.ceil(trendRows.length / 8) !== 0 }">{{ formatBucket(row.bucketStart) }}</span>
+            <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': trendRows.length > 12 && index % Math.ceil(trendRows.length / 8) !== 0, 'is-first': index === 0 && trendRows.length > 1, 'is-last': index === trendRows.length - 1 && trendRows.length > 1 }" :style="axisTickStyle(index)">{{ formatBucket(row.bucketStart) }}</span>
           </div>
           <div class="usage-chart-legend">
             <span v-for="series in trendSeriesPoints" :key="series.id"><i :class="['dot', series.className]"></i>{{ series.label }} 最高 {{ formatTrendValue(series.max) }}</span>
