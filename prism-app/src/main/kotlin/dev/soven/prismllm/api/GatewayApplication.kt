@@ -288,6 +288,7 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
 class GatewayApplication(
     val config: GatewayConfig,
     notificationTransport: NotificationTransport? = null,
+    httpClientOverride: HttpClient? = null,
 ) : AutoCloseable {
     init {
         // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
@@ -436,7 +437,7 @@ class GatewayApplication(
     private val logRetentionMutex = Mutex()
     private val keyAutoRecoveryJob = AtomicReference<Job?>(null)
 
-    val httpClient = HttpClient(Java) {
+    val httpClient = httpClientOverride ?: HttpClient(Java) {
         install(HttpTimeout) {
             connectTimeoutMillis = config.connectTimeoutMs
             requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS

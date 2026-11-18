@@ -247,7 +247,6 @@ class CodeAssistProjectResolver(
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
             header(HttpHeaders.UserAgent, userAgent())
-            header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)
             setBody(body)
         }

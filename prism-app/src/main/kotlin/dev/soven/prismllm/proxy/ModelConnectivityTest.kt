@@ -167,6 +167,7 @@ private suspend fun runModelConnectivityTest(
             val requestBody = if (isolatedIqRequest) isolateIqRequestBody(original, overridden, protocol) else overridden
             val limited = limitModelTestTokens(requestBody, protocol, maxOutputTokens)
             val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                // 连通性探测只验证信封可达，不参与真实对话的档位/编号；labels/sessionId 用默认派生值。
                 CodeAssistEnvelope.wrap(CodeAssistCloak.apply(limited), model, project).toString()
             } else {
                 limited.toString()

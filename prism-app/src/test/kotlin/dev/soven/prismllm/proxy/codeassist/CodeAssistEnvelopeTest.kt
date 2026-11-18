@@ -3,6 +3,7 @@ package dev.soven.prismllm.proxy.codeassist
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Tag
@@ -29,10 +30,99 @@ class CodeAssistEnvelopeTest {
         assertEquals("project-1", wrapped["project"]!!.jsonPrimitive.content)
         assertEquals("antigravity", wrapped["userAgent"]!!.jsonPrimitive.content)
         assertEquals("agent", wrapped["requestType"]!!.jsonPrimitive.content)
+        assertTrue(
+            wrapped["requestId"]!!.jsonPrimitive.content.matches(
+                Regex("""agent/[0-9a-f-]{36}/\d+/[0-9a-f-]{36}/1"""),
+            ),
+        )
         val request = wrapped["request"]!!.jsonObject
         assertFalse("model" in request)
         // 同一会话的每一轮都是同一个 sessionId，客户端传来的正文不参与派生。
         assertEquals(CodeAssistEnvelope.sessionId(scope), request["sessionId"]!!.jsonPrimitive.content)
+        val labels = request["labels"]!!.jsonObject
+        assertEquals(labels["cascade_id"], labels["root_cascade_id"])
+        assertEquals("0", labels["last_step_index"]!!.jsonPrimitive.content)
+        assertEquals(
+            labels["trajectory_id"]!!.jsonPrimitive.content + "-0",
+            labels["request_id"]!!.jsonPrimitive.content,
+        )
+        assertEquals("false", labels["used_claude"]!!.jsonPrimitive.content)
+        assertEquals("false", labels["used_non_gemini_model"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun generationDefaultsFollowSelectedEffort() {
+        val low = CodeAssistEnvelope.wrap(
+            body(), "gemini-3.5-flash-lite", "project-1", "scope",
+            effort = "low", maxOutputTokens = 65535,
+        )
+        val lowConfig = low["request"]!!.jsonObject["generationConfig"]!!.jsonObject
+        assertEquals(65535, lowConfig["maxOutputTokens"]!!.jsonPrimitive.int)
+        assertEquals("LOW", lowConfig["thinkingConfig"]!!.jsonObject["thinkingLevel"]!!.jsonPrimitive.content)
+        assertEquals(true, lowConfig["thinkingConfig"]!!.jsonObject["includeThoughts"]!!.jsonPrimitive.content.toBoolean())
+
+        val high = CodeAssistEnvelope.wrap(
+            body(), "gemini-4-hydrogen-tiered-high", "project-1", "scope",
+            effort = "high", maxOutputTokens = 262144,
+        )
+        val highConfig = high["request"]!!.jsonObject["generationConfig"]!!.jsonObject
+        assertEquals(262144, highConfig["maxOutputTokens"]!!.jsonPrimitive.int)
+        assertEquals("HIGH", highConfig["thinkingConfig"]!!.jsonObject["thinkingLevel"]!!.jsonPrimitive.content)
+
+        val xhigh = CodeAssistEnvelope.wrap(
+            body(), "gemini-4-hydrogen-tiered-xhigh", "project-1", "scope",
+            effort = "xhigh", maxOutputTokens = 262144,
+        )
+        val xhighConfig = xhigh["request"]!!.jsonObject["generationConfig"]!!.jsonObject
+        assertEquals(100, xhighConfig["thinkingConfig"]!!.jsonObject["thinkingLevel"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun requestIdUsesProvidedClock() {
+        val wrapped = CodeAssistEnvelope.wrap(
+            body(), "gemini-3-pro", "project-1", "scope", now = { 1_700_000_000_000 },
+        )
+        assertTrue(
+            wrapped["requestId"]!!.jsonPrimitive.content.matches(
+                Regex("""agent/[0-9a-f-]{36}/1700000000000/[0-9a-f-]{36}/1"""),
+            ),
+        )
+    }
+
+    @Test
+    fun thinkingBudgetIsNotOverriddenByThinkingLevel() {
+        val input = json.parseToJsonElement(
+            """{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"thinkingConfig":{"thinkingBudget":1024,"includeThoughts":true}}}""",
+        ).jsonObject
+        val wrapped = CodeAssistEnvelope.wrap(input, "gemini-4-hydrogen-tiered-high", "project-1", "scope", effort = "high")
+        val thinking = wrapped["request"]!!.jsonObject["generationConfig"]!!.jsonObject["thinkingConfig"]!!.jsonObject
+        assertEquals(1024, thinking["thinkingBudget"]!!.jsonPrimitive.int)
+        assertFalse("thinkingLevel" in thinking)
+    }
+
+    @Test
+    fun unknownEffortDoesNotForceALevel() {
+        val wrapped = CodeAssistEnvelope.wrap(body(), "gemini-3-pro", "project-1", "scope")
+        val thinking = wrapped["request"]!!.jsonObject["generationConfig"]!!.jsonObject["thinkingConfig"]!!.jsonObject
+        assertFalse("thinkingLevel" in thinking)
+    }
+
+    @Test
+    fun systemInstructionGetsUserRole() {
+        val input = json.parseToJsonElement(
+            """{"systemInstruction":{"parts":[{"text":"system"}]},"contents":[{"role":"user","parts":[{"text":"hi"}]}]}""",
+        ).jsonObject
+        val wrapped = CodeAssistEnvelope.wrap(input, "gemini-3-pro", "project-1", "scope")
+        val system = wrapped["request"]!!.jsonObject["systemInstruction"]!!.jsonObject
+        assertEquals("user", system["role"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun claudeModelIsMarkedInLabels() {
+        val wrapped = CodeAssistEnvelope.wrap(body(), "claude-opus-5-5-high", "project-1", "scope", effort = "high")
+        val labels = wrapped["request"]!!.jsonObject["labels"]!!.jsonObject
+        assertEquals("true", labels["used_claude"]!!.jsonPrimitive.content)
+        assertEquals("true", labels["used_non_gemini_model"]!!.jsonPrimitive.content)
     }
 
     @Test

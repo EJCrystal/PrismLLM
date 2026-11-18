@@ -1,5 +1,6 @@
 package dev.soven.prismllm.proxy
 
+import dev.soven.prismllm.proxy.codeassist.antigravityUserAgent
 import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -34,6 +35,16 @@ class UpstreamHeaderCatalogServiceTest {
         assertFailsWith<IllegalStateException> { parseAntigravityVersion("files: []") }
         assertFailsWith<IllegalStateException> { parseAntigravityVersion("version: not a version") }
         assertFailsWith<IllegalStateException> { parseAntigravityVersion("  version: 2.30.0") }
+    }
+
+    @Test
+    fun `antigravity user agent uses the captured build template`() {
+        val expected = "antigravity/hub/2.32.1 (aidev_client; os_type=linux; arch=amd64; cl=1021296516)"
+        assertEquals(expected, antigravityUserAgent("2.32.1"))
+        assertEquals(
+            expected,
+            UpstreamHeaderProfiles.defaults.first { it.id == "antigravity" }.headers["User-Agent"],
+        )
     }
 
     @Test

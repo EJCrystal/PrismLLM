@@ -31,10 +31,12 @@ fun HttpRequestBuilder.applyUpstreamAuthentication(
 /**
  * Code Assist 请求的客户端身份。请求头目录按协议给 Gemini 选的通用 UA 不是
  * Antigravity 的，直接追加会拼成两个 UA；这里替换成全局目录里的 Antigravity 版本。
+ *
+ * Antigravity 的 CCPA 数据面请求只带 User-Agent，不发送 X-Goog-Api-Client，
+ * 因此这里顺手把它从目录 profile 里移除。
  */
 fun HttpRequestBuilder.applyCodeAssistIdentity(userAgent: String) {
     headers.remove(HttpHeaders.UserAgent)
     headers.remove("X-Goog-Api-Client")
     header(HttpHeaders.UserAgent, userAgent)
-    header("X-Goog-Api-Client", "gl-node/22.21.1")
 }

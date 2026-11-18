@@ -124,6 +124,15 @@ class CodeAssistModelCatalog(
         fun sentId(model: String, effort: String?): String =
             if (raw.isEmpty()) model else AntigravityModels.sentId(model, effort, raw)
 
+        /** 可调用变体的输出上限；精确条目缺失时回退到家族条目/默认变体。 */
+        fun outputLimit(model: String): Long? {
+            raw.firstOrNull { it.id == model }?.output?.let { return it }
+            val familyId = AntigravityModels.splitId(model).first
+            raw.firstOrNull { it.id == familyId }?.output?.let { return it }
+            val fallback = AntigravityModels.defaultVariant(model, raw)
+            return raw.firstOrNull { it.id == fallback }?.output
+        }
+
         /**
          * 对外发布模型对应的可调用 id：家族的对外 id 不一定是真实变体，
          * 登记渠道时要用默认变体，目录缺失时请求也不会发出不存在的 id。
@@ -189,7 +198,6 @@ class CodeAssistModelCatalog(
         val response = clients.client(proxy).post(baseUrl + "/v1internal:fetchAvailableModels") {
             header(HttpHeaders.Authorization, "Bearer " + accessToken)
             header(HttpHeaders.UserAgent, userAgent())
-            header("X-Goog-Api-Client", "gl-node/22.21.1")
             contentType(ContentType.Application.Json)
             setBody(body.toString())
         }

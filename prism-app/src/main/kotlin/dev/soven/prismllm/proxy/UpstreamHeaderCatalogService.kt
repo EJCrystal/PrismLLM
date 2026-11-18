@@ -4,6 +4,7 @@ import dev.soven.prismllm.channel.domain.UpstreamHeaderCatalogSnapshot
 import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.channel.persistence.UpstreamHeaderCatalogRecord
 import dev.soven.prismllm.channel.persistence.UpstreamHeaderCatalogRepository
+import dev.soven.prismllm.proxy.codeassist.antigravityUserAgent
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.timeout
 import io.ktor.client.request.header
@@ -264,7 +265,7 @@ class UpstreamHeaderCatalogService(
                 headers["User-Agent"] = "google-genai-sdk/" + version
                 headers["x-goog-api-client"] = "google-genai-sdk/" + version
             }
-            "antigravity" -> headers["User-Agent"] = "antigravity/hub/" + version + " windows/amd64"
+            "antigravity" -> headers["User-Agent"] = antigravityUserAgent(version)
             else -> return base
         }
         return base.copy(
