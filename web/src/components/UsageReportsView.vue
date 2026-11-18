@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api } from '../api'
 import type { Channel, ClientKey, UsageGroup, UsageReport, UsageTotal, UsageTrend } from '../types/api'
 import Icon from './Icon.vue'
@@ -188,18 +188,39 @@ function isolatedPointStyle(points: string): Record<string, string> {
   const [x, y] = points.split(',').map(Number)
   return pointStyle(x || 0, y || 0)
 }
+const axisRef = ref<HTMLElement | null>(null)
+const chartAxisWidth = ref(0)
+let axisObserver: ResizeObserver | null = null
+const maxAxisLabels = computed(() => (chartAxisWidth.value > 0 ? Math.max(2, Math.floor(chartAxisWidth.value / 84)) : 8))
 function axisTickStyle(index: number): Record<string, string> {
   const { x } = usageChartPoint(index, trendRows.value.length, 0, 1)
   return { left: `${(x / 640) * 100}%` }
 }
 function isAxisTickHidden(index: number): boolean {
   const count = trendRows.value.length
-  if (count <= 12) return false
+  const maxLabels = maxAxisLabels.value
+  if (count <= maxLabels) return false
   const last = count - 1
   if (index === 0 || index === last) return false
-  const step = Math.ceil(count / 8)
+  const step = Math.ceil(count / maxLabels)
   return index % step !== 0 || last - index < step
 }
+watch(axisRef, (element) => {
+  axisObserver?.disconnect()
+  axisObserver = null
+  if (!element) {
+    chartAxisWidth.value = 0
+    return
+  }
+  chartAxisWidth.value = element.clientWidth || 0
+  if (typeof ResizeObserver === 'function') {
+    axisObserver = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect?.width ?? element.clientWidth
+      if (Number.isFinite(width) && width > 0) chartAxisWidth.value = width
+    })
+    axisObserver.observe(element)
+  }
+})
 const chartSeriesPoints = computed(() => {
   const row = chartRow.value
   if (!row) return []
@@ -515,6 +536,10 @@ onMounted(() => {
   loadFilters()
   load()
 })
+onBeforeUnmount(() => {
+  axisObserver?.disconnect()
+  axisObserver = null
+})
 </script>
 
 <template>
@@ -656,7 +681,7 @@ onMounted(() => {
             </div>
           </div>
           </div>
-          <div class="usage-chart-axis">
+          <div ref="axisRef" class="usage-chart-axis">
             <span v-for="(row, index) in trendRows" :key="row.bucketStart" :class="{ 'is-hidden': isAxisTickHidden(index), 'is-first': index === 0 && trendRows.length > 1, 'is-last': index === trendRows.length - 1 && trendRows.length > 1 }" :style="axisTickStyle(index)">{{ formatBucket(row.bucketStart) }}</span>
           </div>
           <div class="usage-chart-legend">

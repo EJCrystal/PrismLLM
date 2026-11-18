@@ -155,6 +155,18 @@ describe('usage reports layout and contracts', () => {
     assert.equal(ticks14[0].classList.contains('is-hidden'), false)
     assert.equal(ticks14[13].classList.contains('is-hidden'), false)
     assert.equal(ticks14[12].classList.contains('is-hidden'), true)
+
+    const narrowData = {
+      ...report(),
+      from: firstBucket,
+      to: firstBucket + 8 * 86_400_000 - 1,
+      trend: Array.from({ length: 8 }, (_, index) => ({ ...baseTotal, bucketStart: firstBucket + index * 86_400_000 })),
+    }
+    const narrow = await render(narrowData, state => { state.chartAxisWidth.value = 320 })
+    const narrowVisible = [...narrow.querySelectorAll('.usage-chart-axis > span')].filter(node => !node.classList.contains('is-hidden'))
+    assert.ok(narrowVisible.length <= 4)
+    assert.equal(narrow.querySelectorAll('.usage-chart-axis > span')[0].classList.contains('is-hidden'), false)
+    assert.equal(narrow.querySelectorAll('.usage-chart-axis > span')[7].classList.contains('is-hidden'), false)
   })
 
   it('scales small error rates and fees to their actual range', async () => {

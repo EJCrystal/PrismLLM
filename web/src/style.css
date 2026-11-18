@@ -7681,6 +7681,9 @@ textarea:disabled {
 .usage-chart-axis span {
   position: absolute;
   top: 0;
+  max-width: 84px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transform: translateX(-50%);
   white-space: nowrap;
 }
