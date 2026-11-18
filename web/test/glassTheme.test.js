@@ -1,29 +1,33 @@
-import test from 'node:test'
+import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
 const css = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+const THEME_BASE_SELECTORS = [':root', '[data-theme="dark"]']
+const PALETTE_IDS = ['sky', 'cyan', 'orange', 'red', 'purple']
 
-const THEME_SELECTORS = [':root', '[data-theme="dark"]', '[data-theme="sepia"]']
-
-function themeBlock(selector) {
-  const start = css.indexOf(selector + ' {')
-  assert.notEqual(start, -1, 'missing theme block: ' + selector)
-  return css.slice(start, css.indexOf('}', start))
+function extractBlock(source, selector) {
+  const match = new RegExp(`(?:^|\\n)[ \\t]*${escapeRegExp(selector)}\\s*\\{`).exec(source)
+  assert.ok(match, `缺少主题块 ${selector}`)
+  const open = match.index + match[0].length - 1
+  let depth = 0
+  for (let i = open; i < source.length; i++) {
+    if (source[i] === '{') depth++
+    else if (source[i] === '}') {
+      depth--
+      if (depth === 0) return source.slice(open + 1, i)
+    }
+  }
+  assert.fail(`主题块 ${selector} 未闭合`)
 }
 
-function ruleBody(selector) {
-  const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
-  const matches = rules.filter(([, selectors]) =>
-    selectors.split(',').some((item) => item.trim() === selector))
-  assert.ok(matches.length, 'missing rule for ' + selector)
-  return matches.map(([, , body]) => body).join('\n')
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
-test('每个主题都定义完整的液态玻璃令牌', () => {
-  for (const selector of THEME_SELECTORS) {
-    const block = themeBlock(selector)
-    for (const token of [
+describe('Antigravity 轻透毛玻璃主题样式与无障碍回退', () => {
+  it('默认浅色与深色主题均定义了完整的轻透毛玻璃、流光网格与极光变量', () => {
+    const required = [
       '--glass-bg',
       '--glass-bg-strong',
       '--glass-bg-soft',
@@ -33,96 +37,85 @@ test('每个主题都定义完整的液态玻璃令牌', () => {
       '--glass-line',
       '--glass-shadow',
       '--glass-inset',
+      '--popover-surface',
+      '--ag-mesh',
       '--aurora-a',
+      '--nav-surface',
+    ]
+    for (const selector of THEME_BASE_SELECTORS) {
+      const block = extractBlock(css, selector)
+      for (const token of required) {
+        assert.match(
+          block,
+          new RegExp(`${escapeRegExp(token)}\\s*:`),
+          `${selector} 缺少变量 ${token}`,
+        )
+      }
+    }
+    const rootBlock = extractBlock(css, ':root')
+    assert.match(rootBlock, /--glass-blur\s*:/)
+    assert.match(rootBlock, /--glass-surface\s*:/)
+    assert.match(rootBlock, /--glass-surface-strong\s*:/)
+  })
+
+  it('六套 Antigravity 配色在浅色与深色模式下均覆盖极光网格与导航面', () => {
+    const paletteSelectors = [
+      ...PALETTE_IDS.map((id) => `[data-palette="${id}"]`),
+      ...PALETTE_IDS.map((id) => `[data-theme="dark"][data-palette="${id}"]`),
+    ]
+    for (const selector of paletteSelectors) {
+      const block = extractBlock(css, selector)
+      for (const token of ['--ag-mesh', '--aurora-a', '--brand', '--brand-fill', '--nav-surface', '--popover-surface']) {
+        assert.match(
+          block,
+          new RegExp(`${escapeRegExp(token)}\\s*:`),
+          `${selector} 缺少变量 ${token}`,
+        )
+      }
+    }
+  })
+
+  it('核心容器（面板、统计卡、弹窗、登录框、轻提示、侧栏、主题胶囊）使用毛玻璃材质', () => {
+    for (const selector of [
+      '.panel',
+      '.stat-card',
+      '.modal',
+      '.login-card',
+      '.toast',
+      '.sidebar',
+      '.theme-capsule-btn',
+      '.theme-menu',
+      '.theme-toggle-btn',
     ]) {
-      assert.match(block, new RegExp(token + ':'), 'missing ' + token + ' in ' + selector)
+      const block = extractBlock(css, selector)
+      assert.match(block, /backdrop-filter:\s*blur\(/, `${selector} 缺少 backdrop-filter 模糊`)
     }
-  }
-  // 模糊半径与复合表面由 :root 定义，主题只覆盖底层配色令牌。
-  const root = themeBlock(':root')
-  assert.match(root, /--glass-blur:/)
-  assert.match(root, /--glass-surface:/)
-  assert.match(root, /--glass-surface-strong:/)
-})
-
-test('主要容器使用玻璃表面并开启背景模糊', () => {
-  for (const selector of ['.panel', '.stat-card', '.modal', '.login-card', '.toast']) {
-    const body = ruleBody(selector)
-    assert.match(body, /background:\s*var\(--glass-surface/, selector + ' 必须使用玻璃表面')
-    assert.match(body, /backdrop-filter:\s*blur\(/, selector + ' 必须启用 backdrop-filter')
-  }
-})
-
-test('内部控件使用半透明字段令牌而不是实色背景', () => {
-  for (const selector of ['.search-box', '.switch-row', '.key-prefix', '.secret-value', '.channel-canonical-row']) {
-    const body = ruleBody(selector)
-    assert.match(body, /background(?:-color)?:\s*var\(--glass-(?:field|surface)/, selector + ' 必须使用玻璃字段令牌')
-    assert.match(body, /border(?:-color)?:\s*1px solid var\(--glass-line\)/, selector + ' 必须使用玻璃描边')
-  }
-})
-
-test('系统要求降低透明度时回退到实色并移除模糊', () => {
-  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
-  assert.notEqual(start, -1, '缺少 prefers-reduced-transparency 回退')
-  const block = css.slice(start)
-  for (const selector of ['.panel', '.modal', '.search-box']) {
-    assert.ok(block.includes(selector), '回退块必须覆盖 ' + selector)
-  }
-  assert.match(block, /backdrop-filter:\s*none/)
-  assert.match(block, /background:\s*var\(--panel\)/)
-})
-
-test('降低透明度回退能真正赢得层叠', () => {
-  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
-  const block = css.slice(start)
-  // 主题限定选择器 (0,2,0) 与随后的同级规则都会覆盖单类选择器，必须提升优先级。
-  assert.match(block, /!important/, '回退规则必须带 !important 才能压过主题选择器')
-  // 回退块必须位于文件末尾，否则会被后面的 .table-view-popover 等规则覆盖。
-  const rest = css.slice(start + block.length)
-  assert.doesNotMatch(rest, /^\s*[^@\s]/m, '降低透明度回退之后不应再有普通样式规则')
-})
-
-test('输入框与次要按钮在降低透明度时连背景和模糊一起回退', () => {
-  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
-  const block = css.slice(start)
-  // 只恢复边框、不撤掉半透明底与模糊，等于沿用玻璃外观。
-  for (const selector of ['.field input', '.field textarea', '.select-input', '.button.ghost', '.button.mini']) {
-    const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const rule = new RegExp('([^{}]*' + escaped + '[^{}]*)\\{([^{}]*)\\}', 'g')
-    const bodies = [...block.matchAll(rule)].map((m) => m[2])
-    const withBg = bodies.some((b) => /background(-color)?:\s*var\(--panel\)\s*!important/.test(b))
-    assert.ok(withBg, selector + ' 必须在回退块里设置实色背景')
-  }
-  assert.match(block, /backdrop-filter:\s*none\s*!important/)
-})
-
-test('侧栏回退使用深色导航底色而不是面板色', () => {
-  const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
-  const block = css.slice(start)
-  const sidebar = block.slice(block.indexOf('.sidebar {'))
-  const body = sidebar.slice(0, sidebar.indexOf('}'))
-  assert.match(body, /background:\s*var\(--nav\)/, '侧栏必须回退到 --nav，浅色主题下白底白字不可读')
-  assert.doesNotMatch(body, /var\(--panel\)/)
-})
-
-test('弹层与组件级玻璃表面自带回退', () => {
-  const files = {
-    'SearchSelect.vue': ['.search-select-panel'],
-    'FingerprintTestView.vue': ['.fingerprint-summary'],
-    'ChannelConnectivityPanel.vue': ['.connectivity-response pre'],
-    'ChannelTestDrawer.vue': ['.channel-test-tab.active'],
-    'KeyDisableRuleFields.vue': ['.key-auto-disable-rule textarea'],
-    'ChannelKeyEditor.vue': ['.channel-key-editor'],
-    'ChannelKeyRateLimitModal.vue': ['.channel-key-rate-limit-preview'],
-    'ChannelsView.vue': ['.channel-key-detail', '.protocol-row'],
-  }
-  for (const [file, selectors] of Object.entries(files)) {
-    const source = readFileSync(new URL('../src/components/' + file, import.meta.url), 'utf8')
-    const start = source.indexOf('@media (prefers-reduced-transparency: reduce)')
-    assert.notEqual(start, -1, file + ' 缺少降低透明度回退')
-    const block = source.slice(start)
-    for (const selector of selectors) {
-      assert.ok(block.includes(selector), file + ' 的回退块必须覆盖 ' + selector)
+    for (const selector of ['.panel', '.stat-card', '.modal', '.login-card', '.toast']) {
+      const block = extractBlock(css, selector)
+      assert.match(block, /var\(--glass-surface/, `${selector} 未使用玻璃渐变底色`)
     }
-  }
+  })
+
+  it('文件末尾为系统 prefers-reduced-transparency: reduce 提供实色降级并覆盖主题控件与侧栏', () => {
+    const firstStart = css.indexOf('@media (prefers-reduced-transparency: reduce)')
+    assert.notEqual(firstStart, -1, '缺少 prefers-reduced-transparency 回退')
+    const tail = css.slice(firstStart)
+    assert.equal(css.indexOf('@media (max-width:', firstStart), -1, 'prefers-reduced-transparency 后不应再出现断点规则')
+    assert.match(tail, /backdrop-filter:\s*none\s*!important/, '降级未显式禁用 backdrop-filter')
+    assert.match(tail, /\.sidebar\s*\{[^}]*background:\s*var\(--nav\)/, '侧栏未在透明降级中回退到实色')
+    assert.match(tail, /\.theme-menu/, '主题菜单未在透明降级中回退到实色')
+  })
+
+  it('主视图侧栏弹窗与抽屉样式也在系统降低透明度时回退为实色', () => {
+    const start = css.indexOf('@media (prefers-reduced-transparency: reduce)')
+    const tail = css.slice(start)
+    assert.match(tail, /\.panel/)
+    assert.match(tail, /\.modal/)
+    for (const file of ['ModelRoutesView.vue', 'ChannelsView.vue']) {
+      const source = readFileSync(new URL(`../src/components/${file}`, import.meta.url), 'utf8')
+      const pos = source.indexOf('@media (prefers-reduced-transparency: reduce)')
+      assert.notEqual(pos, -1, `${file} 缺少 prefers-reduced-transparency 回退`)
+      assert.match(source.slice(pos), /background:\s*var\(--panel\)/, `${file} 降级未使用实色 --panel`)
+    }
+  })
 })

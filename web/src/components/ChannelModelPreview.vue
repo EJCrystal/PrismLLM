@@ -31,7 +31,7 @@ const hidden = computed(() => Math.max(0, props.items.length - props.limit))
 
 <style scoped>
 .channel-model-preview { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
-.channel-model-list { flex: 1 1 auto; min-width: 0; }
+.channel-model-list { flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .channel-model-entry { min-height: var(--channel-first-line-height, 24px); }
 .channel-model-entry .channel-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .is-expanded .channel-model-name { overflow: visible; white-space: normal; overflow-wrap: anywhere; }

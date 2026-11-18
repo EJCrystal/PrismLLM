@@ -323,6 +323,14 @@ function errorRate(row: UsageGroup): string {
   return usagePercent(row.requests, row.errors)
 }
 
+function errorRateTone(row: UsageGroup): string {
+  if (!row.requests) return 'neutral'
+  const successRate = 1 - (Number(row.errors) || 0) / row.requests
+  if (successRate >= 0.95) return 'success'
+  if (successRate >= 0.8) return 'warning'
+  return 'danger'
+}
+
 function dimensionId(row: UsageGroup): string {
   const value = protocolLabel(row.id)
   return value.length > 24 ? value.slice(0, 10) + '…' + value.slice(-8) : value
@@ -459,7 +467,9 @@ onMounted(() => {
 <template>
   <section class="page-stack usage-report-page">
     <div class="section-head report-head">
-      <span class="report-head-note">{{ rangeLabel }} · {{ usageGranularityLabel(report?.granularity) }}</span>
+      <span class="report-head-note">
+        <template v-if="rangeLabel">{{ rangeLabel }} · </template>{{ usageGranularityLabel(report?.granularity) }}
+      </span>
       <div class="report-head-actions">
         <button type="button" class="button ghost refresh-button" :disabled="loading || refreshing" :aria-busy="refreshing" @click="refresh">
           <Icon name="refresh" :size="16" /> {{ refreshing ? '刷新中…' : '刷新' }}
@@ -625,8 +635,8 @@ onMounted(() => {
                   <div class="usage-dimension-title"><strong :title="row.name || row.id">{{ displayName(row) }}</strong><CopyButton v-if="['clientKey', 'channel', 'channelKey'].includes(dimension) && (!row.name || row.name === row.id)" :text="row.id" :title="'复制' + activeDimension.label + ' ID'" /></div>
                   <div v-if="row.name && row.id !== row.name" class="usage-dimension-id"><code :title="row.id">{{ dimensionId(row) }}</code><CopyButton v-if="['clientKey', 'channel', 'channelKey'].includes(dimension)" :text="row.id" :title="'复制' + activeDimension.label + ' ID'" /></div>
                 </td>
-                <td><strong>{{ formatNumber(row.requests) }}</strong><small class="muted"> / {{ row.errors }} 错误</small></td>
-                <td><span class="badge" :class="row.errors ? 'warning' : 'success'">{{ errorRate(row) }}</span></td>
+                <td><strong>{{ formatNumber(row.requests) }}</strong><small class="muted">{{ row.errors ? `含 ${formatNumber(row.errors)} 错误` : '无错误' }}</small></td>
+                <td><span class="badge" :class="errorRateTone(row)">{{ errorRate(row) }}</span></td>
                 <td>{{ formatTokensCompact(row.totalTokens) }}<small class="muted"> 入 {{ formatTokensCompact(row.inputTokens) }} / 出 {{ formatTokensCompact(row.outputTokens) }}</small></td>
                 <td>{{ latency(row.avgTotalMs) }}<small class="muted"> 首 token {{ latency(row.avgFirstTokenMs) }}</small></td>
                 <td class="small"><span class="usage-exact-cost" tabindex="0" :data-exact="row.costUsd != null ? row.costUsd + ' USD' : '无计费数据'" :aria-label="row.costUsd != null ? row.costUsd + ' USD' : '无计费数据'">{{ costText(row) }}</span></td>

@@ -1,42 +1,59 @@
 import { computed, ref } from 'vue'
 import {
+  THEME_PALETTES,
   THEME_PRESETS,
-  DEFAULT_THEME,
+  THEMES,
+  applyPalette,
+  applyTheme,
+  getPaletteDisplayName,
+  getSavedPalette,
   getSavedTheme,
   nextTheme,
-  applyTheme,
-  normalizeTheme,
+  type ThemeMode,
+  type ThemePaletteId,
 } from '../utils/theme'
 
-// 全局单例响应式状态，确保全站跨组件实时同步
-const currentTheme = ref(getSavedTheme())
+const currentTheme = ref<ThemeMode>(getSavedTheme())
+const currentPalette = ref<ThemePaletteId>(getSavedPalette())
 
-// 初始应用到 DOM
 if (typeof document !== 'undefined') {
   applyTheme(currentTheme.value)
+  applyPalette(currentPalette.value)
 }
 
 export function useTheme() {
-  const isDark = computed(() => currentTheme.value === 'dark')
+  const isDark = computed(() => currentTheme.value === THEMES.DARK)
   const currentPreset = computed(
-    () => THEME_PRESETS.find((p) => p.id === currentTheme.value) || THEME_PRESETS[0],
+    () => THEME_PRESETS.find((preset) => preset.id === currentTheme.value) || THEME_PRESETS[0],
   )
+  const activePalette = computed(
+    () => THEME_PALETTES.find((item) => item.id === currentPalette.value) || THEME_PALETTES[0],
+  )
+  const currentPaletteName = computed(() => getPaletteDisplayName(currentPalette.value, currentTheme.value))
 
-  function setTheme(themeId: string | null): void {
-    const next = normalizeTheme(themeId)
-    currentTheme.value = applyTheme(next)
+  function setTheme(themeId: string | null | undefined): void {
+    currentTheme.value = applyTheme(themeId)
   }
 
-  function toggle() {
-    currentTheme.value = applyTheme(nextTheme(currentTheme.value))
+  function setPalette(paletteId: string | null | undefined): void {
+    currentPalette.value = applyPalette(paletteId)
+  }
+
+  function toggle(): void {
+    setTheme(nextTheme(currentTheme.value))
   }
 
   return {
     theme: currentTheme,
+    palette: currentPalette,
+    palettes: THEME_PALETTES,
+    activePalette,
+    currentPaletteName,
     isDark,
     currentPreset,
     presets: THEME_PRESETS,
     setTheme,
+    setPalette,
     toggleTheme: toggle,
   }
 }

@@ -203,7 +203,7 @@ const settingRows = computed<SettingRow[]>(() => {
       id: 'web-search',
       title: 'Web 搜索',
       description: '内置 web_search 的搜索后端',
-      icon: 'search',
+      icon: 'globe',
       loading: webSearch.loading,
       error: webSearch.error,
       value: webSearch.data
@@ -244,7 +244,7 @@ const settingRows = computed<SettingRow[]>(() => {
       id: 'notifications',
       title: '运行通知',
       description: '渠道、密钥及连续失败事件的通知目标',
-      icon: 'info',
+      icon: 'bell',
       loading: notification.loading,
       error: notification.error,
       value: notification.data
@@ -288,7 +288,7 @@ onMounted(() => { void loadAll() })
     <div class="section-head">
       <div>
         <h2>全局业务设置</h2>
-        <p>集中管理所有可修改的全局配置，保存后立即生效。</p>
+        <p>按模块划分全局策略，点击右侧即可编辑并即时生效。</p>
       </div>
       <button
         type="button" class="button ghost" :disabled="refreshing"

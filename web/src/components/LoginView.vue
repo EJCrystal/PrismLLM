@@ -5,7 +5,7 @@ import SecretInput from './SecretInput.vue'
 import ThemeToggle from './ThemeToggle.vue'
 
 const emit = defineEmits(['authenticated'])
-const username = ref('admin')
+const username = ref('')
 const password = ref('')
 const loading = ref(false)
 const error = ref('')

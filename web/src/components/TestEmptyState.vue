@@ -36,7 +36,7 @@ defineProps<{ icon: string; title: string; description: string; steps?: string[]
   flex-direction: column;
   align-items: center;
   gap: 12px;
-  max-width: 440px;
+  max-width: 500px;
   min-width: 0;
 }
 
@@ -64,6 +64,7 @@ defineProps<{ icon: string; title: string; description: string; steps?: string[]
   font-size: 13px;
   line-height: 1.7;
   overflow-wrap: anywhere;
+  text-wrap: pretty;
 }
 
 .test-empty-steps {

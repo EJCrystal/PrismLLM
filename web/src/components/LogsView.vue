@@ -520,7 +520,7 @@ onBeforeUnmount(() => {
         </Menu>
         <span v-if="selected && autoRefreshInterval" class="logs-refresh-paused muted small" role="status">查看详情时暂停自动刷新</span>
         <details class="table-view-menu logs-table-settings" v-if="!selected">
-          <summary class="button ghost"><Icon name="settings" :size="16" /> 表格视图</summary>
+          <summary class="button ghost"><Icon name="sliders" :size="16" /> 表格视图</summary>
           <div class="table-view-popover">
             <strong>显示列</strong>
             <label v-for="column in logColumns" :key="column.id"><input type="checkbox" :checked="logColumnVisible(column.id)" @change="toggleLogColumn(column.id)" /> {{ column.label }}</label>

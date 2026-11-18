@@ -279,7 +279,11 @@ onMounted(() => {
                   <span class="mono muted small" :title="key.id">{{ key.id }}</span>
                   <CopyButton :text="key.id" title="复制密钥 ID" variant="list" :size="12" />
                 </div>
-                <div class="client-key-access-summary muted small">{{ clientKeyAccessSummary(key.accessPolicy) }}</div>
+                <div class="client-key-access-summary muted small">
+                  <template v-for="(part, idx) in clientKeyAccessSummary(key.accessPolicy).split(' · ')" :key="idx">
+                    <span class="access-summary-item">{{ part }}</span>
+                  </template>
+                </div>
               </td>
               <td><code class="key-prefix" :title="key.keyPrefix">{{ key.keyPrefix }}…</code></td>
               <td>
@@ -336,43 +340,47 @@ onMounted(() => {
 
     <Modal v-if="showForm" :title="editingId ? '编辑调用方密钥' : '新建调用方密钥'" wide @close="showForm = false">
       <form class="form-grid" @submit.prevent="save">
-        <label class="field">
-          <span>名称</span>
-          <input v-model="form.name" placeholder="例如 search-service" autocomplete="off" />
-          <small>用于识别调用方，不会出现在密钥明文里。</small>
-        </label>
-        <label class="field">
-          <span>过期时间</span>
-          <input v-model="form.expiresAt" type="datetime-local" />
-          <small>留空表示永不过期；到期后请求会直接返回 401。</small>
-        </label>
-        <label class="field" for="client-key-daily-token-limit">
-          <span>每日 token 上限</span>
-          <input id="client-key-daily-token-limit" v-model="form.dailyTokenLimit" type="number" min="0" step="1" placeholder="留空表示不限制" />
-          <small>按 UTC 自然日累计上游返回的总 token；达到上限后返回 429。</small>
-        </label>
-        <label class="field" for="client-key-daily-usd-limit">
-          <span>每日费用上限 ($)</span>
-          <input
-            id="client-key-daily-usd-limit"
-            v-model="form.dailyUsdLimit"
-            type="number"
-            min="0"
-            step="0.00000001"
-            placeholder="留空表示不限制"
-          />
-          <small>按模型单价累计美元费用；达到上限后返回 429。</small>
-        </label>
-        <label class="field" for="client-key-max-concurrent">
-          <span>最大并发请求数</span>
-          <input id="client-key-max-concurrent" v-model="form.maxConcurrentRequests" type="number" min="1" step="1" placeholder="留空表示不限制" />
-          <small>单实例内同时处理的请求数；响应结束或失败后自动释放。</small>
-        </label>
-        <label class="field" for="client-key-requests-per-minute">
-          <span>每分钟请求上限</span>
-          <input id="client-key-requests-per-minute" v-model="form.requestsPerMinute" type="number" min="0" step="1" placeholder="留空表示不限制" />
-          <small>按 UTC 固定分钟窗口计算；0 表示暂停该密钥的新请求。</small>
-        </label>
+        <div class="form-grid-two">
+          <label class="field">
+            <span>名称</span>
+            <input v-model="form.name" placeholder="例如 search-service" autocomplete="off" />
+            <small>用于识别调用方，不会出现在密钥明文里。</small>
+          </label>
+          <label class="field">
+            <span>过期时间</span>
+            <input v-model="form.expiresAt" type="datetime-local" />
+            <small>留空表示永不过期；到期后请求会直接返回 401。</small>
+          </label>
+        </div>
+        <div class="form-grid-two">
+          <label class="field" for="client-key-daily-token-limit">
+            <span>每日 token 上限</span>
+            <input id="client-key-daily-token-limit" v-model="form.dailyTokenLimit" type="number" min="0" step="1" placeholder="留空表示不限制" />
+            <small>按 UTC 自然日累计上游返回的总 token；达到上限后返回 429。</small>
+          </label>
+          <label class="field" for="client-key-daily-usd-limit">
+            <span>每日费用上限 ($)</span>
+            <input
+              id="client-key-daily-usd-limit"
+              v-model="form.dailyUsdLimit"
+              type="number"
+              min="0"
+              step="0.00000001"
+              placeholder="留空表示不限制"
+            />
+            <small>按模型单价累计美元费用；达到上限后返回 429。</small>
+          </label>
+          <label class="field" for="client-key-max-concurrent">
+            <span>最大并发请求数</span>
+            <input id="client-key-max-concurrent" v-model="form.maxConcurrentRequests" type="number" min="1" step="1" placeholder="留空表示不限制" />
+            <small>单实例内同时处理的请求数；响应结束或失败后自动释放。</small>
+          </label>
+          <label class="field" for="client-key-requests-per-minute">
+            <span>每分钟请求上限</span>
+            <input id="client-key-requests-per-minute" v-model="form.requestsPerMinute" type="number" min="0" step="1" placeholder="留空表示不限制" />
+            <small>按 UTC 固定分钟窗口计算；0 表示暂停该密钥的新请求。</small>
+          </label>
+        </div>
         <label class="switch-row">
           <input v-model="form.enabled" type="checkbox" />
           <span class="switch"></span>

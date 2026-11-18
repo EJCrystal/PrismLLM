@@ -427,7 +427,7 @@ onBeforeUnmount(() => {
               <button type="button" class="button ghost mini" :disabled="busy || editorVisible || testingTargetId !== null || Boolean(testDisabledReason(target))" :title="testDisabledReason(target) || '向此目标发送一条测试通知'" @click="testTarget(target)"><Icon name="bolt" :size="13" /> {{ testingTargetId === target.id ? '测试中…' : '发送测试' }}</button>
               <button type="button" class="button ghost mini" :aria-pressed="selectedHistoryTargetId === target.id" @click="selectHistory(target)">投递记录</button>
               <button type="button" class="button ghost mini" :disabled="busy || editorVisible || testingTargetId === target.id" @click="openEditor(target)"><Icon name="edit" :size="13" /> 编辑</button>
-              <button type="button" class="button ghost mini" :disabled="busy || editorVisible || testingTargetId === target.id" :aria-label="`删除 ${target.name}`" @click="deleteTarget(target)"><Icon name="trash" :size="13" /> 删除</button>
+              <button type="button" class="button subtle danger mini" :disabled="busy || editorVisible || testingTargetId === target.id" :aria-label="`删除 ${target.name}`" @click="deleteTarget(target)"><Icon name="trash" :size="13" /> 删除</button>
               <small v-if="testDisabledReason(target)" class="notification-test-reason">{{ testDisabledReason(target) }}</small>
             </div>
           </article>
@@ -493,7 +493,7 @@ onBeforeUnmount(() => {
 .notification-empty { margin: 0; padding: 12px 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .notification-target-list,
 .notification-delivery-list { display: grid; border-top: 1px solid var(--glass-line); }
-.notification-target-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(140px, 240px); align-items: start; gap: 12px 18px; padding: 16px 0; border-bottom: 1px solid var(--glass-line); }
+.notification-target-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 12px 18px; padding: 16px 0; border-bottom: 1px solid var(--glass-line); }
 .notification-target-main { min-width: 0; }
 .notification-target-name { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
 .notification-target-name > strong { max-width: 100%; overflow-wrap: anywhere; font-size: 13px; font-weight: 650; }
@@ -513,8 +513,9 @@ onBeforeUnmount(() => {
 .notification-credentials { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 8px 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .notification-credentials .is-configured { color: var(--success); }
 .notification-credentials .is-missing { color: var(--danger); }
-.notification-target-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: start; gap: 6px; }
-.notification-target-actions .button { min-height: 36px; }
+.notification-target-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; align-content: start; gap: 6px; white-space: nowrap; }
+.notification-target-actions .button { min-height: 32px; padding: 5px 10px; }
+.notification-target-actions .button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 28%, var(--glass-line)); background: color-mix(in srgb, var(--danger) 6%, transparent); }
 .notification-target-actions .button[aria-pressed='true'] { border-color: color-mix(in srgb, var(--brand) 38%, var(--glass-line)); background: var(--info-soft); color: var(--brand); }
 .notification-test-reason { flex-basis: 100%; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .notification-test-result { display: grid; gap: 5px; min-width: 0; padding: 12px; border-left: 3px solid var(--brand); background: var(--info-soft); font-size: 12px; line-height: 1.6; }

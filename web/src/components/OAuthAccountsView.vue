@@ -1016,9 +1016,9 @@ onBeforeUnmount(() => {
                 <span v-if="!accountQuotaView(account).visible.length && !account.quota?.error" class="muted small">暂无读数</span>
               </td>
               <td class="oauth-schedule-cell">
-                <div class="small">{{ oauthPolicySummary(account.policy) }}</div>
-                <div v-if="account.policy.windowLimit != null" class="small muted">窗口 {{ account.runtime.windowUsed }}/{{ account.policy.windowLimit }}</div>
-                <div class="small muted">当前并发 {{ account.runtime.activeRequests }}/{{ account.policy.maxConcurrentRequests }}</div>
+                <div class="small oauth-schedule-line">{{ oauthPolicySummary(account.policy) }}</div>
+                <div v-if="account.policy.windowLimit != null" class="small muted oauth-schedule-line">窗口 {{ account.runtime.windowUsed }}/{{ account.policy.windowLimit }}</div>
+                <div class="small muted oauth-schedule-line">当前并发 {{ account.runtime.activeRequests }}/{{ account.policy.maxConcurrentRequests }}</div>
                 <div v-if="formatCooldownRemaining(account.runtime.cooldownUntil, now)" class="small text-warning">
                   冷却剩余 {{ formatCooldownRemaining(account.runtime.cooldownUntil, now) }}
                 </div>
