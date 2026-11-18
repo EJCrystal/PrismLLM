@@ -135,8 +135,38 @@ describe('usage reports layout and contracts', () => {
     ]
     const split = await render(splitData, state => { state.chartIndex.value = 0 })
     assert.equal(split.querySelectorAll('.usage-chart-line.rate').length, 2)
-    assert.equal(split.querySelectorAll('.usage-chart-point.rate:not(.is-ring)').length, 2)
-    assert.ok(split.querySelector('.usage-chart-point.rate.is-ring'))
+    assert.equal(split.querySelectorAll('.usage-chart-markers .usage-chart-point.rate:not(.is-ring)').length, 2)
+    assert.ok(split.querySelector('.usage-chart-markers .usage-chart-point.rate.is-ring'))
+    assert.equal(split.querySelectorAll('.usage-chart circle').length, 0)
+    const axisSpans = [...split.querySelectorAll('.usage-chart-axis > span')]
+    assert.equal(axisSpans[0].classList.contains('is-first'), true)
+    assert.equal(axisSpans[1].style.left, '50%')
+    assert.equal(axisSpans[2].classList.contains('is-last'), true)
+
+    const fourteenData = {
+      ...report(),
+      from: firstBucket,
+      to: firstBucket + 14 * 86_400_000 - 1,
+      trend: Array.from({ length: 14 }, (_, index) => ({ ...baseTotal, bucketStart: firstBucket + index * 86_400_000 })),
+    }
+    const fourteen = await render(fourteenData)
+    const ticks14 = [...fourteen.querySelectorAll('.usage-chart-axis > span')]
+    assert.equal(ticks14.length, 14)
+    assert.equal(ticks14[0].classList.contains('is-hidden'), false)
+    assert.equal(ticks14[13].classList.contains('is-hidden'), false)
+    assert.equal(ticks14[12].classList.contains('is-hidden'), true)
+
+    const narrowData = {
+      ...report(),
+      from: firstBucket,
+      to: firstBucket + 8 * 86_400_000 - 1,
+      trend: Array.from({ length: 8 }, (_, index) => ({ ...baseTotal, bucketStart: firstBucket + index * 86_400_000 })),
+    }
+    const narrow = await render(narrowData, state => { state.chartAxisWidth.value = 320 })
+    const narrowVisible = [...narrow.querySelectorAll('.usage-chart-axis > span')].filter(node => !node.classList.contains('is-hidden'))
+    assert.ok(narrowVisible.length <= 4)
+    assert.equal(narrow.querySelectorAll('.usage-chart-axis > span')[0].classList.contains('is-hidden'), false)
+    assert.equal(narrow.querySelectorAll('.usage-chart-axis > span')[7].classList.contains('is-hidden'), false)
   })
 
   it('scales small error rates and fees to their actual range', async () => {
@@ -180,5 +210,20 @@ describe('usage reports layout and contracts', () => {
     const document = await render(data)
     assert.ok(document.querySelector('.usage-dimension-title strong').textContent.includes('…'))
     assert.ok(document.querySelector('button[aria-label="复制调用方密钥 ID"]'))
+  })
+
+  it('drills down into clicked chart bucket on desktop click', async () => {
+    const data = report()
+    data.trend = [
+      { ...baseTotal, bucketStart: firstBucket },
+      { ...baseTotal, bucketStart: firstBucket + 86_400_000 },
+    ]
+    await render(data, state => {
+      const svg = { getBoundingClientRect: () => ({ left: 0, width: 640 }) }
+      state.clickChart({ currentTarget: svg, clientX: 320 })
+      assert.equal(state.preset.value, '')
+      assert.equal(state.exactRange.value.from, firstBucket + 86_400_000)
+      assert.equal(state.exactRange.value.to, firstBucket + 2 * 86_400_000)
+    })
   })
 })
