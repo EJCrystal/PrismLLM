@@ -8051,7 +8051,7 @@ button:focus-visible, .usage-chart:focus-visible { outline: 2px solid var(--bran
 .usage-chart-y-axis.is-right { inset: 0 0 0 auto; width: 38px; }
 .usage-chart-y-axis > span { position: absolute; right: 0; transform: translateY(-50%); white-space: nowrap; }
 .usage-chart-y-axis.is-right > span { right: auto; left: 0; }
-.usage-chart { touch-action: pan-y; cursor: crosshair; border-radius: 4px; outline: none; }
+.usage-chart { touch-action: pan-y; cursor: pointer; border-radius: 4px; outline: none; }
 .usage-chart-crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; vector-effect: non-scaling-stroke; }
 .usage-chart-point { position: absolute; width: 8px; height: 8px; border-radius: 50%; border: 2px solid var(--panel); background: var(--brand); box-sizing: border-box; transform: translate(-50%, -50%); }
 .usage-chart-point.is-isolated { width: 6px; height: 6px; border-width: 1.5px; }

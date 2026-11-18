@@ -186,4 +186,19 @@ describe('usage reports layout and contracts', () => {
     assert.ok(document.querySelector('.usage-dimension-title strong').textContent.includes('…'))
     assert.ok(document.querySelector('button[aria-label="复制调用方密钥 ID"]'))
   })
+
+  it('drills down into clicked chart bucket on desktop click', async () => {
+    const data = report()
+    data.trend = [
+      { ...baseTotal, bucketStart: firstBucket },
+      { ...baseTotal, bucketStart: firstBucket + 86_400_000 },
+    ]
+    await render(data, state => {
+      const svg = { getBoundingClientRect: () => ({ left: 0, width: 640 }) }
+      state.clickChart({ currentTarget: svg, clientX: 320 })
+      assert.equal(state.preset.value, '')
+      assert.equal(state.exactRange.value.from, firstBucket + 86_400_000)
+      assert.equal(state.exactRange.value.to, firstBucket + 2 * 86_400_000)
+    })
+  })
 })

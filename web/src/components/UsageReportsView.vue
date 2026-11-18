@@ -202,10 +202,31 @@ const chartSeriesPoints = computed(() => {
     return [{ id: series.id, x: point.x, y: point.y, className: trendSeriesClass(index) }]
   })
 })
+let lastPointerType = 'mouse'
+let touchPreviouslySelected = false
+function chartBucketAtClientX(target: Element, clientX: number): number {
+  const rect = target.getBoundingClientRect()
+  const index = usageChartIndex(clientX, rect.left, rect.width, trendRows.value.length)
+  return index < 0 ? -1 : index
+}
 function inspectChart(event: PointerEvent) {
-  const rect = (event.currentTarget as SVGElement).getBoundingClientRect()
-  const index = usageChartIndex(event.clientX, rect.left, rect.width, trendRows.value.length)
+  lastPointerType = event.pointerType || 'mouse'
+  const index = chartBucketAtClientX(event.currentTarget as SVGElement, event.clientX)
+  if (event.type === 'pointerdown' && lastPointerType === 'touch') {
+    touchPreviouslySelected = index >= 0 && chartIndex.value === index
+  }
   chartIndex.value = index < 0 ? null : index
+}
+function clickChart(event: MouseEvent) {
+  const index = chartBucketAtClientX(event.currentTarget as SVGElement, event.clientX)
+  if (index < 0) return
+  if (lastPointerType === 'touch' && !touchPreviouslySelected) {
+    touchPreviouslySelected = true
+    return
+  }
+  touchPreviouslySelected = false
+  chartIndex.value = index
+  selectChartBucket()
 }
 function chartKey(event: KeyboardEvent) {
   if (event.key === 'Enter' && chartRow.value) {
@@ -229,6 +250,7 @@ function selectChartBucket(): void {
   if (!row || !report.value) return
   const range = usageChartBucketRange(report.value, row.bucketStart)
   if (!range) return
+  if (range.from === exactRange.value.from && range.to === exactRange.value.to) return
   preset.value = ''
   exactRange.value = range
   rangeDraft.value = { from: toDatetimeLocalValue(range.from), to: toDatetimeLocalValue(range.to) }
@@ -600,7 +622,7 @@ onMounted(() => {
         <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
           <div class="usage-chart-readout">
             <div class="usage-chart-values" aria-live="polite" aria-atomic="true">
-              <strong>{{ chartRow ? formatTimeRange(chartRow.bucketStart) : '点击或滑动图表查看' }}</strong>
+              <strong>{{ chartRow ? formatTimeRange(chartRow.bucketStart) : '悬停查看，点击进入该时间段' }}</strong>
               <span v-for="series in activeTrendMetric.series" :key="series.id"><span class="usage-chart-series-label" :title="series.label">{{ series.label }}</span><b>{{ chartRow ? formatTrendValue(series.value(chartRow)) : '—' }}</b></span>
               <span v-if="trendMetric === 'requests'"><span class="usage-chart-series-label">错误率</span><b>{{ chartRow ? formatErrorRateValue(usageErrorRate(chartRow)) : '—' }}</b></span>
               <span v-if="trendMetric === 'tokens'"><span class="usage-chart-series-label" title="缓存命中率 = 缓存读 token / 输入 token">缓存命中率</span><b>{{ chartRow ? formatCacheHit(chartRow) : '—' }}</b></span>
@@ -611,7 +633,7 @@ onMounted(() => {
           <div class="usage-chart-y-axis" aria-hidden="true"><span v-for="tick in chartScale.ticks" :key="tick" :style="{ top: `${(142 - tick / chartScale.max * 134) / 150 * 100}%` }">{{ trendMetric === 'cost' ? Number(tick.toPrecision(6)).toLocaleString('zh-CN', { maximumFractionDigits: 8 }) : formatTokensCompact(tick) }}</span></div>
           <div v-if="trendMetric === 'requests'" class="usage-chart-y-axis is-right" aria-hidden="true"><span v-for="tick in errorRateScale.ticks" :key="'rate-' + tick" :style="{ top: `${(142 - tick / errorRateScale.max * 134) / 150 * 100}%` }">{{ tick }}%</span></div>
           <div class="usage-chart-canvas">
-            <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次与百分比'}，使用左右方向键查看读数，按 Enter 选中时间段`" @pointermove="inspectChart" @pointerdown="inspectChart" @keydown="chartKey">
+            <svg class="usage-chart" viewBox="0 0 640 150" preserveAspectRatio="none" role="slider" tabindex="0" aria-orientation="horizontal" :aria-valuemin="1" :aria-valuemax="trendRows.length" :aria-valuenow="chartSliderIndex + 1" :aria-valuetext="chartValueText" @focus="chartIndex = chartSliderIndex" :aria-label="`${activeTrendMetric.label}趋势，${trendMetric === 'cost' ? '单位 USD' : trendMetric === 'tokens' ? '单位 token' : '单位 次与百分比'}，点击图表或按 Enter 进入对应时间段，使用左右方向键查看读数`" @pointermove="inspectChart" @pointerdown="inspectChart" @click="clickChart" @keydown="chartKey">
               <defs><linearGradient id="usage-fill" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stop-color="var(--brand)" stop-opacity="0.22"/><stop offset="100%" stop-color="var(--brand)" stop-opacity="0.01"/></linearGradient></defs>
               <line v-for="tick in chartScale.ticks" :key="tick" x1="8" :y1="142 - tick / chartScale.max * 134" x2="632" :y2="142 - tick / chartScale.max * 134" class="usage-chart-grid" />
               <polygon v-if="trendArea" :points="trendArea" class="usage-chart-area" />
