@@ -117,21 +117,22 @@ describe('usage reports layout and contracts', () => {
     assert.equal(selected.querySelector('.usage-chart-filter').disabled, false)
   })
 
-  it('renders percentages against all errors and leaves empty error rate buckets disconnected', async () => {
-    const document = await render(report(), state => { state.trendMetric.value = 'errorRate' })
+  it('renders error rate overlaid in requests trend and leaves empty buckets disconnected', async () => {
+    const document = await render(report())
+    assert.equal(document.querySelectorAll('.usage-segmented[aria-label="趋势指标"] button').length, 3)
     assert.ok(document.querySelector('.usage-error-row').textContent.includes('60.0%'))
-    assert.equal(document.querySelectorAll('.usage-chart-line').length, 1)
-    assert.ok(document.querySelector('.usage-chart-point'))
-    assert.ok(document.querySelector('.usage-chart-legend').textContent.includes('无请求的时段不连线'))
-    assert.ok(document.querySelector('.usage-chart-y-axis').textContent.includes('%'))
+    assert.equal(document.querySelectorAll('.usage-chart-line.rate').length, 1)
+    assert.ok(document.querySelector('.usage-chart-point.rate'))
+    assert.ok(document.querySelector('.usage-chart-legend').textContent.includes('无请求不连线'))
+    assert.ok(document.querySelector('.usage-chart-y-axis.is-right').textContent.includes('%'))
     assert.ok(document.querySelector('.usage-chart').getAttribute('aria-label').includes('百分比'))
   })
 
   it('scales small error rates and fees to their actual range', async () => {
     const data = report()
     data.trend = [{ ...data.trend[0], requests: 1000, errors: 1, costUsd: '0.00042' }]
-    const rates = await render(data, state => { state.trendMetric.value = 'errorRate' })
-    const rateTicks = [...rates.querySelectorAll('.usage-chart-y-axis > span')].map(node => Number(node.textContent.replace('%', '')))
+    const rates = await render(data)
+    const rateTicks = [...rates.querySelectorAll('.usage-chart-y-axis.is-right > span')].map(node => Number(node.textContent.replace('%', '')))
     assert.ok(rateTicks[0] >= 0.1 && rateTicks[0] < 1)
     assert.equal(rateTicks.at(-1), 0)
     assert.ok(rates.querySelector('.usage-chart-legend').textContent.includes('0.1%'))
@@ -142,18 +143,24 @@ describe('usage reports layout and contracts', () => {
     assert.ok(new Set(feeTicks).size > 1)
   })
 
-  it('distinguishes missing error rate samples from zero errors', async () => {
+  it('distinguishes missing error rate samples from zero errors and shows token cache hit rate', async () => {
     const data = report()
     data.trend = [{ ...data.trend[0], requests: 0, errors: 0 }]
-    const missing = await render(data, state => { state.trendMetric.value = 'errorRate'; state.chartIndex.value = 0 })
-    assert.equal(missing.querySelectorAll('.usage-chart-line').length, 0)
-    assert.equal(missing.querySelectorAll('.usage-chart-point').length, 0)
-    assert.equal(missing.querySelector('.usage-chart-values b').textContent, '—')
+    const missing = await render(data, state => { state.chartIndex.value = 0 })
+    assert.equal(missing.querySelectorAll('.usage-chart-line.rate').length, 0)
+    assert.equal(missing.querySelectorAll('.usage-chart-point.rate').length, 0)
+    assert.equal([...missing.querySelectorAll('.usage-chart-values b')].at(-1).textContent, '—')
     data.trend[0].requests = 10
-    const zero = await render(data, state => { state.trendMetric.value = 'errorRate'; state.chartIndex.value = 0 })
-    assert.equal(zero.querySelectorAll('.usage-chart-line').length, 1)
-    assert.equal(zero.querySelector('.usage-chart-values b').textContent, '0.0%')
-    assert.ok(zero.querySelector('.usage-chart-point'))
+    const zero = await render(data, state => { state.chartIndex.value = 0 })
+    assert.equal(zero.querySelectorAll('.usage-chart-line.rate').length, 1)
+    assert.equal([...zero.querySelectorAll('.usage-chart-values b')].at(-1).textContent, '0.0%')
+    assert.ok(zero.querySelector('.usage-chart-point.rate'))
+
+    const tokens = await render(report(), state => { state.trendMetric.value = 'tokens'; state.chartIndex.value = 0 })
+    const labels = [...tokens.querySelectorAll('.usage-chart-values .usage-chart-series-label')].map(node => node.textContent)
+    assert.ok(labels.includes('缓存命中率'))
+    assert.equal([...tokens.querySelectorAll('.usage-chart-values b')].at(-1).textContent, '50.0%')
+    assert.ok(tokens.querySelector('.usage-dimension-table').textContent.includes('缓存 50.0%'))
   })
 
   it('preserves copy access when the original name is missing', async () => {
