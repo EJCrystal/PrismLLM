@@ -221,6 +221,7 @@ function field(value: unknown): PluginField {
   requireContract(!parsed.options.length || ['select', 'scope', 'model', 'credential', 'protocol'].includes(parsed.kind), '选项')
   requireContract(parsed.kind !== 'select' || parsed.options.length > 0, '选项')
   requireContract(parsed.kind !== 'scope' || (parsed.options.length > 0 && parsed.options.every(option => option.value === 'single' || option.value === 'all')), '范围')
+  requireContract(parsed.options.every(option => fieldChoiceValueIsValid(parsed, option.value)), '选项')
   requireContract(!['prompt', 'defaultPrompt'].includes(parsed.key) || parsed.kind === 'text' || parsed.kind === 'textarea', '提示词控件')
   validateDefault(parsed)
   return parsed
@@ -248,7 +249,7 @@ function scopeValueAvailable(value: string, supportsBatch: boolean, context: Plu
   return value === 'single' || (value === 'all' && supportsBatch)
 }
 
-function scopeFieldValueIsValid(field: PluginField, value: string): boolean {
+function fieldChoiceValueIsValid(field: PluginField, value: string): boolean {
   const maximum = field.maxLength ?? 256
   return value.length <= maximum && !value.includes('\u0000') && (!field.required || value.trim().length > 0) &&
     field.options.some(option => option.value === value)
@@ -267,7 +268,7 @@ function entry(value: unknown): PluginUiEntry {
   requireContract(!parsed.action.supportsBatch || contexts.includes('channel'), '批量范围')
   const scope = parsed.action.fields.find(item => item.kind === 'scope')
   if (scope) {
-    const scopeOptions = scope.options.filter(option => scopeFieldValueIsValid(scope, option.value)).map(option => option.value)
+    const scopeOptions = scope.options.filter(option => fieldChoiceValueIsValid(scope, option.value)).map(option => option.value)
     requireContract(!parsed.action.supportsBatch || !contexts.includes('channel') || scopeOptions.includes('single'), '批量范围')
     if (scope.required) {
       for (const context of contexts) {
@@ -275,7 +276,7 @@ function entry(value: unknown): PluginUiEntry {
       }
     }
     if (scope.defaultValue !== null) {
-      requireContract(typeof scope.defaultValue === 'string' && scopeFieldValueIsValid(scope, scope.defaultValue), '范围默认值')
+      requireContract(typeof scope.defaultValue === 'string' && fieldChoiceValueIsValid(scope, scope.defaultValue), '范围默认值')
       for (const context of contexts) {
         requireContract(scopeValueAvailable(scope.defaultValue, parsed.action.supportsBatch, context), '范围默认值')
       }

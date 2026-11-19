@@ -442,6 +442,32 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `credential crossing the response preview boundary leaves no prefix in outcome or report`() = runBlocking {
+        val base = app.config
+        app.close()
+        val prefix = "x".repeat(990)
+        app = mockedApplication(base, probeResponse = { request ->
+            val token = assertNotNull(request.headers[HttpHeaders.Authorization]).removePrefix("Bearer ")
+            HttpStatusCode.OK to CHAT_RESPONSE.replace("\"OK\"", JsonPrimitive(prefix + token + " trailing").toString())
+        })
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val channel = directChannel("boundary-echo", GatewayProtocol.CHAT_COMPLETIONS)
+            val response = client.invokePlugin(session, "channel", channel.id,
+                values(MODEL, GatewayProtocol.CHAT_COMPLETIONS, channel.keys.single().id))
+            val body = response.objectPayload()
+            val outcome = body["outcome"]!!.jsonObject["responseText"]!!.jsonPrimitive.content
+            val report = body["report"]!!.jsonObject["text"]!!.jsonPrimitive.content
+            for (text in listOf(outcome, report)) {
+                assertTrue(text.startsWith(prefix))
+                assertTrue(text.endsWith("[REDACTED]"))
+                assertFalse(text.contains(STATIC_TOKEN.take(8)), "a credential prefix must not survive preview truncation")
+            }
+        }
+    }
+
+    @Test
     fun `generic and legacy channel and native OAuth responses redact echoed credentials in outcomes and reports`() = runBlocking {
         val upstreamStatus = AtomicReference(HttpStatusCode.OK)
         val echoedTokens = ConcurrentLinkedQueue<String>()

@@ -315,6 +315,51 @@ describe('bounded declarative plugin contracts', () => {
     assert.equal(parsePluginCatalogItem(lengthBound).ui.entries[0].action.fields.find(field => field.kind === 'scope').options[0].value, 'single')
   })
 
+  it('validates static choices against their own field limits without requiring defaults', () => {
+    const choices = [
+      ['mode', 'select', 'enabled'],
+      ['model', 'model', 'vendor/model'],
+      ['keyId', 'credential', 'opaque/key'],
+      ['protocol', 'protocol', 'custom.protocol'],
+      ['scope', 'scope', 'single'],
+    ]
+    for (const [key, kind, value] of choices) {
+      for (const required of ['model', 'protocol'].includes(kind) ? [true] : [false, true]) {
+        const field = {
+          key, label: 'Choice', kind, required, maxLength: value.length,
+          options: [{ value, label: 'Choice' }],
+        }
+        const raw = catalog(SECOND_PLUGIN)
+        raw.manifest.configuration = [field]
+        raw.ui.entries[0].action.fields = raw.ui.entries[0].action.fields.filter(item => item.key !== key).concat(field)
+        const parsed = parsePluginCatalogItem(raw)
+        assert.equal(parsed.manifest.configuration[0].defaultValue, null)
+        assert.equal(parsed.ui.entries[0].action.fields.find(item => item.key === key).defaultValue, null)
+        assert.deepEqual(parsed.manifest.configuration[0].options, field.options)
+        assert.deepEqual(parsed.ui.entries[0].action.fields.find(item => item.key === key).options, field.options)
+
+        for (const maximum of [1, value.length - 1]) {
+          const invalid = { ...field, maxLength: maximum }
+          const configuration = catalog(SECOND_PLUGIN)
+          configuration.manifest.configuration = [invalid]
+          assert.throws(() => parsePluginCatalogItem(configuration), invalidResponse, `${kind} configuration maxLength=${maximum}`)
+          const action = catalog(SECOND_PLUGIN)
+          action.ui.entries[0].action.fields = action.ui.entries[0].action.fields.filter(item => item.key !== key).concat(invalid)
+          assert.throws(() => parsePluginCatalogItem(action), invalidResponse, `${kind} action maxLength=${maximum}`)
+        }
+        if (kind === 'select') {
+          const mixed = { ...field, options: [...field.options, { value: value + 'x', label: 'Too long' }] }
+          const configuration = catalog(SECOND_PLUGIN)
+          configuration.manifest.configuration = [mixed]
+          assert.throws(() => parsePluginCatalogItem(configuration), invalidResponse)
+          const action = catalog(SECOND_PLUGIN)
+          action.ui.entries[0].action.fields.push(mixed)
+          assert.throws(() => parsePluginCatalogItem(action), invalidResponse)
+        }
+      }
+    }
+  })
+
   it('permits identical action reuse across placements for the same context', () => {
     const raw = catalog(SECOND_PLUGIN)
     raw.ui.entries[2].action = structuredClone(raw.ui.entries[0].action)

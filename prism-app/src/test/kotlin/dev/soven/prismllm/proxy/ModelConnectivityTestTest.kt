@@ -1330,6 +1330,147 @@ class ModelConnectivityTestTest {
         assertFalse(result.errorMessage.orEmpty().contains(credential))
     }
 
+    @Test
+    fun failed_and_incomplete_responses_keep_usage_model_status_and_safe_partial_text() = runBlocking {
+        val credential = "synthetic-terminal-secret"
+        val usage = """{"input_tokens":7,"output_tokens":3,"total_tokens":10,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":1}}"""
+        for (state in listOf("failed", "incomplete")) {
+            val response = """{"status":"$state","model":"model-$credential","output":[{"content":[{"text":"partial $credential"}]}],"usage":$usage,"error":{"message":"denied $credential"}}"""
+            val stream = listOf(
+                """data: {"type":"response.output_text.delta","delta":"old partial"}""",
+                """data: {"type":"response.$state","response":$response}""",
+            ).joinToString("\n")
+            val parsed = requireNotNull(parseResponsesStreamText(stream))
+            assertEquals(state, parsed["status"]?.jsonPrimitive?.content)
+            assertEquals("model-$credential", parsed["model"]?.jsonPrimitive?.content)
+            assertEquals(Json.parseToJsonElement(usage), parsed["usage"])
+            assertEquals("partial $credential", collectText(parsed["output_text"]))
+            assertEquals("denied $credential", parsed["error"]?.jsonObject?.get("message")?.jsonPrimitive?.content)
+            assertNull(parsed["stream_truncated"])
+
+            for ((body, contentType) in listOf(response to ContentType.Application.Json, stream to ContentType.Text.EventStream)) {
+                for (oauth in listOf(false, true)) {
+                    val result = diagnosticTransport(
+                        credential, protocol = GatewayProtocol.RESPONSES, oauth = oauth,
+                        responseBody = body, contentType = contentType,
+                    )
+                    assertFailedDiagnostic(
+                        result, 200, "denied [REDACTED]", responseText = "partial [REDACTED]",
+                        usage = Usage(input = 7, output = 3, cached = 2, reasoning = 1, total = 10),
+                        reportedModel = "model-[REDACTED]",
+                    )
+                }
+                val execution = fingerprintDiagnosticTransport(
+                    credential, body, maxResponseChars = 100, protocol = GatewayProtocol.RESPONSES,
+                    responseContentType = contentType,
+                )
+                assertFalse(execution.result.success)
+                assertNotNull(execution.result.usage)
+                assertNull(execution.rawSample)
+            }
+        }
+    }
+
+    @Test
+    fun incomplete_responses_without_error_keep_usage_and_terminal_partial_output() = runBlocking {
+        val credential = "synthetic-incomplete-secret"
+        val response = """{"status":"incomplete","model":"public-model","output_text":"partial $credential","usage":{"input_tokens":7,"output_tokens":3,"total_tokens":10},"incomplete_details":{"reason":"max_output_tokens"}}"""
+        val stream = """data: {"type":"response.incomplete","response":$response}"""
+        for ((body, contentType, message) in listOf(
+            Triple(response, ContentType.Application.Json, "上游 Responses 尚未成功完成：incomplete"),
+            Triple(stream, ContentType.Text.EventStream, "响应因达到输出上限被截断（max_output_tokens）"),
+        )) {
+            val execution = fingerprintDiagnosticTransport(
+                credential, body, maxResponseChars = 100, protocol = GatewayProtocol.RESPONSES,
+                responseContentType = contentType,
+            )
+            assertFailedDiagnostic(
+                execution.result, 200, message, responseText = "partial [REDACTED]",
+                usage = Usage(input = 7, output = 3, cached = null, reasoning = null, total = 10),
+                reportedModel = "public-model",
+            )
+            assertNull(execution.rawSample)
+        }
+    }
+
+    @Test
+    fun encoded_credentials_are_redacted_before_success_error_and_transport_limits() = runBlocking {
+        val credential = "sk-Synthetic /+é中\"\\"
+        for (encoded in encodedCredentialEchoes(credential)) {
+            assertFalse(encoded.contains(credential))
+            for (oauth in listOf(false, true)) {
+                for ((textOffset, modelOffset) in listOf(0 to 0, 24 to 193, 34 to 203)) {
+                    val prefix = "t".repeat(textOffset)
+                    val modelPrefix = "m".repeat(modelOffset)
+                    val success = diagnosticTransport(
+                        credential, oauth = oauth, maxResponseChars = 31,
+                        responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("$prefix$encoded tail")}}}],"model":${JsonPrimitive("$modelPrefix$encoded tail")},"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}""",
+                    )
+                    assertSuccessfulDiagnostic(
+                        success, (prefix + "[REDACTED] tail").take(31), (modelPrefix + "[REDACTED] tail").take(200),
+                        usage = Usage(input = 7, output = 3, cached = null, reasoning = null, total = 10),
+                    )
+                }
+                for (offset in listOf(0, 493, 503)) {
+                    val prefix = "e".repeat(offset)
+                    for ((body, contentType) in listOf(
+                        """{"error":{"message":${JsonPrimitive("$prefix$encoded tail")}}}""" to ContentType.Application.Json,
+                        "$prefix$encoded tail" to ContentType.Text.Plain,
+                    )) {
+                        val result = diagnosticTransport(
+                            credential, oauth = oauth, responseBody = body,
+                            status = HttpStatusCode.BadGateway, contentType = contentType,
+                        )
+                        assertFailedDiagnostic(result, 502, (prefix + "[REDACTED] tail").take(500))
+                    }
+                }
+                for (offset in listOf(0, 193, 203)) {
+                    val prefix = "e".repeat(offset)
+                    val result = diagnosticTransport(
+                        credential, oauth = oauth, failure = IllegalStateException("$prefix$encoded tail"),
+                    )
+                    assertFailedDiagnostic(result, null, "无法连接上游：" + (prefix + "[REDACTED] tail").take(200))
+                }
+                val preview = diagnosticTransport(
+                    credential, oauth = oauth, status = HttpStatusCode.BadGateway,
+                    responseBody = """{"outer":[{${JsonPrimitive(encoded)}:${JsonPrimitive("before $encoded after")},"status":502,"enabled":false,"note":null}]}""",
+                )
+                assertFailedDiagnostic(preview, 502, """{"outer":[{"[REDACTED]":"before [REDACTED] after","status":502,"enabled":false,"note":null}]}""")
+            }
+        }
+    }
+
+    @Test
+    fun encoded_short_numeric_credentials_do_not_redact_individual_encoding_characters() = runBlocking {
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                "7", oauth = oauth,
+                responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("keep u003 0 3 %3; remove %37 and \\u0037")}}}],"model":"public-model","usage":{"prompt_tokens":"7","completion_tokens":"3","total_tokens":"10"}}""",
+            )
+            assertSuccessfulDiagnostic(
+                result, "keep u003 0 3 %3; remove [REDACTED] and [REDACTED]", "public-model",
+                usage = Usage(input = 7, output = 3, cached = null, reasoning = null, total = 10),
+            )
+            val preview = diagnosticTransport(
+                "7", oauth = oauth, status = HttpStatusCode.BadGateway,
+                responseBody = """{"detail":"%37","count":3,"enabled":false,"note":null}""",
+            )
+            assertFailedDiagnostic(preview, 502, """{"detail":"[REDACTED]","count":3,"enabled":false,"note":null}""")
+        }
+    }
+
+    private fun encodedCredentialEchoes(credential: String): List<String> {
+        val url = java.net.URLEncoder.encode(credential, Charsets.UTF_8)
+        val lowerUrl = Regex("%[0-9A-F]{2}").replace(url) { it.value.lowercase() }
+        val fullUrl = credential.toByteArray(Charsets.UTF_8).joinToString("") {
+            "%" + (it.toInt() and 0xff).toString(16).padStart(2, '0')
+        }
+        val unicode = unicodeEscapedCredential(credential)
+        val upperUnicode = Regex("\\\\u([0-9a-f]{4})").replace(unicode) { "\\u" + it.groupValues[1].uppercase() }
+        val json = JsonPrimitive(credential).toString().drop(1).dropLast(1)
+        return listOf(url, lowerUrl, url.replace("+", "%20"), fullUrl, unicode, upperUnicode, json, json.replace("/", "\\/")).distinct()
+    }
+
     private suspend fun fingerprintDiagnosticTransport(
         credential: String,
         responseBody: String,
@@ -1488,13 +1629,15 @@ class ModelConnectivityTestTest {
         statusCode: Int?,
         errorMessage: String,
         responseText: String? = null,
+        usage: Usage? = null,
+        reportedModel: String? = null,
     ) {
         assertFalse(result.success)
         assertEquals(statusCode, result.statusCode)
         assertEquals(errorMessage, result.errorMessage)
         assertEquals(responseText, result.responseText)
-        assertNull(result.upstreamReportedModel)
-        assertNull(result.usage)
+        assertEquals(reportedModel, result.upstreamReportedModel)
+        assertEquals(usage, result.usage)
         assertTrue(result.latencyMs >= 0)
     }
 

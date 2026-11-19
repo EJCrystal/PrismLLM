@@ -782,6 +782,7 @@ jobs:
             Only report issues that can be proven from the diff or the repository. Before reporting a missing symbol, import, helper, or function, verify it is actually absent from the whole repository, not just the current file or chunk. The diff may be split into chunks; absence from one chunk is not evidence that a symbol is missing.
             Do not repeat a finding that the current code has already fixed. If the code quoted in a previous finding no longer exists, mark that finding resolved instead of reporting it again.
             Do not report pure style, refactoring, or micro-performance suggestions unless they can cause incorrect behavior or a test failure. Avoid duplicate findings for the same root cause.
+            The DiagnosticPlugin SDK explicitly permits close() to overlap running plan()/report() calls; trusted implementations must synchronize their own state. Assess the host against that contract: the classloader must stay open until provider close has returned AND every actual worker has exited. Calling provider close before the worker exits is not itself a defect under this API.
           PR_REVIEWER.ENABLE_LARGE_PR_CHUNKING: "true"
           # 3 个分块不足以覆盖大型插件 PR；仍由下方完整性检查拒绝任何裁剪。
           PR_REVIEWER.MAX_NUMBER_OF_CALLS: "16"

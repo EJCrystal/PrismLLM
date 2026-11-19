@@ -128,6 +128,51 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun permanentSaveFailureRetainsRotationWithoutHoldingActiveTaskCapacity() = runBlocking {
+        val accountId = createAccount("retained-permanent", accountEmail = email("retained-permanent"))
+        val service = service()
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val function = "reject_refresh_$suffix"
+        val trigger = "reject_refresh_trigger_$suffix"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("CREATE FUNCTION $function() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '$accountId' AND NEW.access_token_ciphertext IS NOT NULL THEN RAISE EXCEPTION 'synthetic write permission failure' USING ERRCODE = '42501'; END IF; RETURN NEW; END $$")
+                statement.execute("CREATE TRIGGER $trigger BEFORE UPDATE ON oauth_accounts FOR EACH ROW EXECUTE FUNCTION $function()")
+            }
+        }
+        try {
+            val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(accountId) } }
+            assertEquals("refresh_save_pending", failure.errorCode)
+            withTimeout(5_000) {
+                while (true) {
+                    val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+                    val finished = synchronized(monitor) {
+                        (OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }.get(service) as Map<*, *>).isEmpty()
+                    }
+                    if (finished) break
+                    delay(1)
+                }
+            }
+            assertEquals(1, tokenRequests.get())
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER IF EXISTS $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION IF EXISTS $function()")
+                }
+            }
+        }
+        try {
+            assertEquals("at-1", withTimeout(5_000) { service.accessToken(accountId) }!!.accessToken)
+            assertEquals(1, tokenRequests.get(), "recovery must reuse the original encrypted exchange result")
+            val context = accounts.loadRefreshContext(accountId)!!
+            assertEquals("rt-2", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
     fun tokenRequestDeadlineCoversAStalledResponseBody() = runBlocking {
         val bodyStarted = CompletableDeferred<Unit>()
         val finishBody = CompletableDeferred<Unit>()
@@ -715,7 +760,8 @@ class OAuthTokenServiceTest {
             awaitExchangePermitWait(service, accountId)
             accounts.updateSettings(accountId, proxyUrl = "http://127.0.0.1:8181")
             repeat(4) { permits.release() }
-            assertTrue(withTimeout(5_000) { caller.await() }.isFailure)
+            val failure = withTimeout(5_000) { caller.await() }.exceptionOrNull()
+            assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(failure).errorCode)
             assertEquals(0, providerCalls.get(), "the original egress must not be used after permit waiting")
             assertEquals("http://127.0.0.1:8181", accounts.find(accountId)!!.proxyUrl)
         } finally {

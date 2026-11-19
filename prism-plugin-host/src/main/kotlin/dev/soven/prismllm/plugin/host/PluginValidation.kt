@@ -139,9 +139,6 @@ internal object PluginValidation {
             requireData(action.fields.any { it.key == "protocol" && it.kind == "protocol" && it.required }, "Actions require a mandatory host-bound protocol field")
             val scope = action.fields.firstOrNull { it.kind == "scope" }
             if (scope != null) {
-                // Validate each declared value against the field schema before considering whether
-                // the value can be used by every context that exposes this action.
-                scope.options.forEach { option -> validateValue(scope, JsonPrimitive(option.value), enforceRequired = false) }
                 val scopeValues = scope.options.map { it.value }.toSet()
                 if ("channel" in entry.contexts) {
                     if (action.supportsBatch) {
@@ -231,6 +228,7 @@ internal object PluginValidation {
             field.options.forEach {
                 text(it.value, 256, "Choice value", required = true)
                 text(it.label, 200, "Choice label", required = true)
+                validateValue(field, JsonPrimitive(it.value), enforceRequired = false)
             }
             requireData(field.kind != "select" || field.options.isNotEmpty(), "Select fields require choices")
             requireData(field.kind != "scope" || (field.options.isNotEmpty() && field.options.all { it.value in setOf("single", "all") }), "Scope choices must be single or all")

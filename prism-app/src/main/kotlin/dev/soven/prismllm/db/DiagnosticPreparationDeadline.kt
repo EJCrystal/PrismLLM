@@ -281,8 +281,8 @@ internal class DiagnosticPreparationDeadline private constructor(
                         invoke(connection, method, args)
                     }
                     method.name == "rollback" -> {
-                        val remaining = (deadline.deadlineNanos - deadline.nanoTime()).coerceAtLeast(1L)
-                        setTimeout(TimeUnit.NANOSECONDS.toMillis(remaining).coerceIn(1L, CLEANUP_TIMEOUT_MS).toInt())
+                        // Cleanup has its own bounded budget after caller expiry/cancellation.
+                        setTimeout(CLEANUP_TIMEOUT_MS.toInt())
                         invoke(connection, method, args)
                     }
                     method.name == "setNetworkTimeout" -> {

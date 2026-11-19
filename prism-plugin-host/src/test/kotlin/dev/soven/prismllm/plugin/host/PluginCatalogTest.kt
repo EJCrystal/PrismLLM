@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.apache.commons.compress.archivers.zip.ZipFile
 import org.apache.commons.compress.utils.SeekableInMemoryByteChannel
@@ -264,6 +265,77 @@ internal class PluginCatalogTest : PluginTestSupport() {
         failure("PLUGIN_INVALID_PACKAGE") {
             validate(entryWithScope(channel.copy(contexts = listOf("channel", "oauth-account")), listOf("all")))
         }
+    }
+
+    @Test
+    fun `static choices obey their own field limits without requiring defaults`(): Unit = runBlocking {
+        val packaged = fixture()
+        val entry = packaged.ui.entries.first()
+        val choices = listOf(
+            Triple("mode", "select", "enabled"),
+            Triple("model", "model", "vendor/model"),
+            Triple("keyId", "credential", "opaque/key"),
+            Triple("protocol", "protocol", "custom.protocol"),
+            Triple("scope", "scope", "single"),
+        )
+        for ((key, kind, value) in choices) {
+            for (required in if (kind in setOf("model", "protocol")) listOf(true) else listOf(false, true)) {
+                val field = PluginField(
+                    key, "Choice", kind, required = required, maxLength = value.length,
+                    options = listOf(PluginChoice(value, "Choice")),
+                )
+                assertNull(field.defaultValue)
+                val manifest = packaged.manifest.copy(configuration = listOf(field))
+                val ui = packaged.ui.copy(entries = listOf(entry.copy(action = entry.action.copy(
+                    fields = entry.action.fields.filterNot { it.key == key } + field,
+                ))))
+                assertNull(PluginValidation.descriptors(manifest, ui))
+                assertEquals(JsonPrimitive(value), PluginValidation.configuration(
+                    manifest.configuration, JsonObject(mapOf(key to JsonPrimitive(value))),
+                )[key])
+
+                for (maximum in listOf(1, value.length - 1)) {
+                    val invalid = field.copy(maxLength = maximum)
+                    failure("PLUGIN_INVALID_PACKAGE") {
+                        PluginValidation.descriptors(manifest.copy(configuration = listOf(invalid)), packaged.ui)
+                    }
+                    failure("PLUGIN_INVALID_PACKAGE") {
+                        PluginValidation.descriptors(packaged.manifest, ui.copy(entries = listOf(entry.copy(action = entry.action.copy(
+                            fields = entry.action.fields.filterNot { it.key == key } + invalid,
+                        )))))
+                    }
+                }
+                if (kind == "select") {
+                    val mixed = field.copy(options = field.options + PluginChoice(value + "x", "Too long"))
+                    failure("PLUGIN_INVALID_PACKAGE") {
+                        PluginValidation.descriptors(manifest.copy(configuration = listOf(mixed)), packaged.ui)
+                    }
+                    failure("PLUGIN_INVALID_PACKAGE") {
+                        PluginValidation.descriptors(packaged.manifest, ui.copy(entries = listOf(entry.copy(action = entry.action.copy(
+                            fields = entry.action.fields + mixed,
+                        )))))
+                    }
+                }
+            }
+        }
+        for (maximum in listOf(7, 1)) {
+            val select = PluginField(
+                "mode", "Mode", "select", required = true, maxLength = maximum,
+                options = listOf(PluginChoice("enabled", "Enabled")),
+            )
+            val documents = listOf(
+                "manifest.json" to PluginValidation.json.encodeToString(packaged.manifest.copy(configuration = listOf(select))),
+                "ui.json" to PluginValidation.json.encodeToString(packaged.ui.copy(entries = listOf(entry.copy(action = entry.action.copy(
+                    fields = entry.action.fields + select,
+                ))))),
+            )
+            for ((name, document) in documents) {
+                publish(packaged.repack(packaged.entries.map { if (it.name == name) it.copy(bytes = document.toByteArray()) else it }))
+                if (maximum == 7) assertTrue(PluginCatalog(catalogDirectory).items().single().compatible)
+                else rejectedPackage("PLUGIN_INVALID_PACKAGE")
+            }
+        }
+        assertEquals(0, packaged.count("initialized"))
     }
 
     @Test

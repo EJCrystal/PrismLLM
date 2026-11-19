@@ -262,8 +262,8 @@ private suspend fun runModelConnectivityTest(
                         redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
                     }
                 } else null,
-                usage = if (ok && !responsesError) extractModelTestUsage(protocol, json) else null,
-                upstreamReportedModel = if (ok && !responsesError) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
+                usage = if (ok) extractModelTestUsage(protocol, json) else null,
+                upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
             )
             ModelConnectivityExecution(
                 result = result,
@@ -449,8 +449,30 @@ private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential
         ?: "上游返回 HTTP $statusCode"
 }
 
-private fun redactModelTestCredential(text: String, credential: String): String =
-    if (credential.isEmpty()) text else text.replace(credential, "[REDACTED]")
+private fun redactModelTestCredential(text: String, credential: String): String {
+    if (credential.isEmpty()) return text
+    fun hexPattern(hex: String): String = hex.map { char ->
+        if (char in 'a'..'f') "[$char${char.uppercaseChar()}]" else char.toString()
+    }.joinToString("")
+    // Match the whole credential, allowing each code point's common echo encoding.
+    // Hex case is flexible; literal token characters remain case-sensitive.
+    val pattern = credential.codePoints().toArray().joinToString("") { codePoint ->
+        val literal = String(Character.toChars(codePoint))
+        val urlEncoded = literal.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
+            "%" + hexPattern((byte.toInt() and 0xff).toString(16).padStart(2, '0'))
+        }
+        val unicodeEscaped = literal.map { char ->
+            Regex.escape("\\u") + hexPattern(char.code.toString(16).padStart(4, '0'))
+        }.joinToString("")
+        val jsonEscaped = JsonPrimitive(literal).toString().drop(1).dropLast(1)
+        val forms = mutableListOf(urlEncoded, unicodeEscaped, Regex.escape(jsonEscaped))
+        if (literal == "/") forms += Regex.escape("\\/")
+        if (literal == " ") forms += Regex.escape("+")
+        forms += Regex.escape(literal)
+        "(?:${forms.distinct().joinToString("|")})"
+    }
+    return Regex(pattern).replace(text) { "[REDACTED]" }
+}
 
 private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String): String =
     if (json == null) redactModelTestCredential(body, credential) else redactModelTestJsonPreview(json, credential).toString()
@@ -464,11 +486,8 @@ private fun redactModelTestJsonPreview(element: JsonElement, credential: String)
         is JsonArray -> JsonArray(element.map { redactModelTestJsonPreview(it, credential) })
         is JsonPrimitive -> {
             val value = element.content
-            if (credential.isNotEmpty() && value.contains(credential)) {
-                JsonPrimitive(redactModelTestCredential(value, credential))
-            } else {
-                element
-            }
+            val redacted = redactModelTestCredential(value, credential)
+            if (redacted != value) JsonPrimitive(redacted) else element
         }
     }
 }
@@ -495,14 +514,15 @@ private fun parseJsonObject(body: String): JsonObject? =
 
 /**
  * 把 Responses 的 SSE 流（`data: {json}` 行）折成非流式形状：`output_text` 聚合文本，
- * `output` 保留数组原样，usage 与 reported model 取自最后的完成事件；流以
- * `response.failed` 终止时记录终止状态与上游错误，供调用方把 2xx 流判为失败。
+ * `output` 保留数组原样，usage、model 与 status 取自终止 response；失败或未完成的
+ * 终止事件同样保留元数据与部分文本，并附带错误供调用方把 2xx 流判为失败。
  */
 internal fun parseResponsesStreamText(body: String): JsonObject? {
     var text: String? = null
     var output: JsonElement? = null
     var usage: JsonObject? = null
     var reportedModel: String? = null
+    var responseStatus: String? = null
     var failedError: JsonObject? = null
     var terminated = false
     for (line in body.lineSequence()) {
@@ -523,42 +543,32 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
             failedError = buildJsonObject { put("error", event) }
             terminated = true
         }
-        if (type.startsWith("response.failed")) {
-            failedError = (event["response"] as? JsonObject)
-                ?.let { response ->
-                    (response["error"] as? JsonObject)?.let { error -> buildJsonObject { put("error", error) } }
-                }
-                ?: buildJsonObject { put("error", buildJsonObject { put("message", "上游响应以失败事件终止") }) }
-            terminated = true
+        val terminalStatus = when {
+            type.startsWith("response.failed") -> "failed"
+            type.startsWith("response.incomplete") -> "incomplete"
+            type.startsWith("response.completed") -> "completed"
+            else -> null
         }
-        if (type.startsWith("response.incomplete")) {
-            // 触及输出上限的正常终止：不是断流，折叠成 error 让调用方给出可读结果。
+        if (terminalStatus != null) {
             terminated = true
-            val details = (event["response"] as? JsonObject)?.get("incomplete_details") as? JsonObject
-            val reason = details?.get("reason")?.let { (it as? JsonPrimitive)?.contentOrNull } ?: "output_token_limit"
-            failedError = buildJsonObject {
-                put("error", buildJsonObject { put("message", "响应因达到输出上限被截断（$reason）") })
-            }
-        }
-        if (type.startsWith("response.completed")) {
-            terminated = true
-            (event["response"] as? JsonObject)?.let { response ->
-                usage = response["usage"] as? JsonObject ?: usage
-                reportedModel = (response["model"] as? JsonPrimitive)?.contentOrNull ?: reportedModel
-                output = response["output"] ?: output
-                val completedText = (response["output"] as? JsonArray)
-                    ?.asSequence()
-                    ?.filterIsInstance<JsonObject>()
-                    ?.mapNotNull { item ->
-                        (item["content"] as? JsonArray)
-                            ?.filterIsInstance<JsonObject>()
-                            ?.mapNotNull { part -> (part["text"] as? JsonPrimitive)?.contentOrNull }
-                            ?.joinToString("")
-                    }
-                    ?.joinToString("")
-                // 完成事件的 output 携带完整文本：有增量时以它为准，避免拼接出重复文本。
-                if (!completedText.isNullOrEmpty()) {
-                    text = completedText
+            val response = event["response"] as? JsonObject
+            responseStatus = (response?.get("status") as? JsonPrimitive)?.contentOrNull ?: terminalStatus
+            usage = response?.get("usage") as? JsonObject ?: usage
+            reportedModel = (response?.get("model") as? JsonPrimitive)?.contentOrNull ?: reportedModel
+            output = response?.get("output") ?: output
+            val terminalText = collectText(response?.get("output_text")) ?: collectText(response?.get("output"))
+            // A terminal response carries the full (possibly partial) text, not another delta.
+            if (!terminalText.isNullOrEmpty()) text = terminalText
+            val error = response?.get("error") as? JsonObject
+            if (error != null) {
+                failedError = buildJsonObject { put("error", error) }
+            } else if (terminalStatus == "failed") {
+                failedError = buildJsonObject { put("error", buildJsonObject { put("message", "上游响应以失败事件终止") }) }
+            } else if (terminalStatus == "incomplete") {
+                val details = response?.get("incomplete_details") as? JsonObject
+                val reason = (details?.get("reason") as? JsonPrimitive)?.contentOrNull ?: "output_token_limit"
+                failedError = buildJsonObject {
+                    put("error", buildJsonObject { put("message", "响应因达到输出上限被截断（$reason）") })
                 }
             }
         }
@@ -577,6 +587,7 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         output?.let { put("output", it) }
         usage?.let { put("usage", it) }
         reportedModel?.let { put("model", it) }
+        responseStatus?.let { put("status", it) }
         failedError?.let { failed -> put("error", failed["error"] ?: failed) }
         // 上游或代理可能中途断流：没有终止事件时直接折叠成 error 形状，调用方按失败处理。
         if (!terminated) {

@@ -322,13 +322,16 @@ class DiagnosticPreparationDeadlineTest {
     @Test
     fun `PostgreSQL query cancellation times out without evicting the lease`() = runBlocking {
         val jdbc = StatementJdbc(blockRead = false, executeFailure = SQLException("simulated query cancellation", "57014"))
-        val result = DiagnosticPreparationDeadline.withinSynchronousAndDrain(5_000) {
+        val clock = AtomicLong()
+        val budget = DiagnosticPreparationDeadline.start(5_000, clock::get)
+        val result = DiagnosticPreparationDeadline.withinSynchronousAndDrain(budget) {
             DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use { connection ->
                 try {
                     connection.createStatement().use { statement ->
                         statement.executeQuery("SELECT 1").use { rows -> rows.next() }
                     }
                 } catch (cause: SQLException) {
+                    clock.set(TimeUnit.MILLISECONDS.toNanos(5_001))
                     connection.rollback()
                     throw cause
                 }
@@ -337,7 +340,7 @@ class DiagnosticPreparationDeadlineTest {
 
         assertNull(result, "SQLSTATE 57014 should be reported as a diagnostic timeout")
         assertEquals(1, jdbc.rollbacks.get(), "the canceled transaction still needs rollback")
-        assertTrue(jdbc.timeoutAtRollback.get() in 1..1_000, "rollback must use a bounded cleanup timeout")
+        assertEquals(1_000, jdbc.timeoutAtRollback.get(), "rollback retains its independent cleanup budget after preparation expires")
         assertEquals(0, jdbc.aborts.get())
         assertEquals(0, jdbc.discards.get())
         assertEquals(1, jdbc.closes.get())
