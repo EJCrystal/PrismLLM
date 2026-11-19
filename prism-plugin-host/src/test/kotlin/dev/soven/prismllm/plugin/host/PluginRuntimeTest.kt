@@ -1435,18 +1435,23 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val host = runtime(store)
         coroutineScope {
             val initialization = async(Dispatchers.Default) { runCatching { host.initialize() } }
+            var closing: kotlinx.coroutines.Deferred<Unit>? = null
             try {
                 awaitProperty("${delayed.property}.load-ready", "1")
                 assertEquals(1, earlier.count("constructed"))
                 assertNotNull(loader(earlier).findResource("fixture/owned-resource.txt"))
-                host.close()
+                val closeCall = async(Dispatchers.IO) { host.close() }
+                closing = closeCall
+                withTimeout(3_000) { closeCall.await() }
                 awaitProperty("${delayed.property}.load-interrupted", "1")
                 System.setProperty("${delayed.property}.release", "true")
                 val error = assertNotNull(withTimeout(1_500) { initialization.await() }.exceptionOrNull() as? PluginHostException)
                 assertEquals("PLUGIN_RUNTIME_CLOSED", error.code)
             } finally {
-                host.close()
+                // Release the constructor before waiting, even if close regresses and blocks.
                 System.setProperty("${delayed.property}.release", "true")
+                val closeCall = closing ?: async(Dispatchers.IO) { host.close() }
+                withTimeout(3_000) { closeCall.await() }
             }
         }
         assertDisposed(earlier)
@@ -1585,30 +1590,151 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
-    fun `plugin report collection access remains inside the timed worker`(): Unit = runBlocking {
-        val packaged = fixture(reportPrefix = """
-            if (System.nanoTime() != 0) {
-                java.util.List<DiagnosticMetric> lazy = (java.util.List<DiagnosticMetric>) java.lang.reflect.Proxy.newProxyInstance(
-                    getClass().getClassLoader(), new Class<?>[] { java.util.List.class }, (proxy, method, arguments) -> {
-                        if (method.getName().equals("size")) {
-                            try { Thread.sleep(2000); } catch (InterruptedException expected) { Thread.currentThread().interrupt(); }
-                            return 0;
-                        }
-                        if (method.getName().equals("isEmpty")) return true;
-                        return null;
-                    });
-                return new DiagnosticReport(true, "Lazy report", lazy, Collections.emptyList(), "OK");
-            }
-        """.trimIndent())
-        publish(packaged)
-        val host = runtime()
-        host.initialize(packaged.manifest.id)
-        failure("PLUGIN_CODE_TIMEOUT") {
-            withTimeout(3_000) {
-                host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 100)) { ok }
+    fun `plugin report copies reject growing collections after at most one excess entry`(): Unit = runBlocking {
+        for ((collection, limit) in listOf("metrics" to 32, "notices" to 16)) {
+            val type = if (collection == "metrics") "DiagnosticMetric" else "String"
+            val entry = if (collection == "metrics") "new DiagnosticMetric(\"Metric\", \"Value\")" else "\"Notice\""
+            val packaged = fixture(id = "growing.$collection", reportPrefix = """
+                if (System.nanoTime() != 0) {
+                    java.util.concurrent.atomic.AtomicInteger sizes = new java.util.concurrent.atomic.AtomicInteger();
+                    java.util.concurrent.atomic.AtomicInteger entries = new java.util.concurrent.atomic.AtomicInteger();
+                    java.util.List<$type> growing = (java.util.List<$type>) java.lang.reflect.Proxy.newProxyInstance(
+                        getClass().getClassLoader(), new Class<?>[] { java.util.List.class }, (proxy, method, arguments) -> {
+                            if (method.getName().equals("size")) {
+                                mark("collection-size");
+                                return sizes.getAndIncrement() == 0 ? 1 : 1000000;
+                            }
+                            if (method.getName().equals("isEmpty")) return false;
+                            if (method.getName().equals("iterator")) {
+                                return java.util.stream.Stream.generate(() -> $entry).limit(1000000L).peek(value -> {
+                                    mark("collection-next");
+                                    if (entries.incrementAndGet() > ${limit + 1}) throw new IllegalStateException("unbounded report traversal");
+                                }).iterator();
+                            }
+                            throw new UnsupportedOperationException(method.getName());
+                        });
+                    return new DiagnosticReport(true, "Growing report", ${if (collection == "metrics") "growing, Collections.emptyList()" else "Collections.emptyList(), growing"}, "OK");
+                }
+            """.trimIndent())
+            publish(packaged)
+            val host = runtime()
+            host.initialize(packaged.manifest.id)
+            try {
+                val error = withTimeout(4_000) { failure("PLUGIN_INVALID_REPORT") { invoke(host, packaged.manifest.id) } }
+                assertTrue(error.message.orEmpty().contains("declarative result limits"))
+                assertEquals(1, packaged.count("collection-size"))
+                assertEquals(limit + 1, packaged.count("collection-next"))
+                assertEquals(1, packaged.count("reported"))
+            } finally {
+                host.close()
             }
         }
-        host.close()
+    }
+
+    @Test
+    fun `plugin report validates and returns the same collection snapshot`(): Unit = runBlocking {
+        for (collection in listOf("metrics", "notices")) {
+            val type = if (collection == "metrics") "DiagnosticMetric" else "String"
+            val valid = if (collection == "metrics") "new DiagnosticMetric(\"Metric\", \"Value\")" else "\"Notice\""
+            val invalid = if (collection == "metrics") "new DiagnosticMetric(\"x\".repeat(129), \"Value\")" else "\"x\".repeat(2001)"
+            val packaged = fixture(id = "snapshot.$collection", reportPrefix = """
+                if (System.nanoTime() != 0) {
+                    java.util.concurrent.atomic.AtomicInteger traversals = new java.util.concurrent.atomic.AtomicInteger();
+                    java.util.List<$type> changing = (java.util.List<$type>) java.lang.reflect.Proxy.newProxyInstance(
+                        getClass().getClassLoader(), new Class<?>[] { java.util.List.class }, (proxy, method, arguments) -> {
+                            if (method.getName().equals("size")) return 1;
+                            if (method.getName().equals("isEmpty")) return false;
+                            if (method.getName().equals("get")) {
+                                mark("collection-get");
+                                return $invalid;
+                            }
+                            if (method.getName().equals("iterator")) {
+                                mark("collection-iterator");
+                                return Collections.singletonList(traversals.getAndIncrement() == 0 ? $valid : $invalid).iterator();
+                            }
+                            throw new UnsupportedOperationException(method.getName());
+                        });
+                    return new DiagnosticReport(true, "Changing report", ${if (collection == "metrics") "changing, Collections.emptyList()" else "Collections.emptyList(), changing"}, "OK");
+                }
+            """.trimIndent())
+            publish(packaged)
+            val host = runtime()
+            host.initialize(packaged.manifest.id)
+            try {
+                val report = withTimeout(4_000) { invoke(host, packaged.manifest.id).report }
+                if (collection == "metrics") {
+                    assertEquals("Metric", report.metrics.single().label)
+                    assertEquals("Value", report.metrics.single().value)
+                } else {
+                    assertEquals(listOf("Notice"), report.notices)
+                }
+                assertEquals(1, packaged.count("collection-iterator"))
+                assertEquals(0, packaged.count("collection-get"))
+            } finally {
+                host.close()
+            }
+        }
+    }
+
+    @Test
+    fun `plugin report collection access remains inside the timed worker`(): Unit = runBlocking {
+        for (collection in listOf("metrics", "notices")) {
+            val ready = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val type = if (collection == "metrics") "DiagnosticMetric" else "String"
+            val packaged = fixture(id = "blocking.$collection", reportPrefix = """
+                if (System.nanoTime() != 0) {
+                    java.util.List<$type> lazy = (java.util.List<$type>) java.lang.reflect.Proxy.newProxyInstance(
+                        getClass().getClassLoader(), new Class<?>[] { java.util.List.class }, (proxy, method, arguments) -> {
+                            if (method.getName().equals("size")) {
+                                java.util.concurrent.CountDownLatch release = (java.util.concurrent.CountDownLatch)
+                                    System.getProperties().get(getClass().getName() + ".collection-release");
+                                ((java.util.concurrent.CountDownLatch) System.getProperties().get(getClass().getName() + ".collection-ready")).countDown();
+                                boolean released = false;
+                                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                                while (!released && System.nanoTime() < deadline) {
+                                    try { released = release.await(10, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                                    catch (InterruptedException ignored) { }
+                                }
+                                if (!released) throw new IllegalStateException("test collection was not released");
+                                mark("collection-released");
+                                return 0;
+                            }
+                            if (method.getName().equals("isEmpty")) return true;
+                            if (method.getName().equals("iterator")) return Collections.emptyList().iterator();
+                            throw new UnsupportedOperationException(method.getName());
+                        });
+                    return new DiagnosticReport(true, "Lazy report", ${if (collection == "metrics") "lazy, Collections.emptyList()" else "Collections.emptyList(), lazy"}, "OK");
+                }
+            """.trimIndent())
+            System.getProperties()["${packaged.providerClass}.collection-ready"] = ready
+            System.getProperties()["${packaged.providerClass}.collection-release"] = release
+            publish(packaged)
+            val host = runtime()
+            host.initialize(packaged.manifest.id)
+            try {
+                coroutineScope {
+                    val invocation = async(Dispatchers.Default) {
+                        runCatching { host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 1_500)) { ok } }
+                    }
+                    try {
+                        assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "The report collection size must be entered before checking its timeout")
+                        val error = assertNotNull(withTimeout(4_000) { invocation.await() }.exceptionOrNull() as? PluginHostException)
+                        assertEquals("PLUGIN_CODE_TIMEOUT", error.code)
+                        assertTrue(error.message.orEmpty().contains("report exceeded its time bound"))
+                        assertEquals(0, packaged.count("collection-released"), "The caller must time out while collection size is blocked")
+                    } finally {
+                        release.countDown()
+                    }
+                }
+                awaitProperty("${packaged.property}.collection-released", "1")
+            } finally {
+                release.countDown()
+                host.close()
+                System.getProperties().remove("${packaged.providerClass}.collection-ready")
+                System.getProperties().remove("${packaged.providerClass}.collection-release")
+            }
+        }
     }
 
     @Test

@@ -768,38 +768,133 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
-  it('keeps an invalid channel entry excluded on background events until a successful explicit recheck', async () => {
+  for (const failureStage of ['contributions', 'state']) {
+    it(`recovers an invalid channel entry only after deferred event discovery and live confirmation, preserving invalid on ${failureStage} errors`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      const entry = await mountDiagnosticSurface('ChannelConnectivityPanel', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const oldKey = entry.state.hostKey.value
+      const key = entry.state.contributionKey(fixture.contribution)
+      const setups = diagnosticHostSetups
+      mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
+      await host.load(); await settle()
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+      assert.match(text(entry.container), /诊断入口已失效/)
+      mock.getTargets = undefined
+
+      const failed = deferred()
+      if (failureStage === 'contributions') mock.listContributions = () => failed.promise
+      else mock.getState = () => failed.promise
+      let reads = calls.contributions.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(diagnosticHostSetups, setups)
+      failed.reject(new Error(`channel ${failureStage} discovery unavailable`))
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.match(text(entry.container.querySelector('[role="alert"]')), /discovery unavailable/)
+
+      const discovery = deferred()
+      const live = deferred()
+      mock.listContributions = () => discovery.promise
+      mock.getState = () => live.promise
+      reads = calls.contributions.length
+      const stateReads = calls.state.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(diagnosticHostSetups, setups)
+      discovery.resolve(clonePluginData(fixture.contributions))
+      await waitFor(() => calls.state.length === stateReads + 1)
+      assert.equal(entry.state.loading.value, true)
+      assert.equal(entry.state.invalidContributions.value.has(key), true, 'discovery alone cannot restore an unconfirmed action')
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+      assert.equal(diagnosticHostSetups, setups)
+      live.resolve(clonePluginData(fixture.state))
+      await waitFor(() => diagnosticHostSetups === setups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
+      assert.notEqual(captures.get('PluginDiagnosticHost'), host)
+      assert.notEqual(entry.state.hostKey.value, oldKey)
+      assert.equal(entry.state.invalidContributions.value.size, 0)
+      assert.equal(entry.state.diagnosticGenerations.value.get(key), 1)
+      assert.equal(entry.state.loadError.value, '')
+      assert.equal(captures.get('PluginDiagnosticHost').props.contribution.entry.action.id, fixture.contribution.entry.action.id)
+    })
+  }
+
+  for (const mismatch of ['plugin', 'version', 'action', 'disabled', 'entry', 'placement', 'context', 'absent']) {
+    it(`keeps the invalid channel entry excluded when refreshed live confirmation has a different ${mismatch}`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      const entry = await mountDiagnosticSurface('ChannelConnectivityPanel', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const setups = diagnosticHostSetups
+      mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
+      await host.load(); await settle()
+      mock.getTargets = undefined
+      const live = clonePluginData(fixture.state)
+      if (mismatch === 'plugin') live.id = 'other.plugin'
+      if (mismatch === 'version') live.activeVersion = '2.0.0'
+      if (mismatch === 'action') live.activeUi.entries[0].action.id = 'other-action'
+      if (mismatch === 'disabled') live.admissionEnabled = false
+      if (mismatch === 'entry') live.activeUi.entries[0].id = 'other-entry'
+      if (mismatch === 'placement') live.activeUi.entries[0].placement = 'plugin-page'
+      if (mismatch === 'context') live.activeUi.entries[0].contexts = ['oauth-account']
+      mock.getState = () => live
+      if (mismatch === 'absent') mock.listContributions = () => Promise.resolve([])
+      const reads = calls.contributions.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && !entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.size, 1)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+    })
+  }
+
+  it('keeps the current channel host running while an event recovers an earlier invalid entry', async () => {
     const fixture = makeOfficialPluginFixture()
     const entry = await mountDiagnosticSurface('ChannelConnectivityPanel', fixture)
     await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
     const host = captures.get('PluginDiagnosticHost')
+    const hostElement = entry.container.querySelector('.plugin-diagnostic-host')
+    const oldKey = entry.state.hostKey.value
     const setups = diagnosticHostSetups
-    mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
-    await host.load(); await settle()
-    assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
-    assert.match(text(entry.container), /诊断入口已失效/)
-    mock.getTargets = undefined
+    const other = clonePluginData(fixture.contribution)
+    other.entry.id = 'another-channel-entry'
+    fixture.contributions.unshift(other)
+    fixture.state.activeUi.entries.push(clonePluginData(other.entry))
+    mock.states.set(fixture.state.id, clonePluginData(fixture.state))
+    entry.state.markUnavailable({ pluginId: other.pluginId, activeVersion: other.activeVersion, entryId: other.entry.id })
+    await change(field(entry.container, '本次提示词'), 'retain valid channel draft')
+    const invocation = deferred()
+    mock.invoke = () => invocation.promise
+    const run = host.run()
+    await waitFor(() => calls.invocations.length === 1)
+    const call = calls.invocations[0]
+    const discovery = deferred()
+    mock.listContributions = () => discovery.promise
     const reads = calls.contributions.length
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
-    await waitFor(() => calls.contributions.length === reads + 1 && !entry.state.loading.value)
-    assert.equal(diagnosticHostSetups, setups)
-    assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+    await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value)
     assert.equal(entry.state.invalidContributions.value.size, 1)
-    const failed = deferred()
-    mock.listContributions = () => failed.promise
-    button(entry.container, '重新检查').click()
-    await waitFor(() => entry.state.loading.value)
-    assert.equal(diagnosticHostSetups, setups)
-    assert.equal(entry.state.invalidContributions.value.size, 1)
-    failed.reject(new Error('channel recheck unavailable'))
+    discovery.resolve(clonePluginData(fixture.contributions))
     await waitFor(() => !entry.state.loading.value)
-    assert.equal(entry.state.invalidContributions.value.size, 1)
-    assert.equal(diagnosticHostSetups, setups)
-    mock.listContributions = undefined
-    button(entry.container.querySelector('[role="alert"]'), '重试').click()
-    await waitFor(() => diagnosticHostSetups === setups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
     assert.equal(entry.state.invalidContributions.value.size, 0)
-    assert.equal([...entry.state.diagnosticGenerations.value.values()][0], 1)
+    assert.equal(entry.state.diagnosticGenerations.value.get(entry.state.contributionKey(other)), 1)
+    assert.equal(entry.state.hostKey.value, oldKey)
+    assert.equal(captures.get('PluginDiagnosticHost'), host)
+    assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+    assert.equal(diagnosticHostSetups, setups)
+    assert.equal(call.options.signal.aborted, false)
+    assert.equal(host.running.value, true)
+    invocation.resolve(responseFor(call))
+    await run; await settle()
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+    assert.equal(field(entry.container, '本次提示词').value, 'retain valid channel draft')
   })
 
   for (const completion of ['response', 'error']) {

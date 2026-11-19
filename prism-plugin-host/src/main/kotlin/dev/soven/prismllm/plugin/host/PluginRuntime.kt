@@ -648,10 +648,23 @@ class PluginRuntime(
     )
 
     private fun report(report: DiagnosticReport): DiagnosticReport {
-        if (report.title.length > 256 || report.title.isBlank() || report.metrics.size > 32 || report.notices.size > 16 || report.metrics.any { it.label.length > 128 || it.value.length > 512 } || report.notices.any { it.length > 2_000 } || (report.text?.length ?: 0) > 16_000) {
-            throw PluginHostException("PLUGIN_INVALID_REPORT", "Plugin returned a report exceeding the declarative result limits")
+        fun invalidReport(): Nothing = throw PluginHostException("PLUGIN_INVALID_REPORT", "Plugin returned a report exceeding the declarative result limits")
+        fun <T> boundedCopy(items: List<T>, limit: Int): List<T> {
+            if (items.size > limit) invalidReport()
+            val copy = ArrayList<T>(limit)
+            for (item in items) {
+                if (copy.size == limit) invalidReport()
+                copy.add(item)
+            }
+            return copy
         }
-        return report.copy(metrics = report.metrics.toList(), notices = report.notices.toList())
+        // A plugin can change its size or iterator between reads. Bound the copy itself and
+        // validate only the host-owned lists that will be returned to the caller.
+        val snapshot = report.copy(metrics = boundedCopy(report.metrics, 32), notices = boundedCopy(report.notices, 16))
+        if (snapshot.title.length > 256 || snapshot.title.isBlank() || snapshot.metrics.any { it.label.length > 128 || it.value.length > 512 } || snapshot.notices.any { it.length > 2_000 } || (snapshot.text?.length ?: 0) > 16_000) {
+            invalidReport()
+        }
+        return snapshot
     }
 
     private suspend fun <T> withProbePermit(planTimeoutMs: Long, block: suspend () -> T): T {

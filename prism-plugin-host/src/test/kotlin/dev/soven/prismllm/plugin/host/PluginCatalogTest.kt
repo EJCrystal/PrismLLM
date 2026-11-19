@@ -15,9 +15,13 @@ import org.apache.commons.compress.utils.SeekableInMemoryByteChannel
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
+import java.io.IOException
+import java.net.URI
 import java.nio.file.AccessDeniedException
+import java.nio.file.FileSystems
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.assertEquals
@@ -543,6 +547,75 @@ internal class PluginCatalogTest : PluginTestSupport() {
         }
         assertEquals(0, packaged.count("initialized"))
         assertEquals(listOf(packaged.manifest.version), Files.list(staged.jarPath.parent.parent).use { files -> files.map { it.fileName.toString() }.toList() })
+    }
+
+    @Test
+    fun `directory sync persists new ancestors and brackets atomic publication and replay`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val selected = PluginCatalog(catalogDirectory).select(packaged.manifest.id, "1.0.0")
+        val managed = root.resolve("new-parent/state")
+        val pluginRoot = managed.resolve(packaged.manifest.id)
+        val destination = pluginRoot.resolve("1.0.0")
+        val synced = mutableListOf<Pair<Path, Boolean>>()
+        val installer = PluginPackageInstaller(managed) { path ->
+            PluginPackageInstaller.forceDirectory(path)
+            if (path.fileName.toString().endsWith(".staging") || path == destination) {
+                assertTrue(Files.readAllBytes(path.resolve("plugin.jar")).contentEquals(packaged.jar))
+                assertTrue(Files.readAllBytes(path.resolve("package.prismplugin")).contentEquals(packaged.archive))
+            }
+            synced.add(path to Files.exists(destination, NOFOLLOW_LINKS))
+        }
+        installer.stage(selected)
+        assertEquals(listOf(root, managed.parent, managed), synced.take(3).map { it.first })
+        val publication = synced.drop(3)
+        assertEquals(3, publication.size)
+        assertTrue(publication.first().first.fileName.toString().endsWith(".staging"))
+        assertEquals(listOf(false, false, true), publication.map { it.second })
+        assertEquals(listOf(pluginRoot, pluginRoot), publication.drop(1).map { it.first })
+
+        synced.clear()
+        installer.stage(selected)
+        assertEquals(listOf(managed.parent, managed, destination, pluginRoot), synced.map { it.first })
+        assertTrue(synced.all { it.second })
+        assertEquals(0, packaged.count("initialized"))
+    }
+
+    @Test
+    fun `directory sync failures preserve cleanup and post move retry`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val selected = PluginCatalog(catalogDirectory).select(packaged.manifest.id, "1.0.0")
+        // Ancestor, staging, pre-move parent and post-move parent failures must all fail staging.
+        for (failedSync in 0..4) {
+            val managed = root.resolve("sync-failure-$failedSync")
+            val pluginRoot = managed.resolve(packaged.manifest.id)
+            val destination = pluginRoot.resolve("1.0.0")
+            var calls = 0
+            val installer = PluginPackageInstaller(managed) { path ->
+                if (calls++ == failedSync) throw IOException("injected directory sync failure")
+                PluginPackageInstaller.forceDirectory(path)
+            }
+            val error = failure("PLUGIN_STORAGE_UNREADABLE") { installer.stage(selected) }
+            assertEquals(503, error.statusCode)
+            assertEquals(failedSync == 4, Files.exists(destination, NOFOLLOW_LINKS))
+            if (Files.isDirectory(pluginRoot)) Files.list(pluginRoot).use { files ->
+                assertTrue(files.noneMatch { it.fileName.toString().endsWith(".staging") })
+            }
+            val replay = PluginPackageInstaller(managed).stage(selected)
+            assertTrue(Files.readAllBytes(replay.jarPath).contentEquals(packaged.jar))
+        }
+    }
+
+    @Test
+    fun `non POSIX directory sync leaves atomic visibility available without a durability promise`() {
+        val archive = URI.create("jar:" + root.resolve("non-posix.zip").toUri())
+        FileSystems.newFileSystem(archive, mapOf("create" to "true")).use { fileSystem ->
+            val directory = Files.createDirectory(fileSystem.getPath("/state"))
+            assertFalse(fileSystem.supportedFileAttributeViews().contains("posix"))
+            PluginPackageInstaller.forceDirectory(directory)
+            assertTrue(Files.isDirectory(directory))
+        }
     }
 
     @Test

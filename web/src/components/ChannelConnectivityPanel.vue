@@ -17,7 +17,10 @@ let disposed = false
 const invalidContributions = ref(new Set<string>())
 const diagnosticGenerations = ref(new Map<string, number>())
 const contributionKey = (item: PluginUiContribution) => `${item.pluginId}:${item.activeVersion}:${item.entry.id}`
-const contribution = computed(() => contributions.value.find((item) => item.pluginId === 'prism.connectivity' && item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel') && !invalidContributions.value.has(contributionKey(item))))
+const contribution = computed<PluginUiContribution | undefined>((previous) => {
+  const available = contributions.value.filter((item) => item.pluginId === 'prism.connectivity' && item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel') && !invalidContributions.value.has(contributionKey(item)))
+  return available.find((item) => previous && contributionKey(item) === contributionKey(previous)) ?? available[0]
+})
 const hostKey = computed(() => {
   const key = contribution.value ? contributionKey(contribution.value) : ''
   return `${key}:${props.channel.id}:${diagnosticGenerations.value.get(key) ?? 0}`
@@ -31,16 +34,29 @@ async function load(recheck = false) {
   loading.value = true
   loadError.value = ''
   try {
-    const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
-    if (!result.isLatest || disposed) return
-    if (recheck) {
-      const resultKeys = new Set(result.value.map(contributionKey))
-      for (const key of invalidContributions.value) {
-        if (resultKeys.has(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+    const invalid = new Set(invalidContributions.value)
+    const result = await guard.run(async () => {
+      const available = await api.getPluginContributions({ signal: current.signal })
+      const recovered: string[] = []
+      if (recheck) {
+        for (const item of available) {
+          const key = contributionKey(item)
+          if (!invalid.has(key) || item.pluginId !== 'prism.connectivity' || item.entry.placement !== 'channel-tests' || !item.entry.contexts.includes('channel')) continue
+          const live = await api.getPlugin(item.pluginId, { signal: current.signal })
+          if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
+            live.activeUi?.entries.some((entry) => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
+              entry.placement === 'channel-tests' && entry.contexts.includes('channel'))) recovered.push(key)
+        }
       }
-      invalidContributions.value = new Set()
+      return { available, recovered }
+    })
+    if (!result.isLatest || disposed) return
+    const remaining = new Set(invalidContributions.value)
+    for (const key of result.value.recovered) {
+      if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
     }
-    contributions.value = result.value
+    invalidContributions.value = remaining
+    contributions.value = result.value.available
     loading.value = false
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
@@ -49,7 +65,7 @@ async function load(recheck = false) {
     }
   } finally { if (controller === current) controller = null }
 }
-function refresh() { void load() }
+function refresh() { void load(true) }
 function recheck() { void load(true) }
 function markUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
   invalidContributions.value = new Set([...invalidContributions.value, `${value.pluginId}:${value.activeVersion}:${value.entryId}`])

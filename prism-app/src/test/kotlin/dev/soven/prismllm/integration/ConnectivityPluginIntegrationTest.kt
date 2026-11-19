@@ -62,7 +62,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -1053,20 +1052,45 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
 
                 DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
                     lock.autoCommit = false
+                    val blocker = lock.createStatement().use { statement ->
+                        statement.executeQuery("select pg_backend_pid()").use { rows ->
+                            assertTrue(rows.next())
+                            rows.getInt(1)
+                        }
+                    }
                     coroutineScope {
                         val pending = async(Dispatchers.Default) { client.invokePlugin(session, "oauth-account", account.id, input) }
-                        withTimeout(5_000) { exchangeStarted.await() }
-                        lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
-                            statement.setString(1, account.id)
-                            statement.executeQuery().use { assertTrue(it.next()) }
-                        }
-                        finishExchange.complete(Unit)
-                        val response = try {
-                            withTimeoutOrNull(5_000) { pending.await() }
+                        try {
+                            withTimeout(5_000) { exchangeStarted.await() }
+                            lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
+                                statement.setString(1, account.id)
+                                statement.executeQuery().use { assertTrue(it.next()) }
+                            }
+                            finishExchange.complete(Unit)
+                            DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { observer ->
+                                observer.autoCommit = true
+                                observer.prepareStatement(
+                                    "select exists (select 1 from pg_stat_activity where datname = current_database() " +
+                                        "and state = 'active' and wait_event_type = 'Lock' " +
+                                        "and query ilike '%oauth_accounts%' " +
+                                        "and ? = any(pg_blocking_pids(pid)))",
+                                ).use { observation ->
+                                    observation.queryTimeout = 1
+                                    observation.setInt(1, blocker)
+                                    awaitCondition("the exchanged token CAS save is blocked on FOR UPDATE", timeoutMs = 5_000) {
+                                        observation.executeQuery().use { rows ->
+                                            assertTrue(rows.next())
+                                            rows.getBoolean(1)
+                                        }
+                                    }
+                                }
+                            }
+                            assertFalse(pending.isCompleted, "Observe the save waiting on the row lock before the caller times out")
+                            assertPreparationTimeout(withTimeout(7_000) { pending.await() }, provider)
                         } finally {
+                            finishExchange.complete(Unit)
                             lock.rollback()
                         }
-                        assertPreparationTimeout(assertNotNull(response, "the caller must stop waiting while CAS is blocked"), provider)
                     }
                 }
                 withTimeout(5_000) {

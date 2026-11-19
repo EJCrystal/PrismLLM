@@ -12,14 +12,21 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardOpenOption.CREATE_NEW
+import java.nio.file.StandardOpenOption.READ
 import java.nio.file.StandardOpenOption.WRITE
+import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 
 internal data class StagedPluginPackage(val item: PluginCatalogItem, val jarPath: Path, val providerClass: String)
 
 /** Publish a complete validated snapshot atomically; an id/version is never overwritten. */
-class PluginPackageInstaller(managedDirectory: Path) {
+class PluginPackageInstaller internal constructor(
+    managedDirectory: Path,
+    private val syncDirectory: (Path) -> Unit,
+) {
+    constructor(managedDirectory: Path) : this(managedDirectory, ::forceDirectory)
+
     internal val directory: Path = managedDirectory.toAbsolutePath().normalize()
 
     internal fun stage(validated: ValidatedPluginPackage): StagedPluginPackage = io {
@@ -27,6 +34,7 @@ class PluginPackageInstaller(managedDirectory: Path) {
         val manifest = validated.item.manifest
         PluginValidation.identity(manifest.id, manifest.version)
         val pluginRoot = directory.resolve(manifest.id)
+        ensureDirectory(directory)
         ensureDirectory(pluginRoot)
         val destination = pluginRoot.resolve(manifest.version)
         PluginPackages.ensureNoLinks(destination)
@@ -38,6 +46,10 @@ class PluginPackageInstaller(managedDirectory: Path) {
             write(temporary.resolve("package.prismplugin"), validated.archive)
             write(temporary.resolve("plugin.jar"), validated.jar)
             permissions(temporary, "r-xr-xr-x")
+            // File forces do not persist directory entries. Sync the complete snapshot and its
+            // parent before publication, then the rename before the caller can persist DB state.
+            syncDirectory(temporary)
+            syncDirectory(pluginRoot)
             try {
                 // Same-filesystem directory rename publishes both files together, never partial data.
                 Files.move(temporary, destination, ATOMIC_MOVE)
@@ -53,6 +65,7 @@ class PluginPackageInstaller(managedDirectory: Path) {
                 if (Files.exists(destination, NOFOLLOW_LINKS)) return@io existing(validated, destination)
                 throw error
             }
+            syncDirectory(pluginRoot)
             StagedPluginPackage(validated.item, destination.resolve("plugin.jar"), validated.providerClass)
         } finally {
             if (Files.exists(temporary, NOFOLLOW_LINKS)) discardTemporary(temporary)
@@ -78,7 +91,11 @@ class PluginPackageInstaller(managedDirectory: Path) {
         if (PluginPackages.hash(archive) != validated.item.sha256) {
             throw PluginHostException("PLUGIN_VERSION_CONFLICT", "A different or damaged immutable package already occupies this plugin version", 409)
         }
-        return readAt(destination, validated.item.manifest.id, validated.item.manifest.version, validated.item.sha256, validated.item.source, archive)
+        val staged = readAt(destination, validated.item.manifest.id, validated.item.manifest.version, validated.item.sha256, validated.item.source, archive)
+        // Also cover a concurrent winner or a retry after a post-rename sync failure.
+        syncDirectory(destination)
+        syncDirectory(destination.parent)
+        return staged
     }
 
     private fun readAt(destination: Path, id: String, version: String, sha256: String, source: String, archive: ByteArray? = null): StagedPluginPackage {
@@ -96,8 +113,13 @@ class PluginPackageInstaller(managedDirectory: Path) {
 
     private fun ensureDirectory(path: Path) {
         PluginPackages.ensureNoLinks(path)
+        if (!Files.exists(path, NOFOLLOW_LINKS)) {
+            path.parent?.takeUnless { Files.exists(it, NOFOLLOW_LINKS) }?.let { ensureDirectory(it) }
+        }
         Files.createDirectories(path)
         PluginValidation.requireData(Files.isDirectory(path, NOFOLLOW_LINKS), "Managed plugin path must be a directory")
+        // Persist newly created managed-directory ancestors too, including on a concurrent replay.
+        path.parent?.let(syncDirectory)
     }
 
     private fun write(path: Path, bytes: ByteArray) {
@@ -128,6 +150,18 @@ class PluginPackageInstaller(managedDirectory: Path) {
         permissions(path, "rwx------")
         Files.list(path).use { files -> files.forEach { Files.delete(it) } }
         Files.delete(path)
+    }
+
+    internal companion object {
+        fun forceDirectory(path: Path) {
+            if (Files.getFileAttributeView(path, PosixFileAttributeView::class.java, NOFOLLOW_LINKS) == null) {
+                // Non-POSIX providers (including ordinary Windows storage) may not open directories
+                // as channels. Atomic visibility remains supported; power-loss durability is not promised.
+                return
+            }
+            // On POSIX storage, sync errors must prevent a successful installation/DB write.
+            FileChannel.open(path, READ, NOFOLLOW_LINKS).use { it.force(true) }
+        }
     }
 
     private inline fun <T> io(block: () -> T): T = try {

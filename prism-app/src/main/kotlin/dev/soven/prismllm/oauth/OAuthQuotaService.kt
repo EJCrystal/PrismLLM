@@ -157,19 +157,21 @@ class OAuthQuotaService(
 
     /** Antigravity 的额度来自 Code Assist 的 retrieveUserQuotaSummary。 */
     private suspend fun refreshAntigravity(account: OAuthAccountRecord): OAuthQuotaResult {
-        val token = try {
-            tokenService.accessToken(account.id)
+        val bound = try {
+            tokenService.accessTokenWithSnapshot(account.id)
         } catch (cause: OAuthTokenUnavailableException) {
             return failed(account.id, cause.errorCode ?: "credential_unavailable")
         } ?: return OAuthQuotaResult.NotFound
+        val currentAccount = bound.account
+        val token = bound.token
         val proxy = try {
-            proxyAddress(account.proxyUrl, config.proxyAllowedHosts)
+            proxyAddress(currentAccount.proxyUrl, config.proxyAllowedHosts)
         } catch (cause: OAuthRefreshException) {
             return failed(account.id, cause.errorCode)
         }
         // 后台扫描没有上层超时；发现与读额度都要限时，避免上游不响应时挂住整轮扫描。
         val context = withTimeoutOrNull(readTimeoutMs) {
-            projectResolver.context(account, token.accessToken, proxy)
+            projectResolver.context(currentAccount, token.accessToken, proxy)
         } ?: return failed(account.id, "quota_read_timeout")
         val project = context.project ?: return failed(account.id, "project_missing")
         val snapshot = withTimeoutOrNull(readTimeoutMs) {

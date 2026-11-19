@@ -219,6 +219,74 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun shutdownFlushesRetainedRotationAfterDatabaseWriteRecovery() = runBlocking {
+        val id = createAccount("shutdown-retained", accountEmail = email("shutdown-retained"))
+        val service = service()
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val function = "shutdown_save_$suffix"
+        val trigger = "shutdown_save_trigger_$suffix"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("CREATE FUNCTION $function() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '$id' AND NEW.access_token_ciphertext IS NOT NULL THEN RAISE EXCEPTION 'synthetic write failure' USING ERRCODE = '42501'; END IF; RETURN NEW; END $$")
+                statement.execute("CREATE TRIGGER $trigger BEFORE UPDATE ON oauth_accounts FOR EACH ROW EXECUTE FUNCTION $function()")
+            }
+        }
+        try {
+            val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+            assertEquals("refresh_save_pending", failure.errorCode)
+            withTimeout(5_000) {
+                val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+                val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+                while (synchronized(monitor) { (tasks.get(service) as Map<*, *>).isNotEmpty() }) delay(1)
+            }
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER IF EXISTS $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION IF EXISTS $function()")
+                }
+            }
+        }
+        assertTrue(withTimeout(10_000) { service.drainRefreshes() })
+        val saved = accounts.loadRefreshContext(id)!!
+        assertEquals("rt-2", cipher.decrypt(saved.refreshTokenCiphertext, saved.refreshTokenNonce))
+        assertEquals(1, tokenRequests.get(), "shutdown must persist the retained response without another exchange")
+    }
+
+    @Test
+    fun terminalFailureFromOldExchangeCannotInvalidateAccessOnlyOrProxyEdits() = runBlocking {
+        for (edit in listOf("access", "proxy")) {
+            val id = createAccount("failure-snapshot-$edit", accountEmail = email("failure-$edit"))
+            val service = service()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            beforeReply.set { entered.complete(Unit); runBlocking { withTimeout(5_000) { release.await() } } }
+            reply = { 400 to """{"error":"invalid_grant"}""" }
+            try {
+                val call = async { runCatching { service.accessToken(id) } }
+                withTimeout(5_000) { entered.await() }
+                if (edit == "proxy") accounts.updateSettings(id, proxyUrl = "http://127.0.0.1:8181")
+                else accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                    provider = OAuthProvider.CHATGPT,
+                    accessToken = cipher.encrypt(UUID.randomUUID().toString()),
+                    accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000,
+                ))
+                release.complete(Unit)
+                val failure = withTimeout(5_000) { call.await() }.exceptionOrNull()
+                assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(failure).errorCode)
+                val saved = accounts.find(id)!!
+                assertEquals(OAuthAuthState.ACTIVE, saved.authState)
+                assertEquals(0, saved.refreshFailureCount)
+                assertNull(saved.lastRefreshError)
+            } finally {
+                release.complete(Unit)
+                assertTrue(service.drainRefreshes())
+                beforeReply.set(null)
+            }
+        }
+    }
+
+    @Test
     fun tokenRequestDeadlineCoversAStalledResponseBody() = runBlocking {
         val bodyStarted = CompletableDeferred<Unit>()
         val finishBody = CompletableDeferred<Unit>()

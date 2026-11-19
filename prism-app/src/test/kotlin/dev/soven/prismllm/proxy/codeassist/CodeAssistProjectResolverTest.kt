@@ -4,6 +4,8 @@ import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import dev.soven.prismllm.db.DiagnosticPreparationDeadline
 import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
+import dev.soven.prismllm.oauth.domain.OAuthAuthState
+import dev.soven.prismllm.oauth.matchesCredentialSnapshot
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -588,6 +590,182 @@ class CodeAssistProjectResolverTest {
         }
     }
 
+    @Test
+    fun `projectless probe rejects admin replacement before returning entitlements`() = runBlocking {
+        val original = account()
+        val replacements = listOf(
+            original.copy(authorizedAt = 123),
+            original.copy(refreshTokenCiphertext = "replacement-refresh"),
+            original.copy(refreshTokenNonce = "replacement-nonce"),
+            original.copy(refreshTokenKeyVersion = 2),
+            original.copy(accessTokenCiphertext = "replacement-access"),
+            original.copy(accessTokenNonce = "replacement-access-nonce"),
+            original.copy(accessTokenKeyVersion = 2),
+            original.copy(accessTokenExpiresAt = 999),
+            original.copy(tokenType = "replacement-type"),
+            original.copy(scope = "replacement-scope"),
+            original.copy(authState = OAuthAuthState.REAUTH_REQUIRED),
+            original.copy(proxyUrl = "http://replacement-proxy:3128"),
+        )
+        for (replacement in replacements) {
+            for (warm in listOf(false, true)) {
+                val current = AtomicReference(original)
+                val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+                val replace = java.util.concurrent.atomic.AtomicBoolean(false)
+                val accounts = FakeAccounts(saved, snapshotMatches = { it.matchesCredentialSnapshot(current.get()) })
+                HttpClient(MockEngine { request ->
+                    val body = if (!replace.get()) {
+                        """{"cloudaicompanionProject":"confirmed-project","paidTier":{"id":"paid-tier"}}"""
+                    } else if (request.url.encodedPath.endsWith("loadCodeAssist")) {
+                        """{"currentTier":{"id":"stale-tier"},"paidTier":{"id":"stale-paid"},"allowedTiers":[{"id":"stale-allowed"}]}"""
+                    } else {
+                        current.set(replacement)
+                        """{"done":true,"response":{}}"""
+                    }
+                    respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                }).use { client ->
+                    val resolver = CodeAssistProjectResolver(accounts, client)
+                    if (warm) assertEquals("confirmed-project", resolver.probe(original, "captured-token").project)
+                    val before = saved.get()
+                    replace.set(true)
+                    val failure = runCatching { resolver.probe(original, "captured-token") }.exceptionOrNull()
+                    assertEquals("credential_replaced", (failure as? OAuthTokenUnavailableException)?.errorCode)
+                    assertEquals(before, saved.get(), "rejected probe must not write a context")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `projectless fallback rejects a concurrent database context change`() = runBlocking {
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val change = java.util.concurrent.atomic.AtomicBoolean(false)
+        HttpClient(MockEngine { request ->
+            val body = if (!change.get()) {
+                """{"cloudaicompanionProject":"confirmed-project","paidTier":{"id":"paid-tier"}}"""
+            } else if (request.url.encodedPath.endsWith("loadCodeAssist")) {
+                """{"currentTier":{"id":"paid-tier"}}"""
+            } else {
+                saved.set(OAuthAccountRepository.UpstreamContext("other-project", "paid-tier", 123))
+                """{"done":true,"response":{}}"""
+            }
+            respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), client)
+            assertEquals("confirmed-project", resolver.probe(account(), "token").project)
+            change.set(true)
+            assertNull(resolver.probe(account(), "token").project)
+            assertEquals("other-project", saved.get()?.project)
+        }
+    }
+
+    @Test
+    fun `context rechecks captured credentials before fallback and cache hits`() = runBlocking {
+        val current = AtomicReference(account())
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val clock = AtomicReference(0L)
+        val replace = java.util.concurrent.atomic.AtomicBoolean(false)
+        val calls = AtomicInteger()
+        val accounts = FakeAccounts(saved, snapshotMatches = { it.matchesCredentialSnapshot(current.get()) })
+        HttpClient(MockEngine {
+            calls.incrementAndGet()
+            if (replace.get()) {
+                current.set(account().copy(accessTokenNonce = "admin-replacement"))
+                respond("unavailable", io.ktor.http.HttpStatusCode.ServiceUnavailable)
+            } else respond("""{"cloudaicompanionProject":"confirmed-project"}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(accounts, client, now = { clock.get() })
+            assertEquals("confirmed-project", resolver.context(account(), "token").project)
+            val before = saved.get()
+            clock.set(7_200_000)
+            replace.set(true)
+            val fallbackFailure = runCatching { resolver.context(account(), "token") }.exceptionOrNull()
+            assertEquals("credential_replaced", (fallbackFailure as? OAuthTokenUnavailableException)?.errorCode)
+            clock.set(0)
+            val cacheFailure = runCatching { resolver.context(account(), "token") }.exceptionOrNull()
+            assertEquals("credential_replaced", (cacheFailure as? OAuthTokenUnavailableException)?.errorCode)
+            assertEquals(2, calls.get())
+            assertEquals(before, saved.get())
+        }
+    }
+
+    @Test
+    fun `oversized discovery and onboarding never poison cached context or fallback`() = runBlocking {
+        val tooLongProject = "p".repeat(129)
+        val tooLongTier = "t".repeat(65)
+        val invalidBodies = listOf(
+            """{"cloudaicompanionProject":"$tooLongProject"}""",
+            """{"cloudaicompanionProject":"bad-project","currentTier":{"id":"$tooLongTier"}}""",
+            """{"cloudaicompanionProject":"bad-project","paidTier":{"id":"$tooLongTier"}}""",
+            """{"allowedTiers":[{"id":"$tooLongTier"}]}""",
+            """{"currentTier":{"id":"valid-tier"}}""",
+        )
+        for (invalidBody in invalidBodies) {
+            val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+            val clock = AtomicReference(0L)
+            val mode = AtomicInteger(0)
+            val calls = AtomicInteger()
+            HttpClient(MockEngine { request ->
+                calls.incrementAndGet()
+                when (mode.get()) {
+                    0 -> respond("""{"cloudaicompanionProject":"confirmed-project","paidTier":{"id":"paid-tier"}}""",
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                    1 -> respond(
+                        if (request.url.encodedPath.endsWith("loadCodeAssist")) invalidBody
+                        else """{"done":true,"response":{"cloudaicompanionProject":"$tooLongProject"}}""",
+                        headers = headersOf(HttpHeaders.ContentType, "application/json"),
+                    )
+                    else -> respond("unavailable", io.ktor.http.HttpStatusCode.ServiceUnavailable)
+                }
+            }).use { client ->
+                val resolver = CodeAssistProjectResolver(FakeAccounts(saved), client, now = { clock.get() })
+                val expected = CodeAssistProjectResolver.Context("confirmed-project", "paid-tier")
+                assertEquals(expected, resolver.context(account(), "token"))
+                val before = saved.get()
+                clock.set(7_200_000)
+                mode.set(1)
+                assertTrue(runCatching { resolver.context(account(), "token") }.exceptionOrNull() is IllegalArgumentException)
+                assertTrue(runCatching { resolver.probe(account(), "token") }.exceptionOrNull() is IllegalArgumentException)
+                assertEquals(before, saved.get())
+                clock.set(0)
+                val beforeCacheHit = calls.get()
+                assertEquals(expected, resolver.context(account(), "token"))
+                assertEquals(beforeCacheHit, calls.get(), "rejected values must leave the original cache usable")
+                clock.set(7_200_000)
+                mode.set(2)
+                assertEquals(expected, resolver.context(account(), "token"))
+                assertEquals(before, saved.get(), "fallback must not refresh the database timestamp")
+            }
+        }
+    }
+
+    @Test
+    fun `maximum length context remains identical in memory database cache and fallback`() = runBlocking {
+        val project = "p".repeat(128)
+        val tier = "t".repeat(64)
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val clock = AtomicReference(0L)
+        val calls = AtomicInteger()
+        HttpClient(MockEngine {
+            if (calls.incrementAndGet() == 1) respond(
+                """{"cloudaicompanionProject":"$project","paidTier":{"id":"$tier"}}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"),
+            ) else respond("unavailable", io.ktor.http.HttpStatusCode.ServiceUnavailable)
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), client, now = { clock.get() })
+            val expected = CodeAssistProjectResolver.Context(project, tier)
+            assertEquals(expected, resolver.context(account(), "token"))
+            assertEquals(project, saved.get()?.project)
+            assertEquals(tier, saved.get()?.tier)
+            assertEquals(expected, resolver.context(account(), "token"))
+            assertEquals(1, calls.get())
+            clock.set(7_200_000)
+            assertEquals(expected, resolver.context(account(), "token"))
+            assertEquals(2, calls.get())
+        }
+    }
+
     private fun account(): OAuthAccountRecord = OAuthAccountRecord(
         id = "account-1",
         name = "antigravity",
@@ -613,6 +791,12 @@ class CodeAssistProjectResolverTest {
         private val beforeWrite: suspend () -> Unit = {},
         private val snapshotMatches: (OAuthAccountRecord) -> Boolean = { true },
     ) : OAuthAccountRepository(unusedDatabase(), ProviderChannelLookup { emptySet() }) {
+        override suspend fun upstreamContextIfSnapshotMatches(expectedAccount: OAuthAccountRecord): OAuthAccountRepository.UpstreamContext? {
+            beforeRead()
+            if (!snapshotMatches(expectedAccount)) return null
+            return saved.get() ?: OAuthAccountRepository.UpstreamContext(null, null, null)
+        }
+
         override suspend fun loadUpstreamContext(accountId: String): OAuthAccountRepository.UpstreamContext? {
             beforeRead()
             return saved.get()

@@ -114,7 +114,7 @@ class CodeAssistProjectResolver(
     ): Context {
         val proxyKey = egressKey(proxy)
         val export = negotiated[account.id]?.takeIf { it.account.matchesCredentialSnapshot(account) }
-        val cached = databaseStep(preparation) { accounts.upstreamContext(account.id) }
+        val cached = confirmedContext(account, preparation)
         // The memory and DB records must agree before the DB value can be treated as a fast-path hit.
         // A diagnostic write can commit and then time out during cleanup before memory publication.
         val cacheMatchesExport = export != null && export.egress == proxyKey &&
@@ -124,20 +124,46 @@ class CodeAssistProjectResolver(
         if (cacheMatchesExport && fresh) return Context(export!!.project, export.tier)
 
         val loaded = attempt(account.id, "loadCodeAssist") { loadCodeAssist(account.id, accessToken, proxy) }
-            ?: return if (cacheMatchesExport) Context(export?.project, export?.tier) else Context(null, null)
+            ?: return fallbackContext(account, proxyKey, preparation)
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
-        if (project == null) {
-            // Do not reuse a memory context when the persisted snapshot disagrees with it.
-            return if (cacheMatchesExport) Context(export?.project, export?.tier) else Context(null, null)
-        }
+        if (project == null) return fallbackContext(account, proxyKey, preparation)
         if (export?.egress != proxyKey) {
             logger.info("account proxy changed, renegotiated code assist context, accountId={}", account.id)
         }
         // Publish to memory only after the repository confirms this is still the exact OAuth snapshot.
         return recordContext(account, proxyKey, project, loaded.catalogTier(), loaded.reportsTier(), preparation)
             ?: Context(null, null)
+    }
+
+    private suspend fun confirmedContext(
+        account: OAuthAccountRecord,
+        preparation: DiagnosticPreparationDeadline.Budget? = null,
+    ): OAuthAccountRepository.UpstreamContext = databaseStep(preparation) {
+        accounts.upstreamContextIfSnapshotMatches(account)
+    } ?: throw credentialReplaced()
+
+    private suspend fun fallbackContext(
+        account: OAuthAccountRecord,
+        egress: String,
+        preparation: DiagnosticPreparationDeadline.Budget? = null,
+    ): Context {
+        // Recheck after the upstream attempt: an admin may have replaced credentials or context.
+        val stored = confirmedContext(account, preparation)
+        val confirmed = negotiated[account.id]?.takeIf {
+            it.account.matchesCredentialSnapshot(account) && it.egress == egress &&
+                it.project == stored.project && it.tier == stored.tier
+        }
+        return Context(confirmed?.project, confirmed?.tier)
+    }
+
+    private class InvalidContextValue(field: String, maximum: Int) :
+        IllegalArgumentException("Code Assist $field exceeds $maximum characters")
+
+    private fun bounded(value: String?, maximum: Int, field: String): String? {
+        if (value != null && value.length > maximum) throw InvalidContextValue(field, maximum)
+        return value
     }
 
     /**
@@ -158,6 +184,8 @@ class CodeAssistProjectResolver(
     ): Context? {
         val previous = negotiated[account.id]?.takeIf { it.account.matchesCredentialSnapshot(account) }
         val merged = if (tierReported) tier else previous?.takeIf { it.egress == egress }?.tier
+        bounded(project, MAX_PROJECT_LENGTH, "project")
+        bounded(merged, MAX_TIER_LENGTH, "tier")
         val saved = databaseStep(preparation) {
             accounts.saveUpstreamContextIfSnapshotMatches(account, project, merged, now())
         }
@@ -191,6 +219,8 @@ class CodeAssistProjectResolver(
         block()
     } catch (cause: CancellationException) {
         throw cause
+    } catch (cause: InvalidContextValue) {
+        throw cause
     } catch (cause: Throwable) {
         logger.warn("{} failed, accountId={}, error={}", action, accountId, cause::class.simpleName)
         null
@@ -208,12 +238,8 @@ class CodeAssistProjectResolver(
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
         if (project == null) {
-            val confirmed = negotiated[account.id]?.takeIf {
-                it.account.matchesCredentialSnapshot(account) && it.egress == egressKey(proxy)
-            }
-            val stored = accounts.upstreamContext(account.id)
-            val previousProject = confirmed?.project?.takeIf { it == stored?.project && confirmed.tier == stored.tier }
-            return Probe(previousProject, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+            val previous = fallbackContext(account, egressKey(proxy))
+            return Probe(previous.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
         }
 
         val context = recordContext(account, egressKey(proxy), project, loaded.catalogTier(), loaded.reportsTier())
@@ -243,6 +269,10 @@ class CodeAssistProjectResolver(
                 allowed,
             )
         }
+        bounded(project, MAX_PROJECT_LENGTH, "project")
+        bounded(tier, MAX_TIER_LENGTH, "tier")
+        bounded(paidTier, MAX_TIER_LENGTH, "paidTier")
+        allowed.forEach { bounded(it, MAX_TIER_LENGTH, "allowedTier") }
         return Loaded(project, tier, allowed, paidTier)
     }
 
@@ -261,8 +291,9 @@ class CodeAssistProjectResolver(
             val root = json.parseToJsonElement(text) as? JsonObject ?: return null
             if ((root["done"] as? JsonPrimitive)?.booleanOrNull == true) {
                 val response = root["response"] as? JsonObject ?: return null
-                return (response["cloudaicompanionProject"] as? JsonPrimitive)?.contentOrNull
+                val project = (response["cloudaicompanionProject"] as? JsonPrimitive)?.contentOrNull
                     ?: (response["cloudaicompanionProject"] as? JsonObject)?.get("id")?.let { (it as? JsonPrimitive)?.contentOrNull }
+                return bounded(project, MAX_PROJECT_LENGTH, "project")
             }
             delay(ONBOARD_POLL_MS)
         }
@@ -301,6 +332,8 @@ class CodeAssistProjectResolver(
     }
 
     private companion object {
+        const val MAX_PROJECT_LENGTH = 128
+        const val MAX_TIER_LENGTH = 64
         const val TIER_TTL_MS = 3_600_000L
         const val ONBOARD_ATTEMPTS = 5
         const val ONBOARD_POLL_MS = 1_000L

@@ -278,6 +278,7 @@ class OAuthTokenService(
             }
             // A forced caller may join a normal task which decided to return its cached token.
             // That is not a refresh; loop and join/start a task that must exchange instead.
+            if (outcome.account.hasAccessToken && (outcome.account.accessTokenExpiresAt ?: 0) <= now()) continue
             if (!force || outcome.exchanged) return outcome
         }
     }
@@ -351,7 +352,7 @@ class OAuthTokenService(
                 // Failure writes, like successful save retries, must not hold an exchange permit.
                 withContext(NonCancellable) {
                     withinRefreshDatabaseBudget {
-                        recordRefreshFailure(accountId, failure.errorCode, failure.terminal, exchangeContext.refreshTokenCiphertext)
+                        recordRefreshFailure(exchangeContext.account, failure.errorCode, failure.terminal)
                     }
                 }
                 throw OAuthTokenUnavailableException(
@@ -431,6 +432,9 @@ class OAuthTokenService(
 
     private fun requireAccessToken(account: OAuthAccountRecord): OAuthAccessToken {
         if (!account.hasAccessToken) throw credentialReplaced()
+        if ((account.accessTokenExpiresAt ?: 0) <= now()) {
+            throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "访问令牌已过期，请重试刷新", "access_token_expired")
+        }
         return decryptAccess(account)
     }
 
@@ -492,8 +496,28 @@ class OAuthTokenService(
             } == true
             if (!completed) logger.warn("OAuth refresh shutdown still has an in-flight provider or JDBC operation")
         }
+        val idlePending = synchronized(refreshLifecycleLock) {
+            pendingRefreshes.filterKeys { id -> refreshTasks[id]?.work?.isCompleted != false }.toMap()
+        }
+        val shutdownBudget = DiagnosticPreparationDeadline.start(timeoutMs.coerceAtLeast(1))
+        for ((id, pending) in idlePending) {
+            val write = try {
+                DiagnosticPreparationDeadline.withinSynchronousAndDrain(shutdownBudget) {
+                    RefreshWrite(repository.saveRefreshed(
+                        accountId = id, accessToken = pending.accessToken, expiresAt = pending.expiresAt,
+                        tokenType = pending.tokenType, scope = pending.scope, rotatedRefreshToken = pending.rotatedRefreshToken,
+                        expectedRefreshCiphertext = pending.context.refreshTokenCiphertext,
+                        expectedAccount = pending.context.account, now = now(),
+                    ))
+                }
+            } catch (_: Exception) { null }
+            if (write != null) synchronized(refreshLifecycleLock) { pendingRefreshes.remove(id, pending) }
+            else break // Keep the remaining encrypted results and report an incomplete drain.
+        }
+        val unsaved = synchronized(refreshLifecycleLock) { pendingRefreshes.size }
+        if (unsaved != 0) logger.warn("OAuth shutdown retains {} unsaved encrypted rotation results", unsaved)
         refreshSupervisor.cancel()
-        return drained
+        return drained && unsaved == 0
     }
 
     override fun close() {
@@ -675,12 +699,13 @@ class OAuthTokenService(
      * 记录刷新失败。若凭据在刷新期间被管理员替换，放弃本次失败结果并提示重试，
      * 避免旧 refresh token 的终态错误把刚导入的新凭据标记为需要重新授权。
      */
-    private suspend fun recordRefreshFailure(accountId: String, errorCode: String, terminal: Boolean, expectedRefreshCiphertext: String) {
+    private suspend fun recordRefreshFailure(expected: OAuthAccountRecord, errorCode: String, terminal: Boolean) {
         val recorded = repository.recordFailure(
-            accountId = accountId,
+            accountId = expected.id,
             errorCode = errorCode,
             terminal = terminal,
-            expectedRefreshCiphertext = expectedRefreshCiphertext,
+            expectedRefreshCiphertext = expected.refreshTokenCiphertext,
+            expectedAccount = expected,
             now = now(),
         )
         if (recorded == null) {

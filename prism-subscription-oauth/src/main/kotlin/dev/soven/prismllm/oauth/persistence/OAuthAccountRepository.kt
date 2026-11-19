@@ -711,12 +711,18 @@ open class OAuthAccountRepository(
         terminal: Boolean,
         expectedRefreshCiphertext: String? = null,
         now: Long = System.currentTimeMillis(),
+        expectedAccount: OAuthAccountRecord? = null,
     ): OAuthAccountRecord? = suspendTransaction(database) {
         val row = OAuthAccounts.selectAll()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
         if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
+            return@suspendTransaction null
+        }
+        if (expectedAccount != null && (expectedAccount.id != accountId || !sameAuthorization(row, expectedAccount) ||
+                row[OAuthAccounts.authState] != expectedAccount.authState.value ||
+                !sameRefresh(row, expectedAccount) || !sameAccess(row, expectedAccount))) {
             return@suspendTransaction null
         }
         val failureCount = row[OAuthAccounts.refreshFailureCount] + 1
@@ -770,6 +776,25 @@ open class OAuthAccountRepository(
             )
         }
     }
+
+    /** Read context and compare the captured credentials, authorization and proxy in one DB snapshot. */
+    open suspend fun upstreamContextIfSnapshotMatches(expectedAccount: OAuthAccountRecord): UpstreamContext? =
+        suspendTransaction(database) {
+            val row = OAuthAccounts.selectAll()
+                .where { OAuthAccounts.id eq expectedAccount.id }
+                .singleOrNull() ?: return@suspendTransaction null
+            if (!sameAuthorization(row, expectedAccount) ||
+                row[OAuthAccounts.authState] != expectedAccount.authState.value ||
+                !sameRefresh(row, expectedAccount) || !sameAccess(row, expectedAccount)
+            ) {
+                return@suspendTransaction null
+            }
+            UpstreamContext(
+                project = row[OAuthAccounts.upstreamProject],
+                tier = row[OAuthAccounts.upstreamTier],
+                checkedAt = row[OAuthAccounts.upstreamTierCheckedAt],
+            )
+        }
 
     /**
      * 写入一次协商结果。`tier` 为 null 表示上游这次没给出套餐信息，此时显式清空旧值，
