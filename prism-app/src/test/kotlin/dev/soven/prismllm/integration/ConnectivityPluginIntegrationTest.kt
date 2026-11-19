@@ -1058,40 +1058,40 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                             rows.getInt(1)
                         }
                     }
-                DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { observer ->
-                    observer.autoCommit = true
-                    observer.prepareStatement(
-                        "select exists (select 1 from pg_stat_activity where datname = current_database() " +
-                            "and state = 'active' and wait_event_type = 'Lock' " +
-                            "and query ilike '%oauth_accounts%' " +
-                            "and ? = any(pg_blocking_pids(pid)))",
-                    ).use { observation ->
-                        observation.queryTimeout = 1
-                        observation.setInt(1, blocker)
-                        coroutineScope {
-                            val pending = async(Dispatchers.Default) { client.invokePlugin(session, "oauth-account", account.id, input) }
-                            try {
-                                withTimeout(5_000) { exchangeStarted.await() }
-                                lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
-                                    statement.setString(1, account.id)
-                                    statement.executeQuery().use { assertTrue(it.next()) }
-                                }
-                                finishExchange.complete(Unit)
-                                awaitCondition("the exchanged token CAS save is blocked on FOR UPDATE", timeoutMs = 5_000) {
-                                    observation.executeQuery().use { rows ->
-                                        assertTrue(rows.next())
-                                        rows.getBoolean(1)
+                    DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { observer ->
+                        observer.autoCommit = true
+                        observer.prepareStatement(
+                            "select exists (select 1 from pg_stat_activity where datname = current_database() " +
+                                "and state = 'active' and wait_event_type = 'Lock' " +
+                                "and query ilike '%oauth_accounts%' " +
+                                "and ? = any(pg_blocking_pids(pid)))",
+                        ).use { observation ->
+                            observation.queryTimeout = 1
+                            observation.setInt(1, blocker)
+                            coroutineScope {
+                                val pending = async(Dispatchers.Default) { client.invokePlugin(session, "oauth-account", account.id, input) }
+                                try {
+                                    withTimeout(5_000) { exchangeStarted.await() }
+                                    lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
+                                        statement.setString(1, account.id)
+                                        statement.executeQuery().use { assertTrue(it.next()) }
                                     }
+                                    finishExchange.complete(Unit)
+                                    awaitCondition("the exchanged token CAS save is blocked on FOR UPDATE", timeoutMs = 5_000) {
+                                        observation.executeQuery().use { rows ->
+                                            assertTrue(rows.next())
+                                            rows.getBoolean(1)
+                                        }
+                                    }
+                                    assertFalse(pending.isCompleted, "Observe the save waiting on the row lock before the caller times out")
+                                    assertPreparationTimeout(withTimeout(10_000) { pending.await() }, provider)
+                                } finally {
+                                    finishExchange.complete(Unit)
+                                    lock.rollback()
                                 }
-                                assertFalse(pending.isCompleted, "Observe the save waiting on the row lock before the caller times out")
-                                assertPreparationTimeout(withTimeout(10_000) { pending.await() }, provider)
-                            } finally {
-                                finishExchange.complete(Unit)
-                                lock.rollback()
                             }
                         }
                     }
-                }
                 }
                 withTimeout(5_000) {
                     while (app.oauthAccountRepository.findDetailed(account.id)?.hasAccessToken != true) delay(10)
