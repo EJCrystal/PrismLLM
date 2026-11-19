@@ -445,7 +445,7 @@ describe('bounded declarative plugin contracts', () => {
 describe('plugin lifecycle and admitted UI contracts', () => {
   it('normalizes omitted nullable and SDK state defaults without inventing an active instance', () => {
     assert.deepEqual(parsePluginRuntimeState(runtime()), {
-      ...runtime(), installedVersion: null, activeVersion: null, loadError: null,
+      ...runtime(), revision: 0, installedVersion: null, activeVersion: null, loadError: null,
       permissions: [], approvedPermissions: [], configuration: {}, activeConfiguration: null,
       configurationFields: [], activeUi: null,
     })
@@ -661,9 +661,9 @@ describe('generic plugin API paths and existing session semantics', () => {
     const encodedId = encodeURIComponent(unsafeLookingId)
     const signal = new AbortController().signal
     const csrf = `csrf ${globalThis.crypto.randomUUID()}/+&=`
-    const install = { version: '1.0.0', approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION] }
+    const install = { version: '1.0.0', approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION], expectedSha256: 'a'.repeat(64) }
     const enable = { enabled: true, approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION] }
-    const configure = { values: { defaultPrompt: 'saved prompt', flag: false, count: 0, optional: null } }
+    const configure = { values: { defaultPrompt: 'saved prompt', flag: false, count: 0, optional: null }, expectedRevision: 7, installedVersion: '1.0.0' }
     const invoke = invocation(context)
     const hostExecution = execution()
     hostExecution.target.id = context.id

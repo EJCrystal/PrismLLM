@@ -130,7 +130,8 @@ class OAuthTokenServiceTest {
     @Test
     fun permanentSaveFailureRetainsRotationWithoutHoldingActiveTaskCapacity() = runBlocking {
         val accountId = createAccount("retained-permanent", accountEmail = email("retained-permanent"))
-        val service = service()
+        val clock = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val service = service(now = clock::get)
         val suffix = UUID.randomUUID().toString().replace("-", "")
         val function = "reject_refresh_$suffix"
         val trigger = "reject_refresh_trigger_$suffix"
@@ -163,11 +164,56 @@ class OAuthTokenServiceTest {
             }
         }
         try {
-            assertEquals("at-1", withTimeout(5_000) { service.accessToken(accountId) }!!.accessToken)
-            assertEquals(1, tokenRequests.get(), "recovery must reuse the original encrypted exchange result")
+            clock.addAndGet(3_600_001)
+            val freshAccess = UUID.randomUUID().toString()
+            val freshRefresh = UUID.randomUUID().toString()
+            reply = { 200 to kotlinx.serialization.json.buildJsonObject {
+                put("access_token", kotlinx.serialization.json.JsonPrimitive(freshAccess))
+                put("refresh_token", kotlinx.serialization.json.JsonPrimitive(freshRefresh))
+                put("expires_in", kotlinx.serialization.json.JsonPrimitive(3_600))
+            }.toString() }
+            val fresh = withTimeout(5_000) { service.accessToken(accountId) }!!
+            assertEquals(freshAccess, fresh.accessToken)
+            assertTrue(fresh.expiresAt > clock.get())
+            assertEquals(2, tokenRequests.get(), "expired recovery saves rotation before one fresh exchange")
+            assertTrue(lastRequestBody.get().contains("\"refresh_token\":\"rt-2\""))
             val context = accounts.loadRefreshContext(accountId)!!
-            assertEquals("rt-2", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+            assertEquals(freshRefresh, cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
         } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun deletedAccountsReleaseAnActuallyRetainedRotation() = runBlocking {
+        val id = createAccount("orphan-retained", accountEmail = email("orphan-retained"))
+        val service = service()
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val function = "orphan_save_$suffix"
+        val trigger = "orphan_save_trigger_$suffix"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("CREATE FUNCTION $function() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '$id' AND NEW.access_token_ciphertext IS NOT NULL THEN RAISE EXCEPTION 'synthetic write failure' USING ERRCODE = '42501'; END IF; RETURN NEW; END $$")
+                statement.execute("CREATE TRIGGER $trigger BEFORE UPDATE ON oauth_accounts FOR EACH ROW EXECUTE FUNCTION $function()")
+            }
+        }
+        try {
+            val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+            assertEquals("refresh_save_pending", failure.errorCode)
+            val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+            val pendingField = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            assertTrue(synchronized(monitor) { (pendingField.get(service) as Map<*, *>).containsKey(id) })
+            assertTrue(accounts.delete(id))
+            assertNull(service.accessToken(id))
+            assertTrue(synchronized(monitor) { (pendingField.get(service) as Map<*, *>).isEmpty() })
+            assertEquals(1, tokenRequests.get())
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER IF EXISTS $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION IF EXISTS $function()")
+                }
+            }
             assertTrue(service.drainRefreshes())
         }
     }

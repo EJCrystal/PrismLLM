@@ -1459,6 +1459,136 @@ class ModelConnectivityTestTest {
         }
     }
 
+    @Test
+    fun display_normalization_precedes_redaction_and_limits_for_both_entry_points() = runBlocking {
+        val credential = "sk-synthetic-display-secret"
+        val removed = "\u0000\u001b\r\u007f\u0085\u202e\u200d"
+        for (echo in listOf(credential, mixedCredentialEcho(credential))) {
+            val split = echo.toList().joinToString(removed)
+            for (oauth in listOf(false, true)) {
+                val prefix = "t".repeat(24)
+                val success = diagnosticTransport(
+                    credential, oauth = oauth, maxResponseChars = 31,
+                    responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("$prefix$split tail")}}}],"model":${JsonPrimitive("model-$split")},"usage":{"prompt_tokens":"7","completion_tokens":"3","total_tokens":"10"}}""",
+                )
+                assertSuccessfulDiagnostic(
+                    success, (prefix + "[REDACTED] tail").take(31), "model-[REDACTED]",
+                    usage = Usage(input = 7, output = 3, cached = null, reasoning = null, total = 10),
+                )
+                for ((body, type) in listOf(
+                    "denied $split tail" to ContentType.Text.Plain,
+                    """{"error":{"message":${JsonPrimitive("denied $split tail")}}}""" to ContentType.Application.Json,
+                )) {
+                    val failure = diagnosticTransport(
+                        credential, oauth = oauth, responseBody = body,
+                        status = HttpStatusCode.BadGateway, contentType = type,
+                    )
+                    assertFailedDiagnostic(failure, 502, "denied [REDACTED] tail")
+                }
+                val preview = diagnosticTransport(
+                    credential, oauth = oauth, status = HttpStatusCode.BadGateway,
+                    responseBody = """{${JsonPrimitive(split)}:${JsonPrimitive("before $split after")},"count":3,"enabled":false,"note":null}""",
+                )
+                assertFailedDiagnostic(preview, 502, """{"[REDACTED]":"before [REDACTED] after","count":3,"enabled":false,"note":null}""")
+                val exception = diagnosticTransport(
+                    credential, oauth = oauth, failure = IllegalStateException("denied $split tail"),
+                )
+                assertFailedDiagnostic(exception, null, "无法连接上游：denied [REDACTED] tail")
+            }
+        }
+    }
+
+    @Test
+    fun model_normalization_also_removes_line_and_tab_separators_before_redacting() = runBlocking {
+        val credential = "sk-synthetic-model-secret"
+        val split = credential.toList().joinToString("\n\t")
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                credential, oauth = oauth,
+                responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("keep line\n\tbreak")}}}],"model":${JsonPrimitive("model-$split")}}""",
+            )
+            assertSuccessfulDiagnostic(result, "keep line\n\tbreak", "model-[REDACTED]", usage = null)
+        }
+    }
+
+    @Test
+    fun fingerprint_keeps_original_nul_split_sample_but_sanitizes_all_display_values() = runBlocking {
+        val credential = "sk-synthetic-fingerprint-secret"
+        val split = credential.toList().joinToString("\u0000\u202e")
+        val original = "before $split after"
+        val execution = fingerprintDiagnosticTransport(
+            credential,
+            """{"choices":[{"message":{"content":${JsonPrimitive(original)}}}],"model":${JsonPrimitive("model-$split")}}""",
+            maxResponseChars = original.length,
+        )
+        assertEquals(original, execution.rawSample)
+        assertSuccessfulDiagnostic(execution.result, "before [REDACTED] after", "model-[REDACTED]", usage = null)
+        assertEquals("before [REDACTED] after", execution.safeText(original))
+        assertNull(execution.safeText(null))
+        assertFalse(execution.toString().contains(credential))
+    }
+
+    @Test
+    fun long_oauth_and_saved_tokens_redact_raw_encoded_and_mixed_echoes_without_regex_recursion() = runBlocking {
+        val credential = "oauth-" + "Ab9_".repeat(3_000) + "/é中😀\"\\"
+        val percent = credential.toByteArray(Charsets.UTF_8).joinToString("") {
+            "%" + (it.toInt() and 0xff).toString(16).padStart(2, '0').uppercase()
+        }
+        val echoes = listOf(credential, percent, unicodeEscapedCredential(credential), mixedCredentialEcho(credential))
+        for (echo in echoes) {
+            for (oauth in listOf(false, true)) {
+                val success = diagnosticTransport(
+                    credential, oauth = oauth, maxResponseChars = 31,
+                    responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("before $echo after")}}}],"model":${JsonPrimitive("model-$echo")},"usage":{"prompt_tokens":7,"completion_tokens":3,"total_tokens":10}}""",
+                )
+                assertSuccessfulDiagnostic(
+                    success, "before [REDACTED] after", "model-[REDACTED]",
+                    usage = Usage(input = 7, output = 3, cached = null, reasoning = null, total = 10),
+                )
+                val error = diagnosticTransport(
+                    credential, oauth = oauth, status = HttpStatusCode.BadGateway,
+                    responseBody = "denied $echo tail", contentType = ContentType.Text.Plain,
+                )
+                assertFailedDiagnostic(error, 502, "denied [REDACTED] tail")
+                val exception = diagnosticTransport(
+                    credential, oauth = oauth, failure = IllegalStateException("denied $echo tail"),
+                )
+                assertFailedDiagnostic(exception, null, "无法连接上游：denied [REDACTED] tail")
+            }
+        }
+    }
+
+    @Test
+    fun mixed_encodings_preserve_literal_case_and_handle_ambiguous_encoding_prefixes() = runBlocking {
+        val credential = "%41\\u0041 A/+é中😀\"\\"
+        val mixed = mixedCredentialEcho(credential)
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                credential, oauth = oauth,
+                responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("before $mixed after")}}}],"model":"public-model"}""",
+            )
+            assertSuccessfulDiagnostic(result, "before [REDACTED] after", "public-model", usage = null)
+            val caseSensitive = diagnosticTransport(
+                "AbC", oauth = oauth,
+                responseBody = """{"choices":[{"message":{"content":"abc %61b%63 AbC %41b%43"}}],"model":"public-model"}""",
+            )
+            assertSuccessfulDiagnostic(caseSensitive, "abc %61b%63 [REDACTED] [REDACTED]", "public-model", usage = null)
+        }
+    }
+
+    private fun mixedCredentialEcho(credential: String): String =
+        credential.codePoints().toArray().mapIndexed { index, codePoint ->
+            val literal = String(Character.toChars(codePoint))
+            when (index % 4) {
+                0 -> literal
+                1 -> literal.toByteArray(Charsets.UTF_8).joinToString("") {
+                    "%" + (it.toInt() and 0xff).toString(16).padStart(2, '0').uppercase()
+                }
+                2 -> unicodeEscapedCredential(literal)
+                else -> JsonPrimitive(literal).toString().drop(1).dropLast(1).replace("/", "\\/")
+            }
+        }.joinToString("")
+
     private fun encodedCredentialEchoes(credential: String): List<String> {
         val url = java.net.URLEncoder.encode(credential, Charsets.UTF_8)
         val lowerUrl = Regex("%[0-9A-F]{2}").replace(url) { it.value.lowercase() }

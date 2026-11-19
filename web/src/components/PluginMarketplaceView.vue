@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import { ApiError } from '../types/api'
 import type { PluginCatalogItem, PluginRuntimeState, PluginUiContribution, PluginValues } from '../types/api'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import { PLUGIN_STATE_CHANGED, pluginFieldDefaults, pluginFormError, pluginPermissionLabel, pluginStateLabel } from '../utils/pluginForm'
@@ -18,12 +19,15 @@ const selectedVersion = ref('')
 const query = ref('')
 const loading = ref(true)
 const loadError = ref('')
+const catalogError = ref('')
 const busy = ref(false)
 const approvedPermissions = ref<string[]>([])
 const configuration = reactive<PluginValues>({})
 const originalConfiguration = ref('{}')
 const draftOwnerId = ref('')
 const draftInstalledVersion = ref<string | null>(null)
+const draftRevision = ref(0)
+const draftRejected = ref(false)
 const draftFields = ref<PluginRuntimeState['configurationFields']>([])
 const diagnosticEntryId = ref('')
 const invalidDiagnosticKey = ref('')
@@ -42,18 +46,20 @@ const items = computed(() => [...new Set([...catalog.value.map((item) => item.ma
   return { id, name: state?.displayName || available?.manifest.displayName || id, state, available }
 }).filter((item) => `${item.name} ${item.id}`.toLowerCase().includes(query.value.trim().toLowerCase())))
 const selectedState = computed(() => states.value.find((state) => state.id === selectedId.value))
-const versions = computed(() => catalog.value.filter((item) => item.manifest.id === selectedId.value).sort((a, b) => b.manifest.version.localeCompare(a.manifest.version, undefined, { numeric: true })))
+const versions = computed(() => catalog.value.filter((item) => item.manifest.id === selectedId.value))
 const selectedCatalog = computed(() => versions.value.find((item) => item.manifest.version === selectedVersion.value))
 const selectedName = computed(() => selectedState.value?.displayName || selectedCatalog.value?.manifest.displayName || selectedId.value)
 const permissions = computed(() => selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
 const fullGrant = computed(() => permissions.value.every((permission) => approvedPermissions.value.includes(permission)))
 const dirty = computed(() => JSON.stringify(configuration) !== originalConfiguration.value)
 const draftConflict = computed(() => !!draftOwnerId.value && (
-  draftOwnerId.value !== selectedId.value || draftInstalledVersion.value !== (selectedState.value?.installedVersion ?? null)
+  draftRejected.value || draftOwnerId.value !== selectedId.value ||
+  draftInstalledVersion.value !== (selectedState.value?.installedVersion ?? null) ||
+  draftRevision.value !== (selectedState.value?.revision ?? 0)
 ))
 const configurationFields = computed(() => draftFields.value)
 const configurationError = computed(() => pluginFormError(configurationFields.value, configuration))
-const canInstall = computed(() => !!selectedCatalog.value?.compatible && fullGrant.value && !busy.value && (!selectedState.value?.installed || selectedVersion.value !== selectedState.value.installedVersion))
+const canInstall = computed(() => !catalogError.value && !loading.value && !!selectedCatalog.value?.compatible && fullGrant.value && !busy.value && (!selectedState.value?.installed || selectedVersion.value !== selectedState.value.installedVersion))
 const currentVersionSelected = computed(() => !selectedCatalog.value || selectedCatalog.value.manifest.version === selectedState.value?.installedVersion)
 const pageEntries = computed(() => selectedState.value?.admissionEnabled ? selectedState.value.activeUi?.entries.filter((entry) => entry.placement === 'plugin-page') ?? [] : [])
 const diagnosticContribution = computed<PluginUiContribution | null>(() => {
@@ -69,6 +75,8 @@ function resetConfiguration() {
   const current = selectedState.value
   draftOwnerId.value = selectedId.value
   draftInstalledVersion.value = current?.installedVersion ?? null
+  draftRevision.value = current?.revision ?? 0
+  draftRejected.value = false
   draftFields.value = current?.configurationFields.map((field) => ({ ...field, options: field.options.map((option) => ({ ...option })) })) ?? []
   for (const key of Object.keys(configuration)) delete configuration[key]
   Object.assign(configuration, pluginFieldDefaults(draftFields.value, current?.configuration ?? {}, false))
@@ -77,6 +85,7 @@ function resetConfiguration() {
 
 function discardVersionConflict() {
   if (busy.value || !draftConflict.value) return
+  if (draftRejected.value) { void load(false); return }
   syncVersion()
 }
 
@@ -175,17 +184,20 @@ async function load(preserveDraft = true): Promise<boolean> {
   loadError.value = ''
   let settled = false
   try {
-    const result = await guard.run(() => Promise.all([
+    const result = await guard.run(() => Promise.allSettled([
       api.listPluginCatalog({ signal: current.signal }), api.listPlugins({ signal: current.signal }),
     ]))
     if (!result.isLatest || disposed || current.signal.aborted) return false
     const hadDraft = preserveDraft && (dirty.value || draftConflict.value)
-    catalog.value = result.value[0]
-    states.value = result.value[1]
+    const [catalogResult, statesResult] = result.value
+    catalogError.value = catalogResult.status === 'rejected' ? errorMessage(catalogResult.reason) : ''
+    catalog.value = catalogResult.status === 'fulfilled' ? catalogResult.value : []
+    if (statesResult.status === 'fulfilled') states.value = statesResult.value
+    else loadError.value = errorMessage(statesResult.reason)
     if (!selectedId.value) selectedId.value = items.value[0]?.id ?? ''
     if (!hadDraft) syncVersion()
     settled = true
-    return true
+    return statesResult.status === 'fulfilled'
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
       loadError.value = errorMessage(cause)
@@ -211,7 +223,10 @@ async function mutate(operation: () => Promise<PluginRuntimeState>, message: str
     notify(message, 'success')
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
   } catch (cause) {
-    if (!disposed && id === selectedId.value) notify(errorMessage(cause), 'error')
+    if (!disposed && id === selectedId.value) {
+      if (cause instanceof ApiError && cause.status === 409 && discardDraft && !confirmDiscard) draftRejected.value = true
+      notify(errorMessage(cause), 'error')
+    }
   } finally {
     if (!disposed) busy.value = false
   }
@@ -222,7 +237,7 @@ function install() {
   if (!canInstall.value || !item) return
   const id = selectedId.value
   const grants = permissions.value.filter((permission) => approvedPermissions.value.includes(permission))
-  void mutate(() => api.installPlugin(id, { version: item.manifest.version, approvedPermissions: grants }), '安装选择已保存；新版本在重启后加载。', true)
+  void mutate(() => api.installPlugin(id, { version: item.manifest.version, expectedSha256: item.sha256, approvedPermissions: grants }), '安装选择已保存；新版本在重启后加载。', true)
 }
 
 function toggleEnabled() {
@@ -237,9 +252,11 @@ function toggleEnabled() {
 
 function saveConfiguration() {
   const state = selectedState.value
-  if (!state || draftOwnerId.value !== state.id || draftInstalledVersion.value !== state.installedVersion || draftConflict.value || configurationError.value || busy.value || !dirty.value) return
+  if (!state || !draftInstalledVersion.value || draftOwnerId.value !== state.id || draftInstalledVersion.value !== state.installedVersion || draftConflict.value || configurationError.value || busy.value || !dirty.value) return
   const values = { ...configuration }
-  void mutate(() => api.configurePlugin(state.id, { values }), '插件配置已保存。', true, false)
+  const expectedRevision = draftRevision.value
+  const installedVersion = draftInstalledVersion.value
+  void mutate(() => api.configurePlugin(state.id, { values, expectedRevision, installedVersion }), '插件配置已保存。', true, false)
 }
 
 function uninstall() {
@@ -262,6 +279,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
     </div>
     <p class="callout plugin-market-policy">仅安装受信任目录中的 JVM 插件。安装、升级和启用需人工重启；禁用立即阻止新调用，已发出的请求可能继续执行。</p>
     <div v-if="loadError" class="callout danger" role="alert">{{ loadError }} <button class="link-button" type="button" :disabled="busy" @click="load()">重新读取</button></div>
+    <p v-if="catalogError" class="callout danger" role="alert">目录读取失败：{{ catalogError }}。新安装已暂停；仍可管理已安装插件。<button class="link-button" type="button" :disabled="busy" @click="load()">重新读取目录</button></p>
     <p v-if="loading && !catalog.length && !states.length" class="muted plugin-market-loading"><span class="spinner"></span>正在读取插件目录…</p>
     <div v-else class="plugin-market-layout">
       <aside class="panel plugin-market-list" aria-label="插件清单">
@@ -302,7 +320,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
         </section>
         <section v-if="configurationFields.length || draftConflict" class="plugin-market-section">
           <h3>插件配置<span class="muted small"> · 草稿归属 {{ draftOwnerId || selectedId }} · 安装选择 {{ draftInstalledVersion ?? '无' }}</span></h3>
-          <p v-if="draftConflict" class="callout warning" role="alert">当前配置草稿属于 {{ draftOwnerId }} 安装版本 {{ draftInstalledVersion ?? '无' }}；当前安装选择为 {{ selectedId }} {{ selectedState?.installedVersion ?? '无' }}。请放弃旧草稿后载入当前配置，不能将旧版本草稿保存到新版本。</p>
+          <p v-if="draftConflict" class="callout warning" role="alert">当前配置草稿属于 {{ draftOwnerId }} 安装版本 {{ draftInstalledVersion ?? '无' }}、revision {{ draftRevision }}；当前安装选择为 {{ selectedId }} {{ selectedState?.installedVersion ?? '无' }}、revision {{ selectedState?.revision ?? 0 }}。配置或安装选择已变化，请放弃旧草稿后载入当前配置，不能将旧版本或旧 revision 草稿保存到当前状态。</p>
           <p v-if="selectedState?.activeVersion && selectedState.activeVersion !== selectedState.installedVersion" class="muted small">这里保存待生效版本的配置；当前运行的旧版本继续使用自己的配置快照。</p>
           <form class="plugin-market-config" @submit.prevent="saveConfiguration"><PluginFieldInput v-for="field in configurationFields" :key="field.key" :field="field" v-model="configuration[field.key]" :disabled="busy || draftConflict" />
             <small v-if="configurationError" class="danger-text" role="status">{{ configurationError }}</small><div class="plugin-market-actions"><button type="submit" class="button primary" :disabled="busy || draftConflict || !dirty || !!configurationError">保存配置</button><button v-if="draftConflict" type="button" class="button ghost" :disabled="busy" @click="discardVersionConflict">放弃旧草稿并载入当前配置</button><button v-else type="button" class="button ghost" :disabled="busy || !dirty" @click="resetConfiguration">撤销修改</button></div></form>

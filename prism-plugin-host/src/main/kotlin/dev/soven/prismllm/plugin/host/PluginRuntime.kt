@@ -267,9 +267,32 @@ class PluginRuntime(
         version: String,
         approvedPermissions: List<String>,
         initialConfiguration: suspend () -> JsonObject = { JsonObject(emptyMap()) },
+    ): PluginRuntimeState = installUsing(id, version, approvedPermissions, null, initialConfiguration)
+
+    /** User approval is bound to the verified catalogue package displayed by the client. */
+    suspend fun install(
+        id: String,
+        version: String,
+        approvedPermissions: List<String>,
+        expectedSha256: String,
+        initialConfiguration: suspend () -> JsonObject = { JsonObject(emptyMap()) },
+    ): PluginRuntimeState = installUsing(id, version, approvedPermissions, expectedSha256, initialConfiguration)
+
+    private suspend fun installUsing(
+        id: String,
+        version: String,
+        approvedPermissions: List<String>,
+        expectedSha256: String?,
+        initialConfiguration: suspend () -> JsonObject,
     ): PluginRuntimeState = mutex.withLock {
         checkReady()
         val validated = withContext(Dispatchers.IO) { catalog.select(id, version) }
+        if (expectedSha256 != null) {
+            PluginValidation.digest(expectedSha256)
+            if (!validated.item.sha256.equals(expectedSha256, ignoreCase = true)) {
+                throw PluginHostException("PLUGIN_CATALOG_CONFLICT", "The approved catalogue package changed; refresh and review its digest and permissions", 409)
+            }
+        }
         val grants = PluginValidation.grants(validated.item.manifest, approvedPermissions)
         val previous = store.find(id)
         if (previous != null && previous.version == version && !previous.sha256.equals(validated.item.sha256, ignoreCase = true)) {
@@ -329,14 +352,30 @@ class PluginRuntime(
 
     suspend fun configure(id: String, values: JsonObject): PluginRuntimeState = configureUsing(id) { values }
 
+    /** Compare the client's original draft baseline before validation, including no-op writes. */
+    suspend fun configure(id: String, values: JsonObject, expectedRevision: Long, installedVersion: String): PluginRuntimeState =
+        configureUsing(id, expectedRevision, installedVersion) { values }
+
     /** Merge against the configuration read with the revision used by the subsequent CAS. */
     suspend fun configureFields(id: String, values: JsonObject): PluginRuntimeState = configureUsing(id) {
         JsonObject(it + values)
     }
 
-    private suspend fun configureUsing(id: String, values: (JsonObject) -> JsonObject): PluginRuntimeState = mutex.withLock {
+    private suspend fun configureUsing(
+        id: String,
+        expectedRevision: Long? = null,
+        installedVersion: String? = null,
+        values: (JsonObject) -> JsonObject,
+    ): PluginRuntimeState = mutex.withLock {
         checkReady()
         val previous = find(id)
+        if (expectedRevision != null && (expectedRevision < 0 || expectedRevision == Long.MAX_VALUE)) {
+            throw PluginHostException("PLUGIN_INVALID_REVISION", "Expected revision must be a nonnegative writable revision")
+        }
+        if ((expectedRevision != null && previous.revision != expectedRevision) ||
+            (installedVersion != null && previous.version != installedVersion)) {
+            throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin configuration changed since this draft was loaded; refresh and discard the stale draft", 409)
+        }
         val item = try {
             packageFor(previous).item
         } catch (error: PluginHostException) {
@@ -430,7 +469,10 @@ class PluginRuntime(
                 // Coroutine cancellation is best-effort, not a promise to abort already-started HTTP.
                 outcome(result)
             }
-            val report = report(runCode("report", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader, owner = snapshot.loaded) { snapshot.loaded.plugin.report(plan, boundedOutcome) })
+            val report = runCode("report", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader, owner = snapshot.loaded) {
+                // Accessing plugin-supplied collections can execute plugin code too.
+                report(snapshot.loaded.plugin.report(plan, boundedOutcome))
+            }
             return PluginExecution(id, snapshot.loaded.staged.item.manifest.version, snapshot.context.target, plan, boundedOutcome, report)
         } finally {
             executions.release()
@@ -571,7 +613,7 @@ class PluginRuntime(
             source = installation.source, installed = installation.installed, installedVersion = installation.version,
             activeVersion = loaded?.staged?.item?.manifest?.version,
             desiredEnabled = installation.desiredEnabled, admissionEnabled = admitted, requiresRestart = requiresRestart,
-            status = status, loadError = error,
+            status = status, loadError = error, revision = installation.revision,
             permissions = desired?.manifest?.permissions?.toList() ?: emptyList(), approvedPermissions = installation.approvedPermissions.toList(),
             configuration = PluginValidation.snapshot(installation.configuration),
             activeConfiguration = loaded?.configuration?.let(PluginValidation::snapshot),

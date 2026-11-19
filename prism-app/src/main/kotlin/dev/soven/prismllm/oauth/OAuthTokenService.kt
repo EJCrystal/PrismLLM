@@ -142,7 +142,12 @@ class OAuthTokenService(
         accessTokenWithSnapshot(accountId, forceRefresh)?.token
 
     internal suspend fun accessTokenWithSnapshot(accountId: String, forceRefresh: Boolean = false): OAuthAccountAccess? {
-        val account = repository.find(accountId) ?: return null
+        val account = repository.find(accountId)
+        if (account == null) {
+            synchronized(refreshLifecycleLock) { pendingRefreshes.remove(accountId) }
+            return null
+        }
+        discardReplacedPending(account)
         if (!forceRefresh) cachedAccessToken(account)?.let { return OAuthAccountAccess(account, it) }
         return try {
             val saved = awaitRefresh(account, force = forceRefresh).account
@@ -214,6 +219,9 @@ class OAuthTokenService(
         force: Boolean = false,
     ): RefreshOutcome {
         while (true) {
+            if (synchronized(refreshLifecycleLock) { (pendingRefreshes.keys + refreshTasks.keys).size >= MAX_PENDING_REFRESH_RESULTS }) {
+                prunePendingResults()
+            }
             val waiter = RefreshWaiter(account, currentCoroutineContext().job, preparation, force)
             val (task, registered) = synchronized(refreshLifecycleLock) {
                 check(!refreshAdmissionClosed) { "OAuth refresh service is closing" }
@@ -278,7 +286,13 @@ class OAuthTokenService(
         mutex.withLock {
             synchronized(refreshLifecycleLock) { pendingRefreshes[accountId] }?.let { retained ->
                 task.exchangeStarted = true
-                return@withLock RefreshOutcome(withContext(NonCancellable) { persistRefresh(retained, task) }, exchanged = true)
+                val saved = withContext(NonCancellable) { persistRefresh(retained, task) }
+                // Rotation must be committed first, but an access token can expire while storage
+                // is unavailable. Re-read/use the newly saved refresh token for a fresh exchange.
+                if (saved.hasAccessToken && (saved.accessTokenExpiresAt ?: 0) > now()) {
+                    return@withLock RefreshOutcome(saved, exchanged = true)
+                }
+                task.exchangeStarted = false
             }
             synchronized(refreshLifecycleLock) {
                 if (pendingRefreshes.size >= MAX_PENDING_REFRESH_RESULTS) {
@@ -612,6 +626,41 @@ class OAuthTokenService(
             delay(REFRESH_SAVE_RETRY_DELAY_MS)
         }
     }
+
+    private fun discardReplacedPending(account: OAuthAccountRecord) = synchronized(refreshLifecycleLock) {
+        val pending = pendingRefreshes[account.id] ?: return@synchronized
+        if (refreshTasks[account.id]?.work?.isCompleted == false) return@synchronized
+        val original = pending.context.account
+        val belongsToAuthorization = account.provider == original.provider && account.authorizedAt == original.authorizedAt &&
+            account.authState == original.authState
+        val originalRefresh = account.refreshTokenCiphertext == original.refreshTokenCiphertext &&
+            account.refreshTokenNonce == original.refreshTokenNonce && account.refreshTokenKeyVersion == original.refreshTokenKeyVersion
+        val rotated = pending.rotatedRefreshToken
+        val savedRefresh = rotated != null && account.refreshTokenCiphertext == rotated.ciphertext &&
+            account.refreshTokenNonce == rotated.nonce && account.refreshTokenKeyVersion == rotated.keyVersion
+        val originalAccess = account.accessTokenCiphertext == original.accessTokenCiphertext &&
+            account.accessTokenNonce == original.accessTokenNonce && account.accessTokenKeyVersion == original.accessTokenKeyVersion
+        val savedAccess = account.accessTokenCiphertext == pending.accessToken.ciphertext &&
+            account.accessTokenNonce == pending.accessToken.nonce && account.accessTokenKeyVersion == pending.accessToken.keyVersion
+        if (!belongsToAuthorization || (!originalRefresh && !savedRefresh) || (!originalAccess && !savedAccess && account.hasAccessToken)) {
+            pendingRefreshes.remove(account.id, pending)
+        }
+    }
+
+    private suspend fun prunePendingResults() {
+        val retained = synchronized(refreshLifecycleLock) { pendingRefreshes.toMap() }
+        val budget = DiagnosticPreparationDeadline.start(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS)
+        for ((id, pending) in retained) {
+            val current = DiagnosticPreparationDeadline.withinSynchronous(budget) {
+                PendingAccount(repository.find(id))
+            } ?: return
+            if (current.account == null) synchronized(refreshLifecycleLock) {
+                if (refreshTasks[id]?.work?.isCompleted != false) pendingRefreshes.remove(id, pending)
+            } else discardReplacedPending(current.account)
+        }
+    }
+
+    private class PendingAccount(val account: OAuthAccountRecord?)
 
     private fun permanentRefreshWriteFailure(cause: Throwable): Boolean = generateSequence(cause) { it.cause }.any {
         val state = (it as? java.sql.SQLException)?.sqlState

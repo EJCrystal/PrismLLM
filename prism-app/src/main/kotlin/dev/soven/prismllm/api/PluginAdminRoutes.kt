@@ -18,13 +18,21 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
 @Serializable
-data class PluginInstallationRequest(val version: String, val approvedPermissions: List<String> = emptyList())
+data class PluginInstallationRequest(
+    val version: String,
+    val approvedPermissions: List<String> = emptyList(),
+    val expectedSha256: String? = null,
+)
 
 @Serializable
 data class PluginEnabledRequest(val enabled: Boolean, val approvedPermissions: List<String>? = null)
 
 @Serializable
-data class PluginConfigurationRequest(val values: JsonObject)
+data class PluginConfigurationRequest(
+    val values: JsonObject,
+    val expectedRevision: Long? = null,
+    val installedVersion: String? = null,
+)
 
 @Serializable
 data class PluginInvocationContext(val kind: String, val id: String)
@@ -63,7 +71,9 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
         call.requireAdmin(app)
         val id = call.requiredParam("id", "缺少插件 id")
         val request = call.receive<PluginInstallationRequest>()
-        val state = app.pluginRuntime.install(id, request.version, request.approvedPermissions) {
+        val expectedSha256 = request.expectedSha256
+            ?: throw badRequest("plugin_digest_required", "安装必须提供已审阅目录的 SHA-256 摘要")
+        val state = app.pluginRuntime.install(id, request.version, request.approvedPermissions, expectedSha256) {
             if (id == CONNECTIVITY_PLUGIN_ID) {
                 buildJsonObject { put("defaultPrompt", app.modelTestSettingsRepository.loadInTransaction().defaultPrompt) }
             } else JsonObject(emptyMap())
@@ -85,7 +95,12 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
     put("/plugins/{id}/configuration") {
         call.requireAdmin(app)
         val id = call.requiredParam("id", "缺少插件 id")
-        val state = app.pluginRuntime.configure(id, call.receive<PluginConfigurationRequest>().values)
+        val request = call.receive<PluginConfigurationRequest>()
+        val expectedRevision = request.expectedRevision
+            ?: throw badRequest("plugin_revision_required", "保存配置必须提供草稿基准 revision")
+        val installedVersion = request.installedVersion
+            ?: throw badRequest("plugin_version_required", "保存配置必须提供草稿所属安装版本")
+        val state = app.pluginRuntime.configure(id, request.values, expectedRevision, installedVersion)
         call.markAdminAuditDetails(buildJsonObject { put("pluginId", id) })
         call.respond(state)
     }

@@ -71,9 +71,9 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 | `GET /admin/api/plugin-catalog` | 只读本地可信包的 manifest、UI、摘要、兼容性 |
 | `GET /admin/api/plugins`、`GET /admin/api/plugins/{id}` | 期望状态、活动版本、准入、重启与错误状态 |
 | `GET /admin/api/plugins/ui` | 仅返回当前活动且准入的通用 UI 贡献 |
-| `PUT /admin/api/plugins/{id}/installation` | 安装指定版本，提交完整 `approvedPermissions` |
+| `PUT /admin/api/plugins/{id}/installation` | 安装指定版本，提交完整 `approvedPermissions` 与已审阅目录的 `expectedSha256` |
 | `PUT /admin/api/plugins/{id}/enabled` | 更新期望启用状态；启用提交明确批准的权限 |
-| `PUT /admin/api/plugins/{id}/configuration` | 更新普通配置 `{ "values": { ... } }` |
+| `PUT /admin/api/plugins/{id}/configuration` | 提交 `values`、草稿 `expectedRevision` 与 `installedVersion`；陈旧基准返回冲突 |
 | `DELETE /admin/api/plugins/{id}` | 写入卸载 tombstone，保留恢复所需选择与配置 |
 | `GET /admin/api/plugins/{id}/resources/model-test-targets` | 按授权上下文提供安全结构化模型、凭据、协议选择 |
 | `POST /admin/api/plugins/{id}/invocations` | 执行活动描述符动作；绑定当前版本与已授权目标 |
@@ -83,6 +83,7 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 ```json
 {
   "version": "1.0.0",
+  "expectedSha256": "复制当前目录条目的64位SHA-256摘要",
   "approvedPermissions": [
     "diagnostics.channel.probe",
     "diagnostics.oauth-account.probe"
@@ -90,7 +91,7 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 }
 ```
 
-启用请求体在同一完整权限列表之外增加 `"enabled": true`；禁用使用 `{"enabled":false}`。配置示例是 `{"values":{"defaultPrompt":"请只回复 OK"}}`。配置为管理员可读回的普通 JSON，不能存放密钥、access token、任意地址或可执行表达式。
+启用请求体在同一完整权限列表之外增加 `"enabled": true`；禁用使用 `{"enabled":false}`。配置示例是 `{"values":{"defaultPrompt":"请只回复 OK"},"expectedRevision":7,"installedVersion":"1.0.0"}`，版本和修订须来自草稿加载时的安装状态，不能临时重读后替换旧草稿基准。安装摘要变化或配置基准过期会返回 409，需刷新后重新确认。配置为管理员可读回的普通 JSON，不能存放密钥、access token、任意地址或可执行表达式。
 
 ## 检测动作、设置与结果边界
 

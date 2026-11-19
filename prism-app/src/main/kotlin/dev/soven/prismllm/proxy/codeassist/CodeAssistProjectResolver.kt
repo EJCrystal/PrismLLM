@@ -207,7 +207,14 @@ class CodeAssistProjectResolver(
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
-        if (project == null) return Probe(null, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+        if (project == null) {
+            val confirmed = negotiated[account.id]?.takeIf {
+                it.account.matchesCredentialSnapshot(account) && it.egress == egressKey(proxy)
+            }
+            val stored = accounts.upstreamContext(account.id)
+            val previousProject = confirmed?.project?.takeIf { it == stored?.project && confirmed.tier == stored.tier }
+            return Probe(previousProject, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+        }
 
         val context = recordContext(account, egressKey(proxy), project, loaded.catalogTier(), loaded.reportsTier())
             ?: throw credentialReplaced()

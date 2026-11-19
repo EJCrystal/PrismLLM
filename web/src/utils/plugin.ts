@@ -394,7 +394,7 @@ export function parsePluginRuntimeState(value: unknown): PluginRuntimeState {
   const data = record(value, [
     'id', 'displayName', 'description', 'source', 'installed', 'installedVersion', 'activeVersion',
     'desiredEnabled', 'admissionEnabled', 'requiresRestart', 'status', 'loadError', 'permissions',
-    'approvedPermissions', 'configuration', 'activeConfiguration', 'configurationFields', 'activeUi',
+    'approvedPermissions', 'configuration', 'activeConfiguration', 'configurationFields', 'activeUi', 'revision',
   ])
   const installed = boolean(data.installed)
   const desiredEnabled = boolean(data.desiredEnabled)
@@ -404,7 +404,7 @@ export function parsePluginRuntimeState(value: unknown): PluginRuntimeState {
   requireContract(!installed || installedVersion !== null, '安装版本')
   requireContract(!admissionEnabled || (installed && desiredEnabled && activeVersion !== null && data.activeUi != null), '执行准入')
   return {
-    id: id(data.id), displayName: text(data.displayName, 200, true), description: text(data.description, 4_000),
+    id: id(data.id), revision: integer(data.revision, 0, Number.MAX_SAFE_INTEGER, 0), displayName: text(data.displayName, 200, true), description: text(data.description, 4_000),
     source: text(data.source, 4_000, true), installed, installedVersion, activeVersion, desiredEnabled, admissionEnabled,
     requiresRestart: boolean(data.requiresRestart), status: status(data.status), loadError: nullableText(data.loadError, 4_000),
     permissions: strings(data.permissions, 2, 128, true), approvedPermissions: strings(data.approvedPermissions, 2, 128, true),

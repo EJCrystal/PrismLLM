@@ -435,6 +435,63 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(calls.invocations[0].payload.values.optionalCount, null)
   })
 
+  it('preserves native bad-number drafts through model echoes and syncs external numeric resets', async () => {
+    const fixture = makePluginFixture({ extraFields: [makeField('optionalCount', '可选数量', 'number')] })
+    const entry = await hostFor(fixture)
+    const input = field(entry.container, '可选数量')
+    const valueProperty = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+    const writes = []
+    let badInput = false
+    Object.defineProperty(input, 'value', {
+      configurable: true,
+      get() { return valueProperty.get.call(this) },
+      set(value) {
+        writes.push(String(value))
+        badInput = false // Like a browser assignment, this erases the native unfinished draft.
+        valueProperty.set.call(this, value)
+      },
+    })
+    Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput }) })
+    for (const draft of ['-', '1e']) {
+      // Native number controls expose an empty DOM value for these incomplete edits.
+      valueProperty.set.call(input, '')
+      badInput = true
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      await settle()
+      entry.state.form.label = `unrelated render during ${draft}`
+      await settle()
+      assert.deepEqual(writes, [], `${draft} must not be overwritten by a model echo or render`)
+      assert.equal(input.validity.badInput, true)
+      assert.equal(Number.isNaN(entry.state.form.optionalCount), true)
+      assert.match(entry.state.formError.value, /可选数量必须是数字/)
+      assert.equal(entry.container.querySelector('.test-workbench-actions .button.primary').disabled, true)
+      await entry.state.run()
+    }
+    assert.equal(calls.invocations.length, 0)
+    badInput = false
+    valueProperty.set.call(input, '1e2')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+    assert.equal(entry.state.form.optionalCount, 100)
+    assert.equal(input.value, '1e2', 'a valid exponent draft is also preserved on echo')
+    assert.deepEqual(writes, [])
+    entry.state.form.optionalCount = 3
+    await settle()
+    assert.equal(input.value, '3')
+    assert.deepEqual(writes, ['3'])
+    valueProperty.set.call(input, '')
+    badInput = true
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+    entry.state.form.optionalCount = null
+    await settle()
+    assert.equal(input.value, '')
+    assert.equal(input.validity.badInput, false)
+    assert.deepEqual(writes, ['3', ''])
+    assert.equal(entry.state.formError.value, '')
+    assert.equal(entry.container.querySelector('.test-workbench-actions .button.primary').disabled, false)
+  })
+
   it('uses real scalar events and descriptor validation to block invalid diagnostics', async () => {
     const entry = await hostFor()
     const runButton = () => entry.container.querySelector('.test-workbench-actions .button.primary')
@@ -605,6 +662,144 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(calls.invocations.at(-1).id, unknown.manifest.id)
     assert.equal(calls.invocations.at(-1).payload.actionId, unknown.accountContribution.entry.action.id)
     assert.deepEqual(calls.legacy, [])
+  })
+
+  for (const completion of ['response', 'error']) {
+    it(`keeps the channel host invocation draft and result through a deferred contribution refresh ${completion}`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      const entry = await mountDiagnosticSurface('ChannelConnectivityPanel', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const hostElement = entry.container.querySelector('.plugin-diagnostic-host')
+      const hostKey = entry.state.hostKey.value
+      const setups = diagnosticHostSetups
+      const prompt = 'retain my channel diagnostic draft'
+      await change(field(entry.container, '本次提示词'), prompt)
+      const invocation = deferred()
+      mock.invoke = () => invocation.promise
+      const run = host.run()
+      await waitFor(() => calls.invocations.length === 1)
+      const call = calls.invocations[0]
+      const discovery = deferred()
+      mock.listContributions = () => discovery.promise
+      const reads = calls.contributions.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && !host.loading.value)
+      assert.equal(entry.state.loading.value, true)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.state.hostKey.value, hostKey)
+      assert.equal(call.options.signal.aborted, false)
+      assert.equal(host.running.value, true)
+      assert.equal(host.form.prompt, prompt)
+      invocation.resolve(responseFor(call))
+      await run; await settle()
+      const resultElement = entry.container.querySelector('.plugin-result')
+      assert.ok(resultElement, 'the invocation completes while contribution discovery is pending')
+      if (completion === 'response') discovery.resolve(clonePluginData(fixture.contributions))
+      else discovery.reject(new Error('background channel discovery unavailable'))
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+      assert.equal(entry.container.querySelector('.plugin-result'), resultElement)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.state.hostKey.value, hostKey)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(field(entry.container, '本次提示词').value, prompt)
+      assert.equal(host.rows.value[0].execution.outcome.success, true)
+      assert.equal(call.options.signal.aborted, false)
+      if (completion === 'error') {
+        const alert = entry.container.querySelector('[role="alert"]')
+        assert.match(text(alert), /background channel discovery unavailable/)
+        assert.equal(hostElement.contains(alert), false)
+        const retry = deferred()
+        mock.listContributions = () => retry.promise
+        button(alert, '重试').click()
+        await waitFor(() => entry.state.loading.value)
+        assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+        retry.resolve(clonePluginData(fixture.contributions))
+        await waitFor(() => !entry.state.loading.value)
+        assert.equal(entry.state.loadError.value, '')
+        assert.equal(entry.container.querySelector('.plugin-result'), resultElement)
+        assert.equal(diagnosticHostSetups, setups, 'retry does not remount a valid entry')
+      }
+    })
+  }
+
+  for (const changeKind of ['entry', 'version']) {
+    it(`remounts the channel diagnostic only after a deferred refresh confirms a changed ${changeKind}`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      const entry = await mountDiagnosticSurface('ChannelConnectivityPanel', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const setups = diagnosticHostSetups
+      const oldKey = entry.state.hostKey.value
+      const invocation = deferred()
+      mock.invoke = () => invocation.promise
+      const run = host.run()
+      await waitFor(() => calls.invocations.length === 1)
+      const call = calls.invocations[0]
+      const next = makeOfficialPluginFixture({ version: changeKind === 'version' ? '2.0.0' : '1.0.0' })
+      if (changeKind === 'entry') {
+        next.contribution.entry.id = 'replacement-channel'
+        next.state.activeUi.entries[0].id = 'replacement-channel'
+      }
+      const discovery = deferred()
+      mock.listContributions = () => discovery.promise
+      const reload = entry.state.load()
+      await settle()
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(call.options.signal.aborted, false)
+      mock.states.set(next.state.id, clonePluginData(next.state))
+      discovery.resolve(clonePluginData(next.contributions))
+      await reload
+      await waitFor(() => diagnosticHostSetups === setups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
+      assert.notEqual(entry.state.hostKey.value, oldKey)
+      assert.equal(call.options.signal.aborted, true)
+      const replacement = captures.get('PluginDiagnosticHost')
+      assert.equal(replacement.props.contribution.entry.id, next.contribution.entry.id)
+      assert.equal(replacement.props.contribution.activeVersion, next.contribution.activeVersion)
+      invocation.resolve(responseFor(call))
+      await run; await settle()
+      assert.equal(replacement.rows.value.length, 0)
+      assert.equal(entry.container.querySelector('.plugin-result'), null)
+    })
+  }
+
+  it('keeps an invalid channel entry excluded on background events until a successful explicit recheck', async () => {
+    const fixture = makeOfficialPluginFixture()
+    const entry = await mountDiagnosticSurface('ChannelConnectivityPanel', fixture)
+    await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+    const host = captures.get('PluginDiagnosticHost')
+    const setups = diagnosticHostSetups
+    mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
+    await host.load(); await settle()
+    assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+    assert.match(text(entry.container), /诊断入口已失效/)
+    mock.getTargets = undefined
+    const reads = calls.contributions.length
+    window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+    await waitFor(() => calls.contributions.length === reads + 1 && !entry.state.loading.value)
+    assert.equal(diagnosticHostSetups, setups)
+    assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+    assert.equal(entry.state.invalidContributions.value.size, 1)
+    const failed = deferred()
+    mock.listContributions = () => failed.promise
+    button(entry.container, '重新检查').click()
+    await waitFor(() => entry.state.loading.value)
+    assert.equal(diagnosticHostSetups, setups)
+    assert.equal(entry.state.invalidContributions.value.size, 1)
+    failed.reject(new Error('channel recheck unavailable'))
+    await waitFor(() => !entry.state.loading.value)
+    assert.equal(entry.state.invalidContributions.value.size, 1)
+    assert.equal(diagnosticHostSetups, setups)
+    mock.listContributions = undefined
+    button(entry.container.querySelector('[role="alert"]'), '重试').click()
+    await waitFor(() => diagnosticHostSetups === setups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
+    assert.equal(entry.state.invalidContributions.value.size, 0)
+    assert.equal([...entry.state.diagnosticGenerations.value.values()][0], 1)
   })
 
   for (const completion of ['response', 'error']) {
@@ -1678,7 +1873,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await change(grants[1], true)
     button(entry.container, '安装此版本').click()
     await waitFor(() => calls.install.length === 1 && !entry.state.busy.value)
-    assert.deepEqual(calls.install[0], { id: fixture.manifest.id, payload: { version: '1.0.0', approvedPermissions: fixture.manifest.permissions } })
+    assert.deepEqual(calls.install[0], { id: fixture.manifest.id, payload: { version: '1.0.0', expectedSha256: fixture.catalog.sha256, approvedPermissions: fixture.manifest.permissions } })
     assert.equal(text(entry.container.querySelector('.plugin-market-detail-head .badge')), '已禁用')
     assert.equal(fact(entry.container, '当前生效'), '无可执行入口')
     const installedGrants = [...entry.container.querySelectorAll('.plugin-market-permissions input')]
@@ -1859,6 +2054,108 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     button(entry.container, '保存配置').click()
     await waitFor(() => calls.configuration.length === 1 && !entry.state.busy.value)
     assert.deepEqual(calls.configuration[0].payload.values, { defaultPrompt: 'explicit version two edit', newOnly: 'new value' })
+  })
+
+  it('keeps the backend SemVer order and offers installed controls when catalogue reads fail', async () => {
+    const fixture = makePluginFixture({ version: '2.0.0' })
+    setFixtures(fixture)
+    mock.catalog = ['2.0.0', '2.0.0-rc.10', '2.0.0-rc.2', '1.9.0'].map(version => makePluginFixture({ version }).catalog)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    assert.deepEqual(entry.state.versions.value.map(item => item.manifest.version), mock.catalog.map(item => item.manifest.version))
+    mock.listCatalog = () => Promise.reject(new Error('catalogue offline'))
+    await entry.state.load(); await settle()
+    assert.match(text(entry.container), /目录读取失败.*catalogue offline/)
+    assert.equal(entry.state.selectedState.value.id, fixture.manifest.id)
+    assert.equal(entry.state.canInstall.value, false)
+    assert.equal(button(entry.container, '禁用').disabled, false)
+    button(entry.container, '禁用').click()
+    await waitFor(() => calls.enabled.length === 1 && !entry.state.busy.value)
+    confirmResult = true
+    button(entry.container, '卸载').click()
+    await waitFor(() => calls.uninstall.length === 1 && !entry.state.busy.value)
+  })
+
+  it('loads installed state on the first render even when catalogue loading fails', async () => {
+    mock.listCatalog = () => Promise.reject(new Error('initial catalogue failure'))
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    assert.ok(entry.state.selectedState.value?.installed)
+    assert.match(text(entry.container), /initial catalogue failure/)
+    assert.equal(button(entry.container, '禁用').disabled, false)
+    assert.equal(button(entry.container, '卸载').disabled, false)
+    assert.equal(entry.state.canInstall.value, false)
+  })
+
+  it('sends the displayed approval digest and refuses a same-version catalogue replacement', async () => {
+    const fixture = makePluginFixture()
+    setFixtures(fixture); mock.states.delete(fixture.manifest.id)
+    const originalInstall = api.installPlugin
+    api.installPlugin = async (id, payload) => {
+      const current = mock.catalog.find(item => item.manifest.id === id && item.manifest.version === payload.version)
+      if (current.sha256 !== payload.expectedSha256) {
+        calls.install.push({ id, payload: clonePluginData(payload) })
+        throw new ApiError('reviewed catalogue package changed', 409, 'PLUGIN_CATALOG_CONFLICT')
+      }
+      return originalInstall(id, payload)
+    }
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    for (const grant of entry.container.querySelectorAll('.plugin-market-permissions input')) await change(grant, true)
+    mock.catalog[0].sha256 = 'b'.repeat(64)
+    button(entry.container, '安装此版本').click()
+    await waitFor(() => calls.install.length === 1 && !entry.state.busy.value)
+    assert.equal(calls.install[0].payload.expectedSha256, fixture.catalog.sha256)
+    assert.equal(mock.states.has(fixture.manifest.id), false)
+    assert.match(toasts.at(-1).message, /catalogue package changed/)
+  })
+
+  it('preserves a dirty same-version baseline on reload and blocks saving after a revision changes', async () => {
+    const fixture = makePluginFixture({ state: { revision: 5 } })
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'old local draft')
+    setState(fixture.manifest.id, { revision: 6, configuration: { defaultPrompt: 'remote winner', threshold: 0.5 } })
+    await entry.state.load(); await settle()
+    assert.equal(entry.state.draftRevision.value, 5)
+    assert.equal(entry.state.configuration.defaultPrompt, 'old local draft')
+    assert.equal(entry.state.draftConflict.value, true)
+    assert.equal(button(entry.container, '保存配置').disabled, true)
+    entry.state.saveConfiguration()
+    assert.equal(calls.configuration.length, 0)
+    button(entry.container, '放弃旧草稿并载入当前配置').click(); await settle()
+    assert.equal(entry.state.draftRevision.value, 6)
+    assert.equal(entry.state.configuration.defaultPrompt, 'remote winner')
+    assert.equal(entry.state.draftConflict.value, false)
+  })
+
+  it('rejects a sequential stale draft at save and prevents retry until current configuration is loaded', async () => {
+    const fixture = makePluginFixture({ state: { revision: 3 } })
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'stale local draft')
+    setState(fixture.manifest.id, { revision: 4, configuration: { defaultPrompt: 'saved elsewhere', threshold: 0.5 } })
+    mock.configure = async (id, payload) => {
+      const state = stateFor(id)
+      if (payload.expectedRevision !== state.revision || payload.installedVersion !== state.installedVersion) {
+        throw new ApiError('configuration revision conflict', 409, 'PLUGIN_REVISION_CONFLICT')
+      }
+      return setState(id, { revision: state.revision + 1, configuration: payload.values })
+    }
+    button(entry.container, '保存配置').click()
+    await waitFor(() => calls.configuration.length === 1 && !entry.state.busy.value)
+    assert.equal(calls.configuration[0].payload.expectedRevision, 3)
+    assert.equal(calls.configuration[0].payload.installedVersion, '1.0.0')
+    assert.equal(entry.state.draftConflict.value, true)
+    assert.equal(button(entry.container, '保存配置').disabled, true)
+    entry.state.saveConfiguration()
+    assert.equal(calls.configuration.length, 1)
+    button(entry.container, '放弃旧草稿并载入当前配置').click()
+    await waitFor(() => !entry.state.loading.value && !entry.state.draftConflict.value)
+    assert.equal(entry.state.configuration.defaultPrompt, 'saved elsewhere')
+    assert.equal(entry.state.draftRevision.value, 4)
   })
 
   it('validates configuration scalars and sends an immutable save snapshot with numeric zero and false', async () => {

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, useId } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
 import type { PluginChoice, PluginField, PluginValue } from '../types/api'
 
 const props = defineProps<{
@@ -13,12 +13,28 @@ const inputId = useId()
 const choices = computed(() => props.options ?? props.field.options)
 const inputValue = computed(() => String(props.modelValue ?? ''))
 const isChoice = computed(() => ['select', 'model', 'credential', 'protocol', 'scope'].includes(props.field.kind))
+const numberInput = ref<HTMLInputElement | null>(null)
+let numberUpdate: { input: HTMLInputElement; key: string; value: PluginValue } | null = null
+
+// A number control owns its unfinished native draft (e.g. "-" or "1e").
+// Echoing NaN, or even assigning "", would erase that draft and its badInput state.
+watch([numberInput, () => props.modelValue, () => props.field.key], ([input, value, key], [previousInput, , previousKey]) => {
+  if (!input) return
+  if (input === previousInput && key === previousKey && numberUpdate?.input === input &&
+      numberUpdate.key === key && Object.is(value, numberUpdate.value)) return
+  input.value = value == null || (typeof value === 'number' && !Number.isFinite(value)) ? '' : String(value)
+}, { flush: 'post' })
 
 function update(event: Event) {
   const input = event.target as HTMLInputElement
   if (props.field.kind === 'boolean') emit('update:modelValue', input.checked)
-  else if (props.field.kind === 'number' && input.validity.badInput) emit('update:modelValue', Number.NaN)
-  else if (props.field.kind === 'number') emit('update:modelValue', input.value === '' ? null : Number(input.value))
+  else if (props.field.kind === 'number') {
+    const value = input.validity.badInput ? Number.NaN : input.value === '' ? null : Number(input.value)
+    const update = { input, key: props.field.key, value }
+    numberUpdate = update
+    emit('update:modelValue', value)
+    void nextTick(() => { if (numberUpdate === update) numberUpdate = null })
+  }
   else if (props.field.kind === 'select' && !props.field.required && input.value === '') emit('update:modelValue', null)
   else emit('update:modelValue', input.value)
 }
@@ -38,8 +54,11 @@ function update(event: Event) {
     <textarea v-else-if="field.kind === 'textarea'" :id="inputId" :value="inputValue" rows="4"
       :maxlength="field.maxLength ?? undefined" :disabled="disabled" :required="field.required" spellcheck="false"
       :aria-describedby="field.help ? inputId + '-help' : undefined" @input="update"></textarea>
-    <input v-else :id="inputId" :type="field.kind === 'number' ? 'number' : 'text'" :value="inputValue"
-      :min="field.min ?? undefined" :max="field.max ?? undefined" :step="field.kind === 'number' ? 'any' : undefined"
+    <input v-else-if="field.kind === 'number'" :id="inputId" ref="numberInput" type="number"
+      :min="field.min ?? undefined" :max="field.max ?? undefined" step="any"
+      :disabled="disabled" :required="field.required"
+      :aria-describedby="field.help ? inputId + '-help' : undefined" @input="update" />
+    <input v-else :id="inputId" type="text" :value="inputValue"
       :maxlength="field.maxLength ?? undefined" :disabled="disabled" :required="field.required"
       :aria-describedby="field.help ? inputId + '-help' : undefined" @input="update" />
     <small v-if="field.help" :id="inputId + '-help'">{{ field.help }}</small>

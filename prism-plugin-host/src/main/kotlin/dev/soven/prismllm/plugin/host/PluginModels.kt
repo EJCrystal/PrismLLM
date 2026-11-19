@@ -72,6 +72,7 @@ data class PluginRuntimeState(
     val activeConfiguration: JsonObject? = null,
     val configurationFields: List<PluginField> = emptyList(),
     val activeUi: PluginUiDescriptor? = null,
+    val revision: Long = 0,
 )
 
 @Serializable

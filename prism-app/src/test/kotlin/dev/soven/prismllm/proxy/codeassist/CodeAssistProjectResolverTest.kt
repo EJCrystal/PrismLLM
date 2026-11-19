@@ -555,6 +555,26 @@ class CodeAssistProjectResolverTest {
     }
 
     @Test
+    fun `catalog probe reuses only the same confirmed project after temporary discovery misses`() = runBlocking {
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val calls = AtomicInteger()
+        HttpClient(MockEngine { request ->
+            val body = if (calls.incrementAndGet() == 1) {
+                """{"cloudaicompanionProject":"confirmed-project","paidTier":{"id":"paid-tier"}}"""
+            } else if (request.url.encodedPath.endsWith("loadCodeAssist")) {
+                """{"currentTier":{"id":"paid-tier"}}"""
+            } else """{"done":true,"response":{}}"""
+            respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), client)
+            val current = account()
+            assertEquals("confirmed-project", resolver.probe(current, "token").project)
+            assertEquals("confirmed-project", resolver.probe(current, "token").project)
+            assertNull(resolver.probe(current.copy(authorizedAt = 123), "new-token").project)
+        }
+    }
+
+    @Test
     fun `catalog probe rejects stale authorization instead of exposing its tier`() = runBlocking {
         val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
         val accounts = FakeAccounts(saved, snapshotMatches = { false })

@@ -68,6 +68,7 @@ export interface PluginCatalogItem {
 }
 
 export interface PluginRuntimeState {
+  revision: number
   id: string
   displayName: string
   description: string

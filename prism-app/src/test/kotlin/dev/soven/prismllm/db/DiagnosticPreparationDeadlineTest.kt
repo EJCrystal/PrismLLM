@@ -9,6 +9,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestCoroutineScheduler
@@ -34,6 +35,8 @@ import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -348,22 +351,47 @@ class DiagnosticPreparationDeadlineTest {
     }
 
     @Test
-    fun `PostgreSQL connection failure still times out and evicts the lease`() = runBlocking {
-        val jdbc = StatementJdbc(blockRead = false, executeFailure = SQLException("simulated connection failure", "08006"))
-        val result = DiagnosticPreparationDeadline.withinSynchronousAndDrain(5_000) {
-            DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use { connection ->
-                connection.createStatement().use { statement ->
-                    statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+    fun `timeout classification preserves socket SQL timeout and query cancellation without general connection failures`() {
+        listOf(
+            java.net.SocketTimeoutException("socket read timed out"),
+            java.sql.SQLTimeoutException("query timed out"),
+            SQLException("query canceled", "57014"),
+            SQLException("connection failed after socket timeout", "08006", java.net.SocketTimeoutException()),
+        ).forEach { cause ->
+            assertTrue(DiagnosticPreparationDeadline.isTimeout(cause), cause.toString())
+            assertTrue(DiagnosticPreparationDeadline.isTimeout(IllegalStateException(cause)), "wrapped $cause")
+        }
+        listOf("08001", "08003", "08006").forEach { sqlState ->
+            val failure = SQLException("immediate connection failure", sqlState)
+            assertFalse(DiagnosticPreparationDeadline.isTimeout(failure), sqlState)
+            assertFalse(DiagnosticPreparationDeadline.isTimeout(IllegalStateException(failure)), "wrapped $sqlState")
+        }
+    }
+
+    @Test
+    fun `immediate PostgreSQL connection failure before deadline propagates original error and evicts the lease`() = runBlocking {
+        val failure = SQLException("simulated connection failure", "08006")
+        val jdbc = StatementJdbc(blockRead = false, executeFailure = failure)
+        val clock = AtomicLong()
+        val budget = DiagnosticPreparationDeadline.start(5_000, clock::get)
+        val thrown = assertFailsWith<SQLException> {
+            DiagnosticPreparationDeadline.withinSynchronousAndDrain(budget) {
+                DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use { connection ->
+                    connection.createStatement().use { statement ->
+                        statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+                    }
                 }
             }
         }
 
-        assertNull(result, "SQLSTATE 08006 should be reported as a diagnostic timeout")
+        assertSame(failure, thrown, "SQLSTATE 08006 before deadline must retain the original error")
+        assertEquals(0L, clock.get(), "the preparation deadline must not have elapsed")
         assertEquals(1, jdbc.aborts.get())
         assertEquals(1, jdbc.discards.get())
         assertEquals(1, jdbc.closes.get())
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
     fun `external cancellation returns during rollback and drain waits for actual close`() = runBlocking {
         val jdbc = BlockingJdbc()
@@ -397,7 +425,10 @@ class DiagnosticPreparationDeadlineTest {
             assertSignalled(jdbc.returned, "lease returns only when cleanup really finishes")
         } finally {
             jdbc.releaseAll()
-            withTimeout(3_000) { waiter.join() }
+            waiter.cancel()
+            withContext(NonCancellable + Dispatchers.IO) {
+                withTimeout(3_000) { waiter.join() }
+            }
         }
 
         val drainingJdbc = BlockingJdbc()
@@ -431,7 +462,16 @@ class DiagnosticPreparationDeadlineTest {
             assertSignalled(drainingJdbc.returned, "drain returns after the lease is released")
         } finally {
             drainingJdbc.releaseAll()
-            withTimeout(3_000) { drain.join() }
+            drain.cancel()
+            withContext(NonCancellable + Dispatchers.IO) {
+                withTimeout(3_000) {
+                    while (!drain.isCompleted) {
+                        scheduler.runCurrent()
+                        delay(1)
+                    }
+                    drain.join()
+                }
+            }
         }
     }
 

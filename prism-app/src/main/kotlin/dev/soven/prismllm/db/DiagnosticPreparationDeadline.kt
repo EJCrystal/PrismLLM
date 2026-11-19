@@ -398,8 +398,8 @@ internal class DiagnosticPreparationDeadline private constructor(
 
         /** A diagnostic timeout does not necessarily invalidate the checked-out connection. */
         fun isTimeout(cause: Throwable): Boolean = generateSequence(cause) { it.cause }.any {
-            it is Expired || it is java.sql.SQLTimeoutException ||
-                (it is SQLException && it.sqlState == "57014") || invalidConnection(it)
+            it is Expired || it is java.net.SocketTimeoutException || it is java.sql.SQLTimeoutException ||
+                (it is SQLException && it.sqlState == "57014")
         }
 
         suspend fun <T : Any> within(timeoutMs: Long, prepare: suspend () -> T): T? =

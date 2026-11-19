@@ -190,7 +190,7 @@ export const api = {
     request<unknown>(`/plugins/${encodeURIComponent(id)}`, pluginRequestOptions(options)).then(parsePluginRuntimeState),
   getPluginContributions: (options: PluginRequestOptions = {}) =>
     request<unknown>('/plugins/ui', pluginRequestOptions(options)).then(parsePluginContributions),
-  installPlugin: (id: string, payload: { version: string; approvedPermissions: string[] }) =>
+  installPlugin: (id: string, payload: { version: string; approvedPermissions: string[]; expectedSha256: string }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/installation`, {
       method: 'PUT', body: JSON.stringify(payload),
     }).then(parsePluginRuntimeState),
@@ -198,7 +198,7 @@ export const api = {
     request<unknown>(`/plugins/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: JSON.stringify(payload),
     }).then(parsePluginRuntimeState),
-  configurePlugin: (id: string, payload: { values: PluginValues }) =>
+  configurePlugin: (id: string, payload: { values: PluginValues; expectedRevision: number; installedVersion: string }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/configuration`, {
       method: 'PUT', body: JSON.stringify(payload),
     }).then(parsePluginRuntimeState),

@@ -315,6 +315,36 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `marketplace configuration rejects sequential stale drafts and installation requires the reviewed digest`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val baseline = client.pluginState(session)
+            val staleDraft = configurationPayload("stale draft")
+            val winner = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/configuration", session,
+                configurationPayload("winner draft")).decoded<PluginRuntimeState>()
+            assertEquals(baseline.revision + 1, winner.revision)
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/configuration", session, staleDraft)
+                .assertError(HttpStatusCode.Conflict, "PLUGIN_REVISION_CONFLICT")
+            assertEquals(winner, client.pluginState(session))
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/configuration", session,
+                """{"values":{"defaultPrompt":"missing baseline"}}""")
+                .assertError(HttpStatusCode.BadRequest, "plugin_revision_required")
+            val currentInstall = Json.parseToJsonElement(installationPayload()).jsonObject
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
+                JsonObject(currentInstall - "expectedSha256").toString())
+                .assertError(HttpStatusCode.BadRequest, "plugin_digest_required")
+            val reviewedDigest = currentInstall["expectedSha256"]!!.jsonPrimitive.content
+            val staleDigest = (if (reviewedDigest.first() == '0') "1" else "0") + reviewedDigest.drop(1)
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
+                JsonObject(currentInstall + ("expectedSha256" to JsonPrimitive(staleDigest))).toString())
+                .assertError(HttpStatusCode.Conflict, "PLUGIN_CATALOG_CONFLICT")
+            assertEquals(winner, client.pluginState(session))
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `legacy default prompt settings bridge plugin configuration immediately and invocation overrides never persist`() = runBlocking {
         app.modelTestSettingsRepository.save("legacy startup prompt")
         testApplication {
@@ -367,7 +397,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             )
             invalidConfigurations.forEach { invalid ->
                 client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/configuration", session,
-                    buildJsonObject { put("values", invalid) }.toString()).assertError(HttpStatusCode.BadRequest, "PLUGIN_INVALID_CONFIGURATION")
+                    buildJsonObject { put("values", invalid); put("expectedRevision", current.revision); put("installedVersion", current.installedVersion) }.toString()).assertError(HttpStatusCode.BadRequest, "PLUGIN_INVALID_CONFIGURATION")
                 assertEquals(current.configuration, client.pluginState(session).configuration)
             }
             listOf(" ", "x".repeat(4_001)).forEach { prompt ->
@@ -848,7 +878,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     fun `initial OAuth account lookup preserves missing account and bounds a blocked query for both routes`() = runBlocking {
         val base = app.config
         app.close()
-        app = mockedApplication(base, preparationTimeoutMs = 1_500)
+        app = mockedApplication(base, preparationTimeoutMs = 5_000)
         val provider = OAuthProvider.CHATGPT
         val model = "gpt-6-initial-lookup"
         val protocol = GatewayProtocol.RESPONSES
@@ -865,33 +895,39 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 invoke("missing-initial-account", legacy).assertError(HttpStatusCode.NotFound, "oauth_account_not_found")
             }
             val account = oauthAccount("initial-lookup-blocked", provider, listOf(model), emptyList())
-            for (legacy in listOf(false, true)) {
-                DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
-                    lock.autoCommit = false
-                    val blocker = lock.createStatement().use { statement ->
-                        statement.executeQuery("select pg_backend_pid()").use { rows ->
-                            check(rows.next())
-                            rows.getInt(1)
-                        }
-                    }
-                    lock.createStatement().use { it.execute("lock table oauth_accounts in access exclusive mode") }
-                    try {
-                        coroutineScope {
-                            val pending = async(Dispatchers.Default) { invoke(account.id, legacy) }
-                            awaitCondition("initial account query is blocked by the table lock", timeoutMs = 5_000) {
-                                DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { observer ->
-                                    observer.createStatement().use { statement ->
-                                        statement.executeQuery("select exists (select 1 from pg_stat_activity where $blocker = any(pg_blocking_pids(pid)))").use { rows ->
+            DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { observer ->
+                observer.autoCommit = true
+                observer.prepareStatement(
+                    "select exists (select 1 from pg_stat_activity where ? = any(pg_blocking_pids(pid)))",
+                ).use { observation ->
+                    observation.queryTimeout = 1
+                    for (legacy in listOf(false, true)) {
+                        DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
+                            lock.autoCommit = false
+                            val blocker = lock.createStatement().use { statement ->
+                                statement.executeQuery("select pg_backend_pid()").use { rows ->
+                                    check(rows.next())
+                                    rows.getInt(1)
+                                }
+                            }
+                            lock.createStatement().use { it.execute("lock table oauth_accounts in access exclusive mode") }
+                            try {
+                                coroutineScope {
+                                    val pending = async(Dispatchers.Default) { invoke(account.id, legacy) }
+                                    observation.setInt(1, blocker)
+                                    awaitCondition("initial account query is blocked by the table lock", timeoutMs = 5_000) {
+                                        observation.executeQuery().use { rows ->
                                             check(rows.next())
                                             rows.getBoolean(1)
                                         }
                                     }
+                                    assertFalse(pending.isCompleted, "the diagnostic must be observed waiting for the lock before timeout")
+                                    assertPreparationTimeout(withTimeout(7_000) { pending.await() }, provider)
                                 }
+                            } finally {
+                                lock.rollback()
                             }
-                            assertPreparationTimeout(withTimeout(5_000) { pending.await() }, provider)
                         }
-                    } finally {
-                        lock.rollback()
                     }
                 }
             }
@@ -1111,12 +1147,12 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 .assertError(HttpStatusCode.BadRequest, "model_test_protocol_unsupported")
             client.invokePlugin(session, "endpoint", account.id, accountValues)
                 .assertError(HttpStatusCode.BadRequest, "invalid_plugin_context")
-            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, """{"version":"$VERSION","approvedPermissions":[]}""")
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, installationPayload(approvedPermissions = emptyList()))
                 .assertError(HttpStatusCode.Forbidden, "PLUGIN_PERMISSION_REQUIRED")
             client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, """{"enabled":true,"approvedPermissions":[]}""")
                 .assertError(HttpStatusCode.Forbidden, "PLUGIN_PERMISSION_REQUIRED")
             client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
-                """{"version":"$VERSION","approvedPermissions":["arbitrary.network"]}""")
+                installationPayload(approvedPermissions = listOf("arbitrary.network")))
                 .assertError(HttpStatusCode.BadRequest, "PLUGIN_INVALID_GRANTS")
             assertActive(client.pluginState(session))
             assertEquals(original, app.oauthAccountRepository.findDetailed(account.id), "Rejected probes cannot refresh or mutate the account")
@@ -1293,7 +1329,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 listOf(OAuthAccountModelCatalogEntry(model, model))))
             publishChannelOnlyUpgrade(catalog)
             val pending = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
-                """{"version":"2.0.0","approvedPermissions":["${PluginApi.CHANNEL_PROBE}"]}""").decoded<PluginRuntimeState>()
+                installationPayload(version = "2.0.0", approvedPermissions = listOf(PluginApi.CHANNEL_PROBE))).decoded<PluginRuntimeState>()
             assertEquals("2.0.0", pending.installedVersion)
             assertEquals(VERSION, pending.activeVersion)
             assertEquals(listOf(PluginApi.CHANNEL_PROBE), pending.approvedPermissions)
@@ -1653,13 +1689,25 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         keyId: String? = null, prompt: String? = null): HttpResponse = api(HttpMethod.Post, "/admin/api$path", session,
         JsonObject(values(model, protocol, keyId, prompt) + ("reasoningEffort" to JsonPrimitive("high"))).toString())
 
-    private fun installationPayload(): String = """{"version":"$VERSION","approvedPermissions":["${PluginApi.CHANNEL_PROBE}","${PluginApi.OAUTH_ACCOUNT_PROBE}"]}"""
+    private fun installationPayload(
+        version: String = VERSION,
+        approvedPermissions: List<String> = listOf(PluginApi.CHANNEL_PROBE, PluginApi.OAUTH_ACCOUNT_PROBE),
+    ): String = buildJsonObject {
+        put("version", version)
+        put("expectedSha256", app.pluginRuntime.catalogItems().single { it.manifest.id == PLUGIN_ID && it.manifest.version == version }.sha256)
+        put("approvedPermissions", kotlinx.serialization.json.JsonArray(approvedPermissions.map(::JsonPrimitive)))
+    }.toString()
 
     private fun enabledPayload(): String = """{"enabled":true,"approvedPermissions":["${PluginApi.CHANNEL_PROBE}","${PluginApi.OAUTH_ACCOUNT_PROBE}"]}"""
 
-    private fun configurationPayload(prompt: String): String = buildJsonObject {
-        put("values", buildJsonObject { put("defaultPrompt", prompt) })
-    }.toString()
+    private suspend fun configurationPayload(prompt: String): String {
+        val baseline = app.pluginRuntime.state(PLUGIN_ID)
+        return buildJsonObject {
+            put("values", buildJsonObject { put("defaultPrompt", prompt) })
+            put("expectedRevision", baseline.revision)
+            put("installedVersion", baseline.installedVersion)
+        }.toString()
+    }
 
     private suspend inline fun <reified T> HttpResponse.decoded(): T {
         val text = bodyAsText()

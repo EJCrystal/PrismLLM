@@ -263,7 +263,7 @@ private suspend fun runModelConnectivityTest(
                     }
                 } else null,
                 usage = if (ok) extractModelTestUsage(protocol, json) else null,
-                upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
+                upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential, multiline = false) } else null,
             )
             ModelConnectivityExecution(
                 result = result,
@@ -449,29 +449,69 @@ private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential
         ?: "上游返回 HTTP $statusCode"
 }
 
-private fun redactModelTestCredential(text: String, credential: String): String {
-    if (credential.isEmpty()) return text
-    fun hexPattern(hex: String): String = hex.map { char ->
-        if (char in 'a'..'f') "[$char${char.uppercaseChar()}]" else char.toString()
-    }.joinToString("")
-    // Match the whole credential, allowing each code point's common echo encoding.
-    // Hex case is flexible; literal token characters remain case-sensitive.
-    val pattern = credential.codePoints().toArray().joinToString("") { codePoint ->
+private fun normalizeModelTestDisplay(text: String, multiline: Boolean): String = text.filter { char ->
+    (!char.isISOControl() || (multiline && char in "\n\t")) && Character.getType(char) != Character.FORMAT.toInt()
+}
+
+private data class CredentialEchoForm(val value: String, val hexCaseInsensitive: Boolean = false) {
+    fun matches(text: String, offset: Int): Boolean =
+        text.regionMatches(offset, value, 0, value.length, ignoreCase = hexCaseInsensitive)
+}
+
+private fun redactModelTestCredential(text: String, credential: String, multiline: Boolean = true): String {
+    // The host/report removes these characters. Do so before matching, never after redaction:
+    // deleting a control or formatting character can assemble an otherwise split credential.
+    val display = normalizeModelTestDisplay(text, multiline)
+    val secret = normalizeModelTestDisplay(credential, multiline)
+    if (secret.isEmpty() || display.length < secret.length) return display
+    val forms = secret.codePoints().toArray().map { codePoint ->
         val literal = String(Character.toChars(codePoint))
-        val urlEncoded = literal.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
-            "%" + hexPattern((byte.toInt() and 0xff).toString(16).padStart(2, '0'))
+        val percent = literal.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
+            "%" + (byte.toInt() and 0xff).toString(16).padStart(2, '0')
         }
-        val unicodeEscaped = literal.map { char ->
-            Regex.escape("\\u") + hexPattern(char.code.toString(16).padStart(4, '0'))
-        }.joinToString("")
-        val jsonEscaped = JsonPrimitive(literal).toString().drop(1).dropLast(1)
-        val forms = mutableListOf(urlEncoded, unicodeEscaped, Regex.escape(jsonEscaped))
-        if (literal == "/") forms += Regex.escape("\\/")
-        if (literal == " ") forms += Regex.escape("+")
-        forms += Regex.escape(literal)
-        "(?:${forms.distinct().joinToString("|")})"
+        val unicode = literal.map { char -> "\\u" + char.code.toString(16).padStart(4, '0') }.joinToString("")
+        buildList {
+            add(CredentialEchoForm(percent, hexCaseInsensitive = true))
+            add(CredentialEchoForm(unicode, hexCaseInsensitive = true))
+            add(CredentialEchoForm(JsonPrimitive(literal).toString().drop(1).dropLast(1)))
+            if (literal == "/") add(CredentialEchoForm("\\/"))
+            if (literal == " ") add(CredentialEchoForm("+"))
+            add(CredentialEchoForm(literal))
+        }.distinct()
     }
-    return Regex(pattern).replace(text) { "[REDACTED]" }
+    // Scan literal variants without a regex call stack proportional to token length.
+    // Merge alternative endpoints at each code point, so ambiguous mixed encodings
+    // cannot cause recursive/exponential backtracking (e.g. a literal '%' or '\\').
+    fun matchEnd(start: Int): Int? {
+        var offsets = setOf(start)
+        for (alternatives in forms) {
+            val next = HashSet<Int>()
+            for (offset in offsets) {
+                for (form in alternatives) {
+                    if (form.matches(display, offset)) next += offset + form.value.length
+                }
+            }
+            if (next.isEmpty()) return null
+            offsets = next
+        }
+        return offsets.maxOrNull()
+    }
+    return buildString {
+        var offset = 0
+        var copied = 0
+        while (offset <= display.length - secret.length) {
+            val end = matchEnd(offset)
+            if (end == null) {
+                offset++
+            } else {
+                append(display, copied, offset)
+                append("[REDACTED]")
+                offset = end
+                copied = end
+            }
+        }
+        append(display, copied, display.length)
+    }
 }
 
 private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String): String =

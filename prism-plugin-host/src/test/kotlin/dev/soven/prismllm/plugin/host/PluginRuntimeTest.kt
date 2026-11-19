@@ -660,6 +660,56 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `reviewed install digest rejects a changed same-version catalogue candidate before persistence`(): Unit = runBlocking {
+        val reviewed = fixture()
+        publish(reviewed)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize()
+        val digest = host.catalogItems().single().sha256
+        val replacement = fixture(version = reviewed.manifest.version)
+        publish(replacement)
+        assertFalse(digest == replacement.sha256)
+        val conflict = failure("PLUGIN_CATALOG_CONFLICT") {
+            host.install(reviewed.manifest.id, reviewed.manifest.version, reviewed.manifest.permissions, digest)
+        }
+        assertEquals(409, conflict.statusCode)
+        assertNull(store.find(reviewed.manifest.id))
+        assertEquals(0, store.writes)
+        assertEquals(0, replacement.count("constructed"))
+        val installed = host.install(replacement.manifest.id, replacement.manifest.version, replacement.manifest.permissions, replacement.sha256)
+        assertEquals(0L, installed.revision)
+        assertEquals(replacement.sha256, store.find(replacement.manifest.id)?.sha256)
+    }
+
+    @Test
+    fun `sequential same-version drafts compare the original client revision including no-op writes`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val firstHost = runtime(store)
+        firstHost.initialize(packaged.manifest.id) { config("original") }
+        val secondHost = runtime(store)
+        secondHost.initialize()
+        val baseline = firstHost.state(packaged.manifest.id)
+        val winner = firstHost.configure(packaged.manifest.id, config("winner"), baseline.revision, packaged.manifest.version)
+        assertEquals(baseline.revision + 1, winner.revision)
+        val writes = store.writes
+        for (draft in listOf(config("stale loser"), winner.configuration)) {
+            val conflict = failure("PLUGIN_REVISION_CONFLICT") {
+                secondHost.configure(packaged.manifest.id, draft, baseline.revision, packaged.manifest.version)
+            }
+            assertEquals(409, conflict.statusCode)
+        }
+        failure("PLUGIN_REVISION_CONFLICT") {
+            secondHost.configure(packaged.manifest.id, config("wrong selection"), winner.revision, "2.0.0")
+        }
+        assertEquals(writes, store.writes)
+        assertEquals(config("winner"), secondHost.state(packaged.manifest.id).configuration)
+        assertEquals("winner", invoke(firstHost).plan.prompt)
+    }
+
+    @Test
     fun `field updates merge the configuration paired with their CAS revision`(): Unit = runBlocking {
         val packaged = fixture(configuration = defaultConfiguration() + PluginField("other", "Other", "text"))
         publish(packaged)
@@ -1535,6 +1585,33 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `plugin report collection access remains inside the timed worker`(): Unit = runBlocking {
+        val packaged = fixture(reportPrefix = """
+            if (System.nanoTime() != 0) {
+                java.util.List<DiagnosticMetric> lazy = (java.util.List<DiagnosticMetric>) java.lang.reflect.Proxy.newProxyInstance(
+                    getClass().getClassLoader(), new Class<?>[] { java.util.List.class }, (proxy, method, arguments) -> {
+                        if (method.getName().equals("size")) {
+                            try { Thread.sleep(2000); } catch (InterruptedException expected) { Thread.currentThread().interrupt(); }
+                            return 0;
+                        }
+                        if (method.getName().equals("isEmpty")) return true;
+                        return null;
+                    });
+                return new DiagnosticReport(true, "Lazy report", lazy, Collections.emptyList(), "OK");
+            }
+        """.trimIndent())
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        failure("PLUGIN_CODE_TIMEOUT") {
+            withTimeout(3_000) {
+                host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 100)) { ok }
+            }
+        }
+        host.close()
+    }
+
+    @Test
     fun `all plugin code runs with its package loader as thread context loader`(): Unit = runBlocking {
         val check = "if (Thread.currentThread().getContextClassLoader() != getClass().getClassLoader()) throw new IllegalStateException(\"wrong context loader\");"
         val packaged = fixture(constructorPrefix = { check }, planPrefix = { check }, reportPrefix = check)
@@ -1551,8 +1628,9 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val host = runtime(store)
         host.initialize()
         packages.forEach { assertNotNull(loader(it).findResource("fixture/owned-resource.txt")) }
+        val closing = async(Dispatchers.IO) { host.close() }
         try {
-            host.close() // Two close workers block; the third cleanup must remain queued after shutdown.
+            withTimeout(3_000) { closing.await() } // Caller is bounded even if disposal workers block.
             withTimeout(1_500) {
                 while (packages.sumOf { it.count("close-ready") } < 2) delay(5)
             }
@@ -1563,6 +1641,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             }
         } finally {
             packages.forEach { System.setProperty("${it.property}.close-release", "true") }
+            withTimeout(3_000) { closing.await() }
         }
         packages.forEach {
             awaitProperty("${it.property}.close-returned", "1")
