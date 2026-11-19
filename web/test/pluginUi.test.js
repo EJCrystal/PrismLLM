@@ -1001,6 +1001,175 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
+  for (const failureStage of ['contributions', 'state']) {
+    it(`recovers an invalid OAuth entry only after deferred event discovery and live confirmation, preserving invalid on ${failureStage} errors`, async () => {
+      const fixture = makePluginFixture()
+      const entry = await mountDiagnosticSurface('OAuthModelTestModal', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const oldKey = entry.state.hostKey.value
+      const key = entry.state.contributionVersionKey(fixture.accountContribution)
+      const setups = diagnosticHostSetups
+      mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
+      await host.load(); await settle()
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+      assert.match(text(entry.container), /诊断入口已失效/)
+      mock.getTargets = undefined
+
+      const failed = deferred()
+      if (failureStage === 'contributions') mock.listContributions = () => failed.promise
+      else mock.getState = () => failed.promise
+      let reads = calls.contributions.length
+      const failedStateReads = calls.state.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value)
+      if (failureStage === 'state') await waitFor(() => calls.state.length === failedStateReads + 1)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(diagnosticHostSetups, setups)
+      failed.reject(new Error(`OAuth ${failureStage} discovery unavailable`))
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.match(text(entry.container.querySelector('[role="alert"]')), /discovery unavailable/)
+
+      const discovery = deferred()
+      const live = deferred()
+      mock.listContributions = () => discovery.promise
+      mock.getState = () => live.promise
+      reads = calls.contributions.length
+      const stateReads = calls.state.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(diagnosticHostSetups, setups)
+      discovery.resolve(clonePluginData(fixture.contributions))
+      await waitFor(() => calls.state.length === stateReads + 1)
+      assert.equal(calls.state.at(-1).id, fixture.manifest.id)
+      assert.equal(entry.state.loading.value, true)
+      assert.equal(entry.state.invalidContributions.value.has(key), true, 'discovery alone cannot restore an unconfirmed OAuth action')
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+      assert.equal(diagnosticHostSetups, setups)
+      live.resolve(clonePluginData(fixture.state))
+      await waitFor(() => diagnosticHostSetups === setups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
+      assert.notEqual(captures.get('PluginDiagnosticHost'), host)
+      assert.notEqual(entry.state.hostKey.value, oldKey)
+      assert.equal(entry.state.invalidContributions.value.size, 0)
+      assert.equal(entry.state.diagnosticGenerations.value.get(key), 1)
+      assert.equal(entry.state.loadError.value, '')
+      assert.equal(captures.get('PluginDiagnosticHost').props.contribution.entry.action.id, fixture.accountContribution.entry.action.id)
+    })
+  }
+
+  for (const mismatch of ['plugin', 'version', 'action', 'disabled', 'entry', 'placement', 'context', 'absent']) {
+    it(`keeps the invalid OAuth entry excluded when deferred live confirmation has a different ${mismatch}`, async () => {
+      const fixture = makePluginFixture()
+      const entry = await mountDiagnosticSurface('OAuthModelTestModal', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const setups = diagnosticHostSetups
+      const key = entry.state.contributionVersionKey(fixture.accountContribution)
+      mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
+      await host.load(); await settle()
+      mock.getTargets = undefined
+      const liveState = clonePluginData(fixture.state)
+      const liveEntry = liveState.activeUi.entries.find(item => item.id === fixture.accountContribution.entry.id)
+      if (mismatch === 'plugin') liveState.id = 'other.plugin'
+      if (mismatch === 'version') liveState.activeVersion = '2.0.0'
+      if (mismatch === 'action') liveEntry.action.id = 'other-action'
+      if (mismatch === 'disabled') liveState.admissionEnabled = false
+      if (mismatch === 'entry') liveEntry.id = 'other-entry'
+      if (mismatch === 'placement') liveEntry.placement = 'channel-tests'
+      if (mismatch === 'context') liveEntry.contexts = ['channel']
+      const discovery = deferred()
+      const live = deferred()
+      mock.listContributions = () => discovery.promise
+      mock.getState = () => live.promise
+      const reads = calls.contributions.length
+      const stateReads = calls.state.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value)
+      discovery.resolve(mismatch === 'absent' ? [] : clonePluginData(fixture.contributions))
+      if (mismatch !== 'absent') {
+        await waitFor(() => calls.state.length === stateReads + 1)
+        assert.equal(entry.state.invalidContributions.value.has(key), true)
+        assert.equal(diagnosticHostSetups, setups)
+        live.resolve(liveState)
+      }
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+      assert.equal(entry.state.loadError.value, '')
+      if (mismatch === 'absent') assert.equal(calls.state.length, stateReads)
+    })
+  }
+
+  for (const completion of ['response', 'error']) {
+    it(`keeps the current OAuth host invocation draft and result while deferred event recovery of another invalid entry returns ${completion}`, async () => {
+      const first = makeOfficialPluginFixture()
+      const second = makePluginFixture()
+      const entry = await mountDiagnosticSurface('OAuthModelTestModal', first)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const hostElement = entry.container.querySelector('.plugin-diagnostic-host')
+      const hostKey = entry.state.hostKey.value
+      const setups = diagnosticHostSetups
+      setFixtures(first, second)
+      await entry.state.load()
+      const invalidKey = entry.state.contributionVersionKey(second.accountContribution)
+      entry.state.markUnavailable({ pluginId: second.manifest.id, activeVersion: second.accountContribution.activeVersion, entryId: second.accountContribution.entry.id })
+      const prompt = 'retain my OAuth draft while another entry recovers'
+      await change(field(entry.container, '本次提示词'), prompt)
+      const invocation = deferred()
+      mock.invoke = () => invocation.promise
+      const run = host.run()
+      await waitFor(() => calls.invocations.length === 1)
+      const call = calls.invocations[0]
+      const discovery = deferred()
+      const live = deferred()
+      mock.listContributions = () => discovery.promise
+      mock.getState = id => id === second.manifest.id ? live.promise : stateFor(id)
+      const reads = calls.contributions.length
+      const stateReads = calls.state.filter(item => item.id === second.manifest.id).length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && entry.state.loading.value && !host.loading.value)
+      assert.equal(entry.state.invalidContributions.value.has(invalidKey), true)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(call.options.signal.aborted, false)
+      assert.equal(host.running.value, true)
+      discovery.resolve(clonePluginData(mock.contributions))
+      await waitFor(() => calls.state.filter(item => item.id === second.manifest.id).length === stateReads + 1)
+      assert.equal(entry.state.loading.value, true)
+      assert.equal(entry.state.invalidContributions.value.has(invalidKey), true)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(call.options.signal.aborted, false)
+      assert.equal(host.running.value, true)
+      invocation.resolve(responseFor(call))
+      await run; await settle()
+      const resultElement = entry.container.querySelector('.plugin-result')
+      assert.ok(resultElement, 'the current invocation completes while the other entry awaits live confirmation')
+      if (completion === 'response') live.resolve(clonePluginData(second.state))
+      else live.reject(new Error('OAuth invalid-entry live confirmation unavailable'))
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+      assert.equal(entry.container.querySelector('.plugin-result'), resultElement)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.state.hostKey.value, hostKey)
+      assert.equal(field(entry.container, '本次提示词').value, prompt)
+      assert.equal(call.options.signal.aborted, false)
+      assert.equal(host.rows.value[0].execution.outcome.success, true)
+      assert.equal(entry.state.invalidContributions.value.has(invalidKey), completion === 'error')
+      assert.equal(entry.state.diagnosticGenerations.value.size, completion === 'response' ? 1 : 0)
+      if (completion === 'response') assert.equal(entry.state.diagnosticGenerations.value.get(invalidKey), 1)
+      else assert.match(text(entry.container.querySelector('[role="alert"]')), /live confirmation unavailable/)
+    })
+  }
+
   it('keeps the current OAuth diagnostic running when manually rechecking another invalid entry', async () => {
     const first = makeOfficialPluginFixture()
     const second = makePluginFixture()
@@ -2012,7 +2181,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     const marketplace = await mount('PluginMarketplaceView')
     await waitFor(() => !marketplace.state.loading.value)
     assert.equal(marketplace.state.dirty.value, false)
-    assert.equal(marketplace.state.originalConfiguration.value, JSON.stringify({ prompt: 'saved config value', defaultPrompt: 'saved action alias value' }))
+    assert.deepEqual(marketplace.state.originalConfiguration.value, { prompt: 'saved config value', defaultPrompt: 'saved action alias value' })
     assert.equal(field(marketplace.container, '配置 prompt').value, 'saved config value')
     assert.equal(marketplace.state.canLeave(), true)
     assert.equal(confirmCalls.length, 0)
@@ -2026,7 +2195,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     mock.listPlugins = () => Promise.reject(new Error('initial list unavailable'))
     const entry = await mount('PluginMarketplaceView')
     await waitFor(() => !entry.state.loading.value)
-    assert.equal(entry.state.originalConfiguration.value, '{}')
+    assert.deepEqual(entry.state.originalConfiguration.value, {})
     assert.equal(entry.state.dirty.value, false)
     assert.equal(entry.state.canLeave(), true)
     assert.equal(confirmCalls.length, 0)
@@ -2119,6 +2288,91 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(confirmCalls.length, 2)
   })
 
+  for (const nativeDraft of ['-', '1e']) {
+    it(`treats an unfinished marketplace number ${nativeDraft} as dirty against null and protects undo refresh and switching`, async () => {
+      const first = makePluginFixture({ configurationFields: [makeField('optionalCount', '可选配置数量', 'number')] })
+      const second = makePluginFixture({ id: 'acme.other-number-draft' })
+      setFixtures(first, second)
+      const entry = await mount('PluginMarketplaceView')
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.state.configuration.optionalCount, null)
+      assert.equal(entry.state.dirty.value, false)
+      assert.equal(button(entry.container, '撤销修改').disabled, true)
+      const original = entry.state.originalConfiguration.value
+      const input = field(entry.container, '可选配置数量')
+      const valueProperty = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')
+      const writes = []
+      let badInput = false
+      Object.defineProperty(input, 'value', {
+        configurable: true,
+        get() { return valueProperty.get.call(this) },
+        set(value) {
+          writes.push(String(value))
+          badInput = false
+          valueProperty.set.call(this, value)
+        },
+      })
+      Object.defineProperty(input, 'validity', { configurable: true, get: () => ({ badInput }) })
+      const enterNativeDraft = async () => {
+        // As with the existing scalar tests, model the browser's empty value + badInput
+        // for an unfinished native number; the control itself still owns the raw draft.
+        valueProperty.set.call(input, '')
+        badInput = true
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+        await settle()
+      }
+      await enterNativeDraft()
+      assert.equal(Number.isNaN(entry.state.configuration.optionalCount), true)
+      assert.equal(entry.state.dirty.value, true, `${nativeDraft} must not compare equal to the saved null`)
+      assert.equal(entry.state.originalConfiguration.value, original)
+      assert.match(entry.state.configurationError.value, /可选配置数量必须是数字/)
+      assert.equal(button(entry.container, '保存配置').disabled, true)
+      assert.equal(button(entry.container, '撤销修改').disabled, false)
+      entry.state.saveConfiguration()
+      assert.equal(calls.configuration.length, 0)
+      assert.deepEqual(writes, [], 'the dirty check must not erase the native draft')
+      assert.equal(entry.state.canLeave(), false)
+      pluginItem(entry.container, second.manifest.id).click(); await settle()
+      assert.equal(entry.state.selectedId.value, first.manifest.id)
+      assert.equal(Number.isNaN(entry.state.configuration.optionalCount), true)
+      assert.equal(confirmCalls.length, 2)
+      button(entry.container, '刷新').click()
+      await waitFor(() => calls.plugins.length === 2 && !entry.state.loading.value)
+      assert.equal(entry.state.originalConfiguration.value, original)
+      assert.equal(Number.isNaN(entry.state.configuration.optionalCount), true)
+      assert.equal(entry.state.dirty.value, true)
+      assert.equal(input.validity.badInput, true)
+      assert.deepEqual(writes, [], 'a refresh preserves an invalid numeric draft')
+      button(entry.container, '撤销修改').click(); await settle()
+      assert.equal(entry.state.configuration.optionalCount, null)
+      assert.equal(entry.state.dirty.value, false)
+      assert.equal(entry.state.configurationError.value, '')
+      assert.equal(input.validity.badInput, false)
+      assert.deepEqual(writes, [''])
+      assert.equal(button(entry.container, '撤销修改').disabled, true)
+      assert.equal(entry.state.canLeave(), true)
+      assert.equal(confirmCalls.length, 2)
+
+      writes.length = 0
+      await enterNativeDraft()
+      assert.equal(entry.state.dirty.value, true)
+      badInput = false
+      await change(input, '')
+      assert.equal(entry.state.configuration.optionalCount, null)
+      assert.equal(entry.state.dirty.value, false, 'an actual clear returns to the saved null')
+      assert.equal(entry.state.configurationError.value, '')
+      writes.length = 0
+      await enterNativeDraft()
+      confirmResult = true
+      pluginItem(entry.container, second.manifest.id).click(); await settle()
+      assert.equal(confirmCalls.length, 3)
+      assert.equal(entry.state.selectedId.value, second.manifest.id)
+      assert.equal(entry.state.dirty.value, false)
+      assert.equal(entry.state.configuration.defaultPrompt, second.state.configuration.defaultPrompt)
+      assert.equal(calls.configuration.length, 0)
+    })
+  }
+
   it('blocks a draft from being saved to a different installed version until explicitly discarded', async () => {
     const first = makePluginFixture({ version: '1.0.0' })
     const next = makePluginFixture({ version: '2.0.0', configurationFields: [
@@ -2150,6 +2404,66 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await waitFor(() => calls.configuration.length === 1 && !entry.state.busy.value)
     assert.deepEqual(calls.configuration[0].payload.values, { defaultPrompt: 'explicit version two edit', newOnly: 'new value' })
   })
+
+  for (const catalogVersion of ['2.0.0', '1.0.0']) {
+    it(`reenables a disabled staged installed version with installed grants when catalogue offers ${catalogVersion}`, async () => {
+      const installed = makePluginFixture({
+        version: '1.0.0', permissions: ['diagnostics.oauth-account.probe'], state: {
+          activeVersion: null, desiredEnabled: false, admissionEnabled: false, status: 'disabled',
+          approvedPermissions: [], activeConfiguration: null, activeUi: null,
+        },
+      })
+      const offered = makePluginFixture({ version: catalogVersion, permissions: ['diagnostics.channel.probe'] })
+      setFixtures(installed)
+      mock.catalog = [clonePluginData(offered.catalog)]
+      const entry = await mount('PluginMarketplaceView')
+      await waitFor(() => !entry.state.loading.value)
+      const selector = field(entry.container, '目录版本')
+      assert.equal(entry.state.selectedVersion.value, installed.state.installedVersion)
+      assert.equal(selector.value, installed.state.installedVersion)
+      assert.deepEqual([...selector.options].map(option => option.value), catalogVersion === '1.0.0' ? ['1.0.0'] : ['1.0.0', catalogVersion])
+      assert.deepEqual(entry.state.versions.value.map(item => item.manifest.version), [catalogVersion], 'the catalogue retains its backend order and contains no fabricated packages')
+      assert.deepEqual(entry.state.permissions.value, installed.state.permissions, 'reenabling uses the installed permissions even if the same catalogue version has changed')
+      assert.equal(entry.state.currentVersionSelected.value, true)
+      assert.equal(entry.state.canInstall.value, false)
+      const grants = () => [...entry.container.querySelectorAll('.plugin-market-permissions input')]
+      assert.deepEqual(grants().map(input => input.value), installed.state.permissions)
+      assert.equal(button(entry.container, '启用（重启生效）').disabled, true)
+      entry.state.toggleEnabled()
+      assert.equal(calls.enabled.length, 0)
+
+      if (catalogVersion !== installed.state.installedVersion) {
+        assert.equal(entry.state.selectedCatalog.value, undefined)
+        assert.equal(entry.container.querySelector('.plugin-market-digest'), null)
+        assert.equal([...entry.container.querySelectorAll('button')].some(node => /安装此版本|选择此版本/.test(text(node))), false)
+        await change(selector, catalogVersion)
+        assert.deepEqual(entry.state.permissions.value, offered.manifest.permissions)
+        assert.equal(entry.container.querySelector('.plugin-market-digest code').textContent, offered.catalog.sha256)
+        await change(grants()[0], true)
+        assert.equal(entry.state.canInstall.value, true)
+        assert.equal(button(entry.container, '启用（重启生效）').disabled, true)
+        entry.state.toggleEnabled()
+        assert.equal(calls.enabled.length, 0, 'approving another catalogue version cannot enable the installed package')
+        await change(selector, installed.state.installedVersion)
+        assert.deepEqual(entry.state.permissions.value, installed.state.permissions)
+        assert.equal(grants()[0].checked, false, 'changing versions resets pending capability grants')
+        assert.equal(entry.state.canInstall.value, false)
+      }
+
+      await change(grants()[0], true)
+      assert.equal(button(entry.container, '启用（重启生效）').disabled, false)
+      button(entry.container, '启用（重启生效）').click()
+      await waitFor(() => calls.enabled.length === 1 && !entry.state.busy.value)
+      assert.deepEqual(calls.enabled[0], { id: installed.manifest.id, payload: { enabled: true, approvedPermissions: installed.state.permissions } })
+      assert.equal(calls.install.length, 0, 'reenabling the staged package never reinstalls from the catalogue')
+      assert.equal(entry.state.selectedVersion.value, installed.state.installedVersion)
+      assert.equal(selector.value, installed.state.installedVersion)
+      assert.equal(entry.state.selectedState.value.activeVersion, null)
+      assert.equal(entry.state.selectedState.value.admissionEnabled, false)
+      assert.equal(entry.state.selectedState.value.desiredEnabled, true)
+      assert.match(text(entry.container), /待重启/)
+    })
+  }
 
   it('keeps the backend SemVer order and offers installed controls when catalogue reads fail', async () => {
     const fixture = makePluginFixture({ version: '2.0.0' })

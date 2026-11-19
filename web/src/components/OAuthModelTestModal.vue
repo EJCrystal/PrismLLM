@@ -36,17 +36,30 @@ async function load(recheck = false) {
   loading.value = true
   loadError.value = ''
   try {
-    const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
-    if (!result.isLatest || disposed) return
-    const available = result.value.filter((item) => item.entry.placement === 'oauth-account-tests' && item.entry.contexts.includes('oauth-account'))
-    if (recheck) {
-      const resultKeys = new Set(available.map(contributionVersionKey))
-      for (const key of invalidContributions.value) {
-        if (resultKeys.has(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+    const invalid = new Set(invalidContributions.value)
+    const result = await guard.run(async () => {
+      const available = (await api.getPluginContributions({ signal: current.signal }))
+        .filter((item) => item.entry.placement === 'oauth-account-tests' && item.entry.contexts.includes('oauth-account'))
+      const recovered: string[] = []
+      if (recheck) {
+        for (const item of available) {
+          const key = contributionVersionKey(item)
+          if (!invalid.has(key)) continue
+          const live = await api.getPlugin(item.pluginId, { signal: current.signal })
+          if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
+            live.activeUi?.entries.some((entry) => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
+              entry.placement === 'oauth-account-tests' && entry.contexts.includes('oauth-account'))) recovered.push(key)
+        }
       }
-      invalidContributions.value = new Set()
+      return { available, recovered }
+    })
+    if (!result.isLatest || disposed) return
+    const remaining = new Set(invalidContributions.value)
+    for (const key of result.value.recovered) {
+      if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
     }
-    entries.value = available
+    invalidContributions.value = remaining
+    entries.value = result.value.available
     if (!entries.value.some((item) => entryKey(item) === selectedEntry.value)) selectedEntry.value = entries.value[0] ? entryKey(entries.value[0]) : ''
     loading.value = false
   } catch (cause) {
@@ -56,7 +69,7 @@ async function load(recheck = false) {
     }
   } finally { if (controller === current) controller = null }
 }
-function refresh() { void load() }
+function refresh() { void load(true) }
 function recheck() { void load(true) }
 function markUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
   const key = `${value.pluginId}:${value.entryId}:${value.activeVersion}`

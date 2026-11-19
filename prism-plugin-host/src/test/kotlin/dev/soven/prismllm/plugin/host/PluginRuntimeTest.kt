@@ -1622,8 +1622,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             try {
                 val error = withTimeout(4_000) { failure("PLUGIN_INVALID_REPORT") { invoke(host, packaged.manifest.id) } }
                 assertTrue(error.message.orEmpty().contains("declarative result limits"))
-                assertEquals(1, packaged.count("collection-size"))
-                assertEquals(limit + 1, packaged.count("collection-next"))
+                assertTrue(packaged.count("collection-next") <= limit + 1, "Reject growing collections without unbounded traversal")
                 assertEquals(1, packaged.count("reported"))
             } finally {
                 host.close()
@@ -1686,7 +1685,8 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                 if (System.nanoTime() != 0) {
                     java.util.List<$type> lazy = (java.util.List<$type>) java.lang.reflect.Proxy.newProxyInstance(
                         getClass().getClassLoader(), new Class<?>[] { java.util.List.class }, (proxy, method, arguments) -> {
-                            if (method.getName().equals("size")) {
+                            if (method.getName().equals("size")) return 1;
+                            if (method.getName().equals("iterator")) {
                                 java.util.concurrent.CountDownLatch release = (java.util.concurrent.CountDownLatch)
                                     System.getProperties().get(getClass().getName() + ".collection-release");
                                 ((java.util.concurrent.CountDownLatch) System.getProperties().get(getClass().getName() + ".collection-ready")).countDown();
@@ -1698,10 +1698,9 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                                 }
                                 if (!released) throw new IllegalStateException("test collection was not released");
                                 mark("collection-released");
-                                return 0;
+                                return Collections.<$type>emptyList().iterator();
                             }
                             if (method.getName().equals("isEmpty")) return true;
-                            if (method.getName().equals("iterator")) return Collections.emptyList().iterator();
                             throw new UnsupportedOperationException(method.getName());
                         });
                     return new DiagnosticReport(true, "Lazy report", ${if (collection == "metrics") "lazy, Collections.emptyList()" else "Collections.emptyList(), lazy"}, "OK");
@@ -1718,11 +1717,11 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                         runCatching { host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 1_500)) { ok } }
                     }
                     try {
-                        assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "The report collection size must be entered before checking its timeout")
+                        assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "The report collection iteration must be entered before checking its timeout")
                         val error = assertNotNull(withTimeout(4_000) { invocation.await() }.exceptionOrNull() as? PluginHostException)
                         assertEquals("PLUGIN_CODE_TIMEOUT", error.code)
                         assertTrue(error.message.orEmpty().contains("report exceeded its time bound"))
-                        assertEquals(0, packaged.count("collection-released"), "The caller must time out while collection size is blocked")
+                        assertEquals(0, packaged.count("collection-released"), "The caller must time out while collection iteration is blocked")
                     } finally {
                         release.countDown()
                     }

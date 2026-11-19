@@ -23,7 +23,7 @@ const catalogError = ref('')
 const busy = ref(false)
 const approvedPermissions = ref<string[]>([])
 const configuration = reactive<PluginValues>({})
-const originalConfiguration = ref('{}')
+const originalConfiguration = ref<PluginValues>({})
 const draftOwnerId = ref('')
 const draftInstalledVersion = ref<string | null>(null)
 const draftRevision = ref(0)
@@ -49,9 +49,11 @@ const selectedState = computed(() => states.value.find((state) => state.id === s
 const versions = computed(() => catalog.value.filter((item) => item.manifest.id === selectedId.value))
 const selectedCatalog = computed(() => versions.value.find((item) => item.manifest.version === selectedVersion.value))
 const selectedName = computed(() => selectedState.value?.displayName || selectedCatalog.value?.manifest.displayName || selectedId.value)
-const permissions = computed(() => selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
+const currentVersionSelected = computed(() => !!selectedState.value?.installed && selectedVersion.value === selectedState.value.installedVersion)
+const permissions = computed(() => currentVersionSelected.value ? selectedState.value!.permissions : selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
 const fullGrant = computed(() => permissions.value.every((permission) => approvedPermissions.value.includes(permission)))
-const dirty = computed(() => JSON.stringify(configuration) !== originalConfiguration.value)
+const dirty = computed(() => Object.keys(configuration).length !== Object.keys(originalConfiguration.value).length ||
+  Object.keys(configuration).some((key) => !Object.hasOwn(originalConfiguration.value, key) || !Object.is(configuration[key], originalConfiguration.value[key])))
 const draftConflict = computed(() => !!draftOwnerId.value && (
   draftRejected.value || draftOwnerId.value !== selectedId.value ||
   draftInstalledVersion.value !== (selectedState.value?.installedVersion ?? null) ||
@@ -60,7 +62,6 @@ const draftConflict = computed(() => !!draftOwnerId.value && (
 const configurationFields = computed(() => draftFields.value)
 const configurationError = computed(() => pluginFormError(configurationFields.value, configuration))
 const canInstall = computed(() => !catalogError.value && !loading.value && !!selectedCatalog.value?.compatible && fullGrant.value && !busy.value && (!selectedState.value?.installed || selectedVersion.value !== selectedState.value.installedVersion))
-const currentVersionSelected = computed(() => !selectedCatalog.value || selectedCatalog.value.manifest.version === selectedState.value?.installedVersion)
 const pageEntries = computed(() => selectedState.value?.admissionEnabled ? selectedState.value.activeUi?.entries.filter((entry) => entry.placement === 'plugin-page') ?? [] : [])
 const diagnosticContribution = computed<PluginUiContribution | null>(() => {
   if (diagnosticRechecking.value || invalidDiagnosticKey.value) return null
@@ -80,7 +81,7 @@ function resetConfiguration() {
   draftFields.value = current?.configurationFields.map((field) => ({ ...field, options: field.options.map((option) => ({ ...option })) })) ?? []
   for (const key of Object.keys(configuration)) delete configuration[key]
   Object.assign(configuration, pluginFieldDefaults(draftFields.value, current?.configuration ?? {}, false))
-  originalConfiguration.value = JSON.stringify(configuration)
+  originalConfiguration.value = { ...configuration }
 }
 
 function discardVersionConflict() {
@@ -163,7 +164,8 @@ function closeDiagnostic() {
 
 function syncVersion() {
   const desired = selectedState.value?.installedVersion
-  selectedVersion.value = versions.value.find((item) => item.manifest.version === desired)?.manifest.version ?? versions.value[0]?.manifest.version ?? ''
+  selectedVersion.value = selectedState.value?.installed && desired ? desired :
+    versions.value.find((item) => item.manifest.version === desired)?.manifest.version ?? versions.value[0]?.manifest.version ?? ''
   approvedPermissions.value = [...(selectedState.value?.approvedPermissions ?? [])]
   resetConfiguration()
 }
@@ -306,7 +308,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
         <p v-if="selectedState?.loadError" class="callout danger" role="alert">{{ selectedState.loadError }}</p>
         <section class="plugin-market-section">
           <h3>版本与权限</h3>
-          <label v-if="versions.length" class="field"><span>目录版本</span><select v-model="selectedVersion" :disabled="busy"><option v-for="item in versions" :key="item.manifest.version" :value="item.manifest.version">{{ item.manifest.version }}{{ item.compatible ? '' : '（不兼容）' }}</option></select></label>
+          <label v-if="versions.length" class="field"><span>目录版本</span><select v-model="selectedVersion" :disabled="busy"><option v-if="selectedState?.installed && selectedState.installedVersion && !versions.some((item) => item.manifest.version === selectedState?.installedVersion)" :value="selectedState.installedVersion">{{ selectedState.installedVersion }}（已安装）</option><option v-for="item in versions" :key="item.manifest.version" :value="item.manifest.version">{{ item.manifest.version }}{{ item.compatible ? '' : '（不兼容）' }}</option></select></label>
           <p v-else class="muted small">安装记录仍在，但当前可信目录没有这个插件包。已暂存的版本仍可按原有安装选择加载。</p>
           <p v-if="selectedCatalog && !selectedCatalog.compatible" class="callout danger">{{ selectedCatalog.compatibilityReason || '此版本不支持当前宿主。' }}</p>
           <p v-if="selectedCatalog" class="plugin-market-digest"><span class="muted small">目录校验 SHA-256</span><code>{{ selectedCatalog.sha256 }}</code></p>
