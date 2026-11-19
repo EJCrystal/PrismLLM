@@ -5,6 +5,8 @@ import io.micrometer.core.instrument.binder.MeterBinder
 import org.junit.jupiter.api.Tag
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 @Tag("unit")
@@ -30,6 +32,32 @@ class GatewayMetricsTest {
         metrics.close()
 
         assertEquals(listOf("binder"), events)
+        assertTrue(metrics.registry.isClosed)
+    }
+
+    @Test
+    fun `close attempts every binder and closes the registry after failures`() {
+        val metrics = GatewayMetrics()
+        val events = mutableListOf<String>()
+        val firstFailure = IllegalStateException("first binder failed")
+        val secondFailure = IllegalArgumentException("second binder failed")
+        fun binder(name: String, failure: RuntimeException) = object : MeterBinder, AutoCloseable {
+            override fun bindTo(registry: MeterRegistry) = Unit
+
+            override fun close() {
+                assertTrue(!metrics.registry.isClosed)
+                events += name
+                throw failure
+            }
+        }
+        metrics.ownBinders(listOf(binder("first", firstFailure), binder("second", secondFailure)))
+
+        val failure = assertFailsWith<IllegalStateException> { metrics.close() }
+        metrics.close()
+
+        assertSame(firstFailure, failure)
+        assertEquals(listOf(secondFailure), failure.suppressed.toList())
+        assertEquals(listOf("first", "second"), events)
         assertTrue(metrics.registry.isClosed)
     }
 

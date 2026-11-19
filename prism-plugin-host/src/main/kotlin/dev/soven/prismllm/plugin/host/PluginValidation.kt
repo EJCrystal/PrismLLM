@@ -137,6 +137,27 @@ internal object PluginValidation {
             fields(action.fields, configuration = false)
             requireData(action.fields.any { it.key == "model" && it.kind == "model" && it.required }, "Actions require a mandatory host-bound model field")
             requireData(action.fields.any { it.key == "protocol" && it.kind == "protocol" && it.required }, "Actions require a mandatory host-bound protocol field")
+            val scope = action.fields.firstOrNull { it.kind == "scope" }
+            if (scope != null) {
+                val scopeValues = scope.options.map { it.value }.toSet()
+                if ("channel" in entry.contexts) {
+                    if (action.supportsBatch) {
+                        requireData("single" in scopeValues, "Batch channel actions with a scope field must support single-target scope")
+                    } else {
+                        requireData("all" !in scopeValues, "Non-batch channel actions cannot support all-target scope")
+                    }
+                }
+                if (scope.required) {
+                    entry.contexts.forEach { context ->
+                        val valid = when (context) {
+                            "channel" -> if (action.supportsBatch) scopeValues.any { it == "single" || it == "all" } else "single" in scopeValues
+                            "oauth-account" -> "single" in scopeValues
+                            else -> false
+                        }
+                        requireData(valid, "Required scope field has no valid value for context $context")
+                    }
+                }
+            }
             requireData(!action.supportsBatch || "channel" in entry.contexts, "Batch actions require channel context")
         }
         // Reusing an action across placements is fine; ambiguous schemas for the same context are not.
@@ -222,7 +243,9 @@ internal object PluginValidation {
                 result[field.key] = value
             }
         }
-        return snapshot(JsonObject(result))
+        val completed = JsonObject(result)
+        requireData(completed.toString().toByteArray(Charsets.UTF_8).size <= MAX_METADATA_BYTES, "Configuration is too large after applying defaults")
+        return snapshot(completed)
     }
 
     /** A new schema retains compatible values, never unknown or now-invalid old fields. */

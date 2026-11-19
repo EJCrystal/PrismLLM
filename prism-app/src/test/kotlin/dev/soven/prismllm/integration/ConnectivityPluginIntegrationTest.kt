@@ -64,6 +64,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
@@ -410,6 +411,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 assertEquals(protocol.value, generic.target.protocol)
                 assertTrue(generic.outcome.success)
                 assertProbeBody(probes.last(), protocol, "direct probe")
+                assertEquals("Bearer $STATIC_TOKEN", probes.last().authorization)
                 val legacy = client.legacyProbe(session, "/channels/${channel.id}/model-test", MODEL, protocol,
                     selected.id, "  direct probe  ").objectPayload()
                 assertLegacySuccess(legacy, MODEL, protocol, selected.id, "direct probe")
@@ -1245,6 +1247,57 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `pending channel only upgrade preserves active OAuth grants until explicit disable`() = runBlocking {
+        val catalog = Files.createDirectory(auxiliaryDirectory.resolve("pending-grant-catalog"))
+        listOf("catalog.json", "prism-connectivity-1.0.0.prismplugin").forEach { name ->
+            Files.copy(connectivityPluginCatalogDirectory.resolve(name), catalog.resolve(name))
+        }
+        restartApplication(app.config.copy(pluginCatalogDir = catalog))
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            assertActive(client.pluginState(session))
+            val provider = OAuthProvider.CHATGPT
+            val model = "gpt-6-luna"
+            val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+            val account = oauthAccount("pending-upgrade-grant", provider, listOf(model), listOf(channelId))
+            assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id,
+                listOf(OAuthAccountModelCatalogEntry(model, model))))
+            publishChannelOnlyUpgrade(catalog)
+            val pending = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
+                """{"version":"2.0.0","approvedPermissions":["${PluginApi.CHANNEL_PROBE}"]}""").decoded<PluginRuntimeState>()
+            assertEquals("2.0.0", pending.installedVersion)
+            assertEquals(VERSION, pending.activeVersion)
+            assertEquals(listOf(PluginApi.CHANNEL_PROBE), pending.approvedPermissions)
+            assertTrue(pending.admissionEnabled)
+            assertTrue(pending.requiresRestart)
+            assertTrue(pending.activeUi!!.entries.any { "oauth-account" in it.contexts })
+
+            val input = values(model, GatewayProtocol.RESPONSES, prompt = "active V1 OAuth grant")
+            val execution = client.invokePlugin(session, "oauth-account", account.id, input).decoded<PluginExecution>()
+            assertEquals(VERSION, execution.activeVersion)
+            assertTrue(execution.outcome.success)
+            assertNativeRequest(probes.single(), provider, model, "active V1 OAuth grant")
+            client.legacyProbe(session, "/oauth-accounts/${account.id}/model-test", model, GatewayProtocol.RESPONSES,
+                prompt = "legacy active V1 grant").objectPayload().let {
+                assertLegacySuccess(it, model, GatewayProtocol.RESPONSES, account.id, "legacy active V1 grant")
+            }
+            assertEquals(2, probes.size)
+            client.invokePlugin(session, "oauth-account", account.id, input, expectedVersion = "2.0.0")
+                .assertError(HttpStatusCode.Conflict, "PLUGIN_ACTIVE_VERSION_CONFLICT")
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, """{"enabled":false}""")
+                .decoded<PluginRuntimeState>().let { assertFalse(it.admissionEnabled) }
+            client.invokePlugin(session, "oauth-account", account.id, input)
+                .assertError(HttpStatusCode.ServiceUnavailable, "plugin_unavailable")
+            client.legacyProbe(session, "/oauth-accounts/${account.id}/model-test", model, GatewayProtocol.RESPONSES)
+                .assertError(HttpStatusCode.ServiceUnavailable, "plugin_unavailable")
+            assertEquals(2, probes.size)
+            assertTrue(preparations.isEmpty())
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `disable and reenable leave desired active mismatch gated until a cold restart`() = runBlocking {
         lateinit var static: ChannelRecord
         testApplication {
@@ -1711,6 +1764,71 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(VERSION, manifest.version)
             return PackageFixture(manifest, ui, jar, assertNotNull(provider, "Verified package must carry its own SPI descriptor"), sha256(Files.readAllBytes(packagePath)))
         }
+    }
+
+    private fun publishChannelOnlyUpgrade(catalog: Path) {
+        val previous = readPackageFixture()
+        val manifest = previous.manifest.copy(version = "2.0.0", permissions = listOf(PluginApi.CHANNEL_PROBE))
+        val ui = previous.ui.copy(entries = previous.ui.entries.filter { "oauth-account" !in it.contexts })
+        val classes = Files.createDirectory(auxiliaryDirectory.resolve("upgrade-classes"))
+        val source = auxiliaryDirectory.resolve("PendingConnectivityPlugin.java")
+        Files.writeString(source, """
+            package acceptance.upgrade;
+            import dev.soven.prismllm.plugin.sdk.*;
+            import java.util.Collections;
+            public final class PendingConnectivityPlugin implements DiagnosticPlugin {
+                public String getId() { return "$PLUGIN_ID"; }
+                public String getVersion() { return "2.0.0"; }
+                public int getApiVersion() { return 1; }
+                public ProbePlan plan(DiagnosticInput input, DiagnosticContext context) {
+                    return new ProbePlan("pending V2", 128, 45000L);
+                }
+                public DiagnosticReport report(ProbePlan plan, ProbeOutcome outcome) {
+                    return new DiagnosticReport(outcome.getSuccess(), "pending V2", Collections.emptyList(), Collections.emptyList(), null);
+                }
+                public void close() {}
+            }
+        """.trimIndent())
+        val diagnostics = ByteArrayOutputStream()
+        val compiler = assertNotNull(ToolProvider.getSystemJavaCompiler())
+        assertEquals(0, compiler.run(null, diagnostics, diagnostics, "--release", "21", "-classpath",
+            System.getProperty("java.class.path"), "-d", classes.toString(), source.toString()), diagnostics.toString(Charsets.UTF_8))
+        val jarBytes = ByteArrayOutputStream()
+        JarOutputStream(jarBytes).use { jar ->
+            mapOf(
+                "META-INF/MANIFEST.MF" to "Manifest-Version: 1.0\r\n\r\n".toByteArray(Charsets.UTF_8),
+                "acceptance/upgrade/PendingConnectivityPlugin.class" to
+                    Files.readAllBytes(classes.resolve("acceptance/upgrade/PendingConnectivityPlugin.class")),
+                DIAGNOSTIC_SERVICE to "acceptance.upgrade.PendingConnectivityPlugin\n".toByteArray(Charsets.UTF_8),
+            ).forEach { (name, bytes) ->
+                jar.putNextEntry(JarEntry(name))
+                jar.write(bytes)
+                jar.closeEntry()
+            }
+        }
+        val filename = "prism-connectivity-2.0.0.prismplugin"
+        val archive = catalog.resolve(filename)
+        java.util.zip.ZipOutputStream(Files.newOutputStream(archive)).use { zip ->
+            mapOf(
+                "manifest.json" to json.encodeToString(manifest).toByteArray(Charsets.UTF_8),
+                "ui.json" to json.encodeToString(ui).toByteArray(Charsets.UTF_8),
+                "plugin.jar" to jarBytes.toByteArray(),
+            ).forEach { (name, bytes) ->
+                zip.putNextEntry(java.util.zip.ZipEntry(name))
+                zip.write(bytes)
+                zip.closeEntry()
+            }
+        }
+        val catalogPath = catalog.resolve("catalog.json")
+        val current = Json.parseToJsonElement(Files.readString(catalogPath)).jsonObject
+        val replacement = buildJsonObject {
+            put("id", PLUGIN_ID)
+            put("version", "2.0.0")
+            put("file", filename)
+            put("sha256", sha256(Files.readAllBytes(archive)))
+        }
+        Files.writeString(catalogPath, JsonObject(current + ("packages" to
+            kotlinx.serialization.json.JsonArray(current["packages"]!!.jsonArray + replacement))).toString())
     }
 
     /** Same JDK/JAR fixture technique as IqJudgeRegistryTest, for the independent legacy SPI only. */

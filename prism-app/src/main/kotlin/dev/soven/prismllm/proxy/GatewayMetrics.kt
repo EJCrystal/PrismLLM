@@ -32,12 +32,19 @@ class GatewayMetrics : AutoCloseable {
     override fun close() {
         if (closed) return
         closed = true
-        try {
-            closeableBinders.forEach { it.close() }
-        } finally {
-            closeableBinders.clear()
-            registry.close()
+        var failure: Throwable? = null
+        fun closeResource(close: () -> Unit) {
+            try {
+                close()
+            } catch (error: Throwable) {
+                val previous = failure
+                if (previous == null) failure = error else if (previous !== error) previous.addSuppressed(error)
+            }
         }
+        closeableBinders.forEach { closeResource(it::close) }
+        closeableBinders.clear()
+        closeResource(registry::close)
+        failure?.let { throw it }
     }
     private val databaseReadyValue = AtomicReference(0.0)
     private val adminAuditWriteFailures =

@@ -8,6 +8,7 @@ import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.config.OAuthConfig
 import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.db.DiagnosticPreparationDeadline
+import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthAuthState
 import dev.soven.prismllm.oauth.domain.OAuthProviderConfig
 import dev.soven.prismllm.oauth.infra.ChatGptOAuthProvider
@@ -22,6 +23,8 @@ import dev.soven.prismllm.repo.OAuthProviderChannelLookup
 import dev.soven.prismllm.shared.crypto.CredentialCipher
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
@@ -32,6 +35,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.api.Timeout
 import org.testcontainers.containers.PostgreSQLContainer
 import java.net.InetSocketAddress
 import java.sql.DriverManager
@@ -51,6 +55,7 @@ import kotlin.test.assertTrue
 
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 @Tag("component")
+@Timeout(60)
 class OAuthTokenServiceTest {
     private lateinit var postgres: PostgreSQLContainer<*>
     private lateinit var factory: DatabaseFactory
@@ -146,7 +151,7 @@ class OAuthTokenServiceTest {
         val finishExchange = CompletableDeferred<Unit>()
         beforeReply.set {
             exchangeStarted.complete(Unit)
-            runBlocking { finishExchange.await() }
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
         }
 
         try {
@@ -187,7 +192,7 @@ class OAuthTokenServiceTest {
         val finishExchange = CompletableDeferred<Unit>()
         beforeReply.set {
             exchangeStarted.complete(Unit)
-            runBlocking { finishExchange.await() }
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
         }
 
         try {
@@ -219,7 +224,7 @@ class OAuthTokenServiceTest {
         val finishExchange = CompletableDeferred<Unit>()
         beforeReply.set {
             exchangeStarted.complete(Unit)
-            runBlocking { finishExchange.await() }
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
         }
 
         DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
@@ -256,7 +261,131 @@ class OAuthTokenServiceTest {
         }
     }
 
-    private suspend fun awaitSavedAccessToken(accountId: String): dev.soven.prismllm.oauth.domain.OAuthAccountRecord {
+    @Test
+    fun ordinaryCallerCancellationStillSavesRotatedRefreshToken() = runBlocking {
+        val keyId = createAccount("rt-ordinary-cancel", accountEmail = email("ordinary-cancel"))
+        val service = service()
+        val exchangeStarted = CompletableDeferred<Unit>()
+        val finishExchange = CompletableDeferred<Unit>()
+        beforeReply.set {
+            exchangeStarted.complete(Unit)
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
+        }
+
+        try {
+            val caller = async(Dispatchers.Default) { service.accessToken(keyId) }
+            withTimeout(5_000) { exchangeStarted.await() }
+            caller.cancelAndJoin()
+            finishExchange.complete(Unit)
+
+            val saved = awaitSavedAccessToken(keyId)
+            val context = accounts.loadRefreshContext(keyId)!!
+            assertEquals("rt-2", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+            assertEquals("at-1", cipher.decrypt(saved.accessTokenCiphertext!!, saved.accessTokenNonce!!))
+            assertEquals(1, tokenRequests.get(), "caller cancellation must not repeat the provider exchange")
+        } finally {
+            finishExchange.complete(Unit)
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun diagnosticRefreshRetriesAfterTheRealPostgresSaveDeadlineAndReusesSavedToken() = runBlocking {
+        val keyId = createAccount("rt-save-timeout", accountEmail = email("save-timeout"))
+        val service = service()
+        val account = accounts.find(keyId)!!
+        val exchangeStarted = CompletableDeferred<Unit>()
+        val finishExchange = CompletableDeferred<Unit>()
+        beforeReply.set {
+            exchangeStarted.complete(Unit)
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
+        }
+
+        try {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                val blockerPid = lock.createStatement().use { statement ->
+                    statement.executeQuery("select pg_backend_pid()").use { rows ->
+                        assertTrue(rows.next())
+                        rows.getInt(1)
+                    }
+                }
+                try {
+                    val waiter = async(Dispatchers.Default) {
+                        runCatching {
+                            service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(1_500))
+                        }
+                    }
+                    withTimeout(5_000) { exchangeStarted.await() }
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                        statement.setString(1, keyId)
+                        statement.executeQuery().use { assertTrue(it.next()) }
+                    }
+                    finishExchange.complete(Unit)
+
+                    // Observe the first actual repository save blocked on the held account row.
+                    val firstSave = awaitBlockedAccountSave(blockerPid)
+                    val diagnosticFailure = waiter.await().exceptionOrNull()
+                    assertTrue(
+                        DiagnosticPreparationDeadline.isTimeout(assertNotNull(diagnosticFailure)),
+                        "the 1.5-second diagnostic waiter must return independently of service persistence",
+                    )
+
+                    // The next blocked FOR UPDATE is the retry. Its query_start proves PostgreSQL
+                    // canceled the first save at its 10-second statement deadline; keep the lock
+                    // until the service has started that retry, then release it in finally.
+                    val retrySave = awaitBlockedAccountSave(blockerPid, after = firstSave.queryStart)
+                    val retryDelayMs = retrySave.queryStart.time - firstSave.queryStart.time
+                    assertTrue(retryDelayMs >= 10_000, "expected retry after 10-second save timeout, got ${retryDelayMs}ms")
+                } finally {
+                    lock.rollback()
+                }
+            }
+
+            val saved = awaitSavedAccessToken(keyId)
+            val context = accounts.loadRefreshContext(keyId)!!
+            assertEquals("rt-2", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+            assertEquals("at-1", cipher.decrypt(saved.accessTokenCiphertext!!, saved.accessTokenNonce!!))
+            val reused = service.accessTokenForDiagnostic(saved, DiagnosticPreparationDeadline.start(1_000))
+            assertEquals("at-1", reused.accessToken)
+            assertTrue(reused.matches(saved))
+            assertEquals(1, tokenRequests.get(), "a persistence retry must never repeat the provider exchange")
+        } finally {
+            finishExchange.complete(Unit)
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    private data class BlockedAccountSave(val queryStart: java.sql.Timestamp)
+
+    private suspend fun awaitBlockedAccountSave(
+        blockerPid: Int,
+        after: java.sql.Timestamp? = null,
+    ): BlockedAccountSave = withTimeout(16_000) {
+        while (true) {
+            val blocked = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { observer ->
+                observer.prepareStatement(
+                    "select query_start from pg_stat_activity " +
+                        "where datname = current_database() and query ilike '%oauth_accounts%' " +
+                        "and $blockerPid = any(pg_blocking_pids(pid)) and state = 'active' " +
+                        "and wait_event_type = 'Lock' " +
+                        (if (after == null) "" else "and query_start > ? ") +
+                        "order by query_start desc limit 1",
+                ).use { statement ->
+                    if (after != null) statement.setTimestamp(1, after)
+                    statement.executeQuery().use { rows ->
+                        if (rows.next()) BlockedAccountSave(rows.getTimestamp(1)) else null
+                    }
+                }
+            }
+            if (blocked != null) return@withTimeout blocked
+            // Poll PostgreSQL's lock graph instead of inferring lock state from elapsed time.
+            delay(10)
+        }
+        error("unreachable")
+    }
+
+    private suspend fun awaitSavedAccessToken(accountId: String): OAuthAccountRecord {
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
         var account = accounts.find(accountId)
         while (account?.hasAccessToken != true && System.nanoTime() < deadline) {
@@ -275,22 +404,161 @@ class OAuthTokenServiceTest {
         val finishExchange = CompletableDeferred<Unit>()
         beforeReply.set {
             exchangeStarted.complete(Unit)
-            runBlocking { finishExchange.await() }
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
         }
 
         try {
-            val first = async {
+            val first = async(start = CoroutineStart.UNDISPATCHED) {
                 service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(5_000))
             }
             withTimeout(5_000) { exchangeStarted.await() }
-            val second = async {
+            val second = async(start = CoroutineStart.UNDISPATCHED) {
                 service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(5_000))
             }
-            delay(50)
             finishExchange.complete(Unit)
 
             assertEquals("at-1", first.await().accessToken)
             assertEquals("at-1", second.await().accessToken)
+            assertEquals(1, tokenRequests.get())
+        } finally {
+            finishExchange.complete(Unit)
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun expiredFirstDiagnosticWaiterDoesNotConsumeSecondWaiterBudget() = runBlocking {
+        val keyId = createAccount("rt-diagnostic-independent-budget", accountEmail = email("diagnostic-independent-budget"))
+        val service = service()
+        val account = accounts.find(keyId)!!
+        val exchangeStarted = CompletableDeferred<Unit>()
+        val finishExchange = CompletableDeferred<Unit>()
+        beforeReply.set {
+            exchangeStarted.complete(Unit)
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
+        }
+
+        try {
+            // Deterministically park the shared task in the per-account mutex before either
+            // diagnostic waiter joins. Each waiter then retains only its own budget.
+            val mutex = accountMutex(service, keyId)
+            val owner = Any()
+            mutex.lock(owner)
+            val first = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching {
+                    service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(1_500))
+                }
+            }
+            val second = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching {
+                    service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(10_000))
+                }
+            }
+            try {
+                val failure = first.await().exceptionOrNull()
+                assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
+                mutex.unlock(owner)
+                withTimeout(5_000) { exchangeStarted.await() }
+                finishExchange.complete(Unit)
+                assertEquals("at-1", withTimeout(5_000) { second.await() }.getOrThrow().accessToken)
+                assertEquals(1, tokenRequests.get())
+            } finally {
+                if (mutex.holdsLock(owner)) mutex.unlock(owner)
+            }
+        } finally {
+            finishExchange.complete(Unit)
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun diagnosticWaiterThatTimesOutBeforeExchangeDoesNotStartProviderRequest() = runBlocking {
+        val keyId = createAccount("rt-diagnostic-no-waiters", accountEmail = email("diagnostic-no-waiters"))
+        val service = service()
+        val account = accounts.find(keyId)!!
+        val mutex = accountMutex(service, keyId)
+        val owner = Any()
+        mutex.lock(owner)
+
+        try {
+            val waiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching {
+                    service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(1_500))
+                }
+            }
+            val failure = waiter.await().exceptionOrNull()
+            assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
+            mutex.unlock(owner)
+            withTimeout(5_000) { assertTrue(service.drainRefreshes()) }
+            assertEquals(0, tokenRequests.get(), "the shared task must recheck active waiters before exchange")
+        } finally {
+            if (mutex.holdsLock(owner)) mutex.unlock(owner)
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun diagnosticAcceptsOnlyServiceRecordedNormalRotationNotAdminAccessOrProxyChanges() = runBlocking {
+        val keyId = createAccount("rt-normal-rotation", accountEmail = email("normal-rotation"))
+        val clock = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
+        val service = service(now = clock::get)
+        val original = accounts.find(keyId)!!
+        val exchangeStarted = CompletableDeferred<Unit>()
+        val finishExchange = CompletableDeferred<Unit>()
+        beforeReply.set {
+            exchangeStarted.complete(Unit)
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
+        }
+
+        try {
+            val firstWaiter = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching {
+                    service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(5_000))
+                }
+            }
+            withTimeout(5_000) { exchangeStarted.await() }
+            finishExchange.complete(Unit)
+            val firstAccess = firstWaiter.await().getOrThrow()
+            val rotated = awaitSavedAccessToken(keyId)
+            assertEquals("rt-2", cipher.decrypt(accounts.loadRefreshContext(keyId)!!.refreshTokenCiphertext,
+                accounts.loadRefreshContext(keyId)!!.refreshTokenNonce))
+            assertEquals("at-1", firstAccess.accessToken)
+
+            val reused = service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(1_000))
+            assertEquals("at-1", reused.accessToken)
+            assertTrue(reused.matches(rotated), "a saved in-process normal rotation may satisfy the prior snapshot")
+            assertEquals(1, tokenRequests.get())
+
+            accounts.updateCredentials(
+                keyId,
+                OAuthAccountCredentialUpdate(
+                    provider = OAuthProvider.CHATGPT,
+                    accountEmail = rotated.accountEmail,
+                    accessToken = cipher.encrypt("at-admin"),
+                    accessTokenExpiresAt = clock.get() + 3_600_000,
+                    proxyUrl = rotated.proxyUrl,
+                ),
+            )
+            val adminAccess = accounts.find(keyId)!!
+            val rejectedAccess = assertFailsWith<OAuthTokenUnavailableException> {
+                service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(1_000))
+            }
+            assertEquals("credential_replaced", rejectedAccess.errorCode)
+            assertEquals(1, tokenRequests.get(), "admin-provided access token must not be treated as normal rotation")
+            assertEquals("at-admin", cipher.decrypt(adminAccess.accessTokenCiphertext!!, adminAccess.accessTokenNonce!!))
+
+            // Expire the cached access token without changing the database snapshot, so this
+            // path must re-read and reject a proxy-only edit before starting an exchange.
+            clock.addAndGet(3_600_001)
+            accounts.updateSettings(keyId, proxyUrl = "http://127.0.0.1:8181")
+            val proxyChanged = accounts.find(keyId)!!
+            assertEquals(adminAccess.authorizedAt, proxyChanged.authorizedAt)
+            assertEquals(adminAccess.refreshTokenCiphertext, proxyChanged.refreshTokenCiphertext)
+            assertEquals(adminAccess.accessTokenCiphertext, proxyChanged.accessTokenCiphertext)
+            val rejectedProxy = assertFailsWith<OAuthTokenUnavailableException> {
+                service.accessTokenForDiagnostic(adminAccess, DiagnosticPreparationDeadline.start(1_000))
+            }
+            assertEquals("credential_replaced", rejectedProxy.errorCode)
             assertEquals(1, tokenRequests.get())
         } finally {
             finishExchange.complete(Unit)
@@ -307,7 +575,7 @@ class OAuthTokenServiceTest {
         val finishExchange = CompletableDeferred<Unit>()
         beforeReply.set {
             exchangeStarted.complete(Unit)
-            runBlocking { finishExchange.await() }
+            runBlocking { withTimeout(10_000) { finishExchange.await() } }
         }
 
         try {
@@ -519,6 +787,13 @@ class OAuthTokenServiceTest {
 
         val account = assertNotNull(accounts.find(keyId))
         assertEquals(Long.MAX_VALUE, account.accessTokenExpiresAt)
+    }
+
+    private fun accountMutex(service: OAuthTokenService, accountId: String): kotlinx.coroutines.sync.Mutex {
+        val field = OAuthTokenService::class.java.getDeclaredField("locks").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val locks = field.get(service) as Array<kotlinx.coroutines.sync.Mutex>
+        return locks[(accountId.hashCode() and Int.MAX_VALUE) % locks.size]
     }
 
     private fun service(now: () -> Long = System::currentTimeMillis): OAuthTokenService {

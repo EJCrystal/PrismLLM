@@ -123,7 +123,7 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `fingerprint route analyzes raw numeric samples while only exposing redacted display text`() = runBlocking {
+    fun `fingerprint route analyzes only completed raw samples while exposing redacted display text`() = runBlocking {
         val credential = "7"
         val rawSample = List(200) { credential }.joinToString(", ")
         val model = "fingerprint-synthetic-model"
@@ -134,6 +134,7 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             val authorized: Boolean,
         )
         val captured = java.util.concurrent.ConcurrentLinkedQueue<CapturedRequest>()
+        val upstreamPostCount = java.util.concurrent.atomic.AtomicInteger()
         val mockClient = HttpClient(MockEngine) {
             engine {
                 addHandler { request ->
@@ -144,18 +145,28 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
                     when {
                         request.method == io.ktor.http.HttpMethod.Get && host == "models.dev" && path == "/catalog.json" ->
                             respond("{}", headers = io.ktor.http.headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
-                        request.method == io.ktor.http.HttpMethod.Post && host == "fingerprint.synthetic.invalid" && path == "/v1/responses" ->
+                        request.method == io.ktor.http.HttpMethod.Post && host == "fingerprint.synthetic.invalid" && path == "/v1/responses" -> {
+                            val failed = upstreamPostCount.getAndIncrement() == 0
+                            val events = buildList {
+                                add("event: response.output_text.delta")
+                                add("data: {\"type\":\"response.output_text.delta\",\"delta\":${Json.encodeToString(rawSample)}}")
+                                add("")
+                                if (failed) {
+                                    add("event: response.failed")
+                                    add("data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}")
+                                } else {
+                                    add("event: response.completed")
+                                    add(
+                                        "data: {\"type\":\"response.completed\",\"response\":{\"model\":\"$model\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":${Json.encodeToString(rawSample)}}]}]}}",
+                                    )
+                                }
+                            }
                             respond(
-                                listOf(
-                                    "event: response.output_text.delta",
-                                    "data: {\"type\":\"response.output_text.delta\",\"delta\":${Json.encodeToString(rawSample)}}",
-                                    "",
-                                    "event: response.failed",
-                                    "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}",
-                                ).joinToString("\n", postfix = "\n\n"),
+                                events.joinToString("\n", postfix = "\n\n"),
                                 status = HttpStatusCode.OK,
                                 headers = io.ktor.http.headersOf(HttpHeaders.ContentType, ContentType.Text.EventStream.toString()),
                             )
+                        }
                         else -> error("Unexpected mocked HTTP request: ${request.method.value} $host$path")
                     }
                 }
@@ -195,11 +206,17 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             val runId = runBody["id"]!!.jsonPrimitive.content
             val displayedSamples = runBody["samples"]!!.jsonArray.map { it.jsonObject }
             assertEquals(3, displayedSamples.size)
-            assertTrue(displayedSamples.all { it["accepted"]!!.jsonPrimitive.boolean })
-            assertTrue(displayedSamples.all { it["parsedNumbers"]!!.jsonPrimitive.int == 200 })
+            val failedSamples = displayedSamples.filter { it["errorMessage"] != null && it["errorMessage"] != JsonNull }
+            val successfulSamples = displayedSamples.filter { it["errorMessage"] == null || it["errorMessage"] == JsonNull }
+            assertEquals(1, failedSamples.size, "One HTTP 200 stream must terminate with response.failed")
+            assertEquals(2, successfulSamples.size, "Two streams must terminate with response.completed")
+            assertTrue(successfulSamples.all { it["accepted"]!!.jsonPrimitive.boolean })
+            assertTrue(successfulSamples.all { it["parsedNumbers"]!!.jsonPrimitive.int == 200 })
+            assertFalse(failedSamples.single()["accepted"]!!.jsonPrimitive.boolean)
+            assertEquals(0, failedSamples.single()["parsedNumbers"]!!.jsonPrimitive.int, "Failed stream deltas must not reach the detector")
             assertTrue(displayedSamples.all { it["text"]!!.jsonPrimitive.content == rawSample.replace(credential, "[REDACTED]") })
             assertTrue(displayedSamples.all { it["statusCode"]!!.jsonPrimitive.int == 200 })
-            assertTrue(displayedSamples.all { it["errorMessage"]!!.jsonPrimitive.content.contains("denied [REDACTED]") })
+            assertTrue(failedSamples.single()["errorMessage"]!!.jsonPrimitive.content.contains("denied [REDACTED]"))
             assertFalse(runText.contains(rawSample), "The response must not expose the original numeric samples")
 
             val analysis = Json.decodeFromString<FingerprintAnalysis>(runBody["analysis"]!!.toString())
@@ -207,13 +224,12 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
                 displayedSamples.map { sample ->
                     FingerprintOutput(
                         expectedCount = sample["expectedCount"]!!.jsonPrimitive.int,
-                        text = rawSample,
+                        text = if (sample["errorMessage"] == null || sample["errorMessage"] == JsonNull) rawSample else "",
                     )
                 },
             )
-            assertEquals(expectedRawAnalysis, analysis, "The route's analysis must use each original upstream sample")
-            assertTrue(displayedSamples.all { it["accepted"]!!.jsonPrimitive.boolean })
-            assertEquals(3, analysis.usedOutputs)
+            assertEquals(expectedRawAnalysis, analysis, "The route must analyze original text only from completed streams")
+            assertEquals(2, analysis.usedOutputs)
             val displayOnlyAnalysis = app.fingerprintDetector!!.analyze(
                 displayedSamples.map { sample ->
                     FingerprintOutput(

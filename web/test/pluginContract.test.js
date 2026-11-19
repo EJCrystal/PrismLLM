@@ -249,6 +249,8 @@ describe('bounded declarative plugin contracts', () => {
     ['out-of-range number default', data => { data.manifest.configuration = [{ key: 'n', label: '数值', kind: 'number', min: 2, defaultValue: 1 }] }],
     ['account credential selector', data => { data.ui.entries[1].action.fields.push(channelFields()[1]) }],
     ['account batch mode', data => { data.ui.entries[1].action.supportsBatch = true }],
+    ['batch scope without single', data => { data.ui.entries[0].action.fields[3].options = [{ value: 'all', label: '全部模型' }]; data.ui.entries[0].action.fields[3].defaultValue = 'all' }],
+    ['nonbatch required scope without single', data => { data.ui.entries[0].action.supportsBatch = false; data.ui.entries[0].action.fields[3].required = true; data.ui.entries[0].action.fields[3].options = [{ value: 'all', label: '全部模型' }]; data.ui.entries[0].action.fields[3].defaultValue = 'all' }],
     ['account all scope', data => { data.ui.entries[1].action.fields.push(channelFields()[3]) }],
     ['duplicate UI entry', data => { data.ui.entries.push(structuredClone(data.ui.entries[0])) }],
     ['duplicate fields', data => { data.manifest.configuration.push(structuredClone(data.manifest.configuration[0])) }],

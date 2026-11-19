@@ -18,7 +18,7 @@ const legacyTabs = [
 ]
 const contributions = ref<PluginUiContribution[]>([])
 const invalidContributions = ref(new Set<string>())
-const diagnosticGeneration = ref(0)
+const diagnosticGenerations = ref(new Map<string, number>())
 const loadError = ref('')
 const guard = createLatestRequestGuard()
 let disposed = false
@@ -41,6 +41,7 @@ const components: Record<string, Component> = {
 const activeTab = ref('iq')
 const tabId = useId()
 const tabList = ref<HTMLElement | null>(null)
+const tabPanel = ref<HTMLElement | null>(null)
 const activeContribution = computed(() => availableContributions.value.find((item) => contributionKey(item) === activeTab.value))
 const activeComponent = computed(() => activeContribution.value ? PluginDiagnosticHost : components[activeTab.value] ?? null)
 const activeProps = computed(() => activeContribution.value ? {
@@ -49,7 +50,11 @@ const activeProps = computed(() => activeContribution.value ? {
   initialModel: props.initialModel,
   channelEnabled: props.channel.enabled,
 } : { channel: props.channel, initialModel: props.initialModel })
-const activeKey = computed(() => `${activeTab.value}:${props.channel.id}:${activeContribution.value?.activeVersion ?? 'legacy'}:${activeContribution.value ? diagnosticGeneration.value : ''}`)
+const activeKey = computed(() => {
+  const contribution = activeContribution.value
+  const key = contribution ? contributionVersionKey(contribution) : ''
+  return `${activeTab.value}:${props.channel.id}:${contribution?.activeVersion ?? 'legacy'}:${key ? diagnosticGenerations.value.get(key) ?? 0 : ''}`
+})
 
 /** 记录页每次重新进入都重读，保证刚跑完的检测立刻出现。 */
 const recordsKey = ref(0)
@@ -87,6 +92,16 @@ function openRecord(id: number) {
   activeTab.value = 'records'
 }
 
+async function focusIqIfRemoved(focusedTabId: string, focusWasInPanel: boolean, removedTabIds: string[], activeTabWasRemoved: boolean) {
+  if (!removedTabIds.includes(focusedTabId) && !(focusWasInPanel && activeTabWasRemoved)) return
+  activeTab.value = 'iq'
+  await nextTick()
+  if (disposed || activeTab.value !== 'iq') return
+  const iqTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
+    .find((tab) => tab.id === `${tabId}-iq`)
+  iqTab?.focus({ preventScroll: true })
+}
+
 async function load(recheck = false) {
   controller?.abort()
   const current = new AbortController()
@@ -95,14 +110,28 @@ async function load(recheck = false) {
   try {
     const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
     if (!result.isLatest || disposed) return
+    const previousAvailable = availableContributions.value
+    const previousActiveTab = activeTab.value
+    const previousActiveContribution = previousAvailable.find((item) => contributionKey(item) === previousActiveTab)
+    const activeElement = typeof document === 'undefined' ? null : document.activeElement
+    const focusedTabId = activeElement && tabList.value?.contains(activeElement) ? activeElement.id : ''
+    const focusWasInPanel = !!activeElement && !!tabPanel.value?.contains(activeElement)
     if (recheck) {
+      const resultKeys = new Set(result.value.map(contributionVersionKey))
+      for (const key of invalidContributions.value) {
+        if (resultKeys.has(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+      }
       invalidContributions.value = new Set()
-      diagnosticGeneration.value++
     }
     contributions.value = result.value
-    if (!tabs.value.some((tab) => tab.id === activeTab.value)) activeTab.value = tabs.value[0]?.id ?? 'iq'
+    const removedTabIds = previousAvailable
+      .filter((item) => !availableContributions.value.some((next) => contributionVersionKey(next) === contributionVersionKey(item)))
+      .map((item) => `${tabId}-${contributionKey(item)}`)
+    if (!tabs.value.some((tab) => tab.id === activeTab.value)) activeTab.value = 'iq'
     else if (!initialized && !userSelectedTab) activeTab.value = tabs.value[0]?.id ?? 'iq'
     initialized = true
+    await focusIqIfRemoved(focusedTabId, focusWasInPanel, removedTabIds,
+      !!previousActiveContribution && removedTabIds.includes(`${tabId}-${contributionKey(previousActiveContribution)}`))
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
       loadError.value = cause instanceof Error ? cause.message : String(cause)
@@ -112,11 +141,20 @@ async function load(recheck = false) {
 function refresh() { void load(true) }
 function markUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
   const versionKey = `${value.pluginId}:${value.activeVersion}:${value.entryId}`
+  const tabKey = `plugin:${value.pluginId}:${value.entryId}`
+  const current = availableContributions.value.find((item) => contributionKey(item) === tabKey)
+  if (!current || current.activeVersion !== value.activeVersion) return
+  const focused = document.activeElement
+  const focusedTabId = focused instanceof HTMLElement && tabList.value?.contains(focused) ? focused.id : ''
+  const focusWasInPanel = !!focused && !!tabPanel.value?.contains(focused)
+  const removedTabId = `${tabId}-${tabKey}`
+  const activeTabWasRemoved = activeTab.value === tabKey
   invalidContributions.value = new Set([...invalidContributions.value, versionKey])
-  if (activeTab.value === `plugin:${value.pluginId}:${value.entryId}`) {
+  if (activeTabWasRemoved) {
     userSelectedTab = true
     activeTab.value = 'iq'
   }
+  void focusIqIfRemoved(focusedTabId, focusWasInPanel, [removedTabId], activeTabWasRemoved)
 }
 onMounted(() => { void load(); window.addEventListener(PLUGIN_STATE_CHANGED, refresh) })
 onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort(); window.removeEventListener(PLUGIN_STATE_CHANGED, refresh) })
@@ -135,7 +173,7 @@ onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort()
       <p v-else-if="invalidContributions.size" class="channel-test-plugin-note" role="status">此生效版本的诊断入口已不可用。可手动重新检查入口状态。<button type="button" class="link-button" @click="refresh">重新检查</button></p>
       <p v-else-if="initialized && !availableContributions.length" class="channel-test-plugin-note">没有已生效的渠道诊断插件，可在「插件」页检查。智商、指纹与记录仍可使用。</p>
     </template>
-    <section :id="`${tabId}-panel`" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
+    <section :id="`${tabId}-panel`" ref="tabPanel" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
       <TestRecordsView v-if="activeTab === 'records'" :key="'records-' + recordsKey" :channel-id="channel.id" :initial-record="recordTarget" @record-opened="recordTarget = null" />
       <KeepAlive :max="8"><component v-if="activeComponent" :is="activeComponent" :key="activeKey" v-bind="activeProps" @open-record="openRecord" @unavailable="markUnavailable" /></KeepAlive>
     </section>

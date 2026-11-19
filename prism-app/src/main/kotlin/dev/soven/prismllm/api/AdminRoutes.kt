@@ -808,9 +808,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val headerProfiles = app.upstreamHeaderCatalogService.profiles()
             val startedAt = System.currentTimeMillis()
             // 三个样本同时发出，与 lm-detector 的默认采样方式一致；任一请求失败只影响该样本。
-            val fingerprintSamples = java.util.concurrent.ConcurrentHashMap<Int, String>()
-            val results = coroutineScope {
-                challenges.mapIndexed { index, challenge ->
+            val executions = coroutineScope {
+                challenges.map { challenge ->
                     async {
                         sampleFingerprintModelConnectivity(
                             channel = channel,
@@ -825,16 +824,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
                             maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
                             globalOverrides = overrides,
                             headerProfiles = headerProfiles,
-                            consumeRawSample = { text -> if (text != null) fingerprintSamples[index] = text },
                         )
                     }
                 }.awaitAll()
             }
+            val results = executions.map { it.result }
             val latencyMs = System.currentTimeMillis() - startedAt
             val outputs = challenges.mapIndexed { index, challenge ->
                 FingerprintOutput(
                     expectedCount = challenge.expectedCount,
-                    text = fingerprintSamples[index].orEmpty(),
+                    text = executions[index].rawSample.orEmpty(),
                 )
             }
             val analysis = detector.analyze(outputs)

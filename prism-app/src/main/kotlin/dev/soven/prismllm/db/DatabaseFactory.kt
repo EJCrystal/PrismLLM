@@ -43,8 +43,10 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
         ThreadPoolExecutor.AbortPolicy(),
     )
     private val transactionDataSource = object : javax.sql.DataSource by dataSource {
-        override fun getConnection(): java.sql.Connection =
-            DiagnosticPreparationDeadline.acquireConnection(diagnosticConnectionAcquisition) { dataSource.connection }
+        override fun getConnection(): java.sql.Connection {
+            val connection = DiagnosticPreparationDeadline.acquireConnection(diagnosticConnectionAcquisition) { dataSource.connection }
+            return DiagnosticPreparationDeadline.diagnosticConnection(connection, dataSource::evictConnection)
+        }
     }
 
     val database: Database = Database.connect(

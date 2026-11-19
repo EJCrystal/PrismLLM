@@ -59,6 +59,7 @@ data class ModelConnectivityTestResult(
  * 使用渠道已保存的凭据直接向上游发送一次真实请求。
  *
  * 该请求不经过网关数据面，不写入请求日志，也不消耗调用方密钥额度。
+ * 默认保留诊断指定的模型和提示词，正文覆盖只允许解码设置。
  */
 suspend fun testChannelModelConnectivity(
     channel: ChannelRecord,
@@ -73,13 +74,19 @@ suspend fun testChannelModelConnectivity(
     maxResponseChars: Int = MAX_RESPONSE_CHARS,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
-    isolatedIqRequest: Boolean = false,
+    isolatedIqRequest: Boolean = true,
 ): ModelConnectivityTestResult = testSavedChannelModelConnectivity(
     channel, credentialRef, model, protocol, prompt, credentials, httpClient, timeoutMs,
-    maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles, isolatedIqRequest, null,
+    maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles, isolatedIqRequest, captureRawSample = false,
+).result
+
+/** Internal result for one completed execution. Keep raw text out of serializable and printable results. */
+internal class ModelConnectivityExecution(
+    val result: ModelConnectivityTestResult,
+    val rawSample: String? = null,
 )
 
-/** The detector sees a bounded original sample; all returned fields are display-safe. */
+/** The detector sees only a bounded original sample; all returned diagnostic fields are display-safe. */
 internal suspend fun sampleFingerprintModelConnectivity(
     channel: ChannelRecord,
     credentialRef: UpstreamCredential,
@@ -93,12 +100,12 @@ internal suspend fun sampleFingerprintModelConnectivity(
     maxResponseChars: Int = MAX_RESPONSE_CHARS,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
-    consumeRawSample: (String?) -> Unit,
-): ModelConnectivityTestResult = testSavedChannelModelConnectivity(
-    channel, credentialRef, model, protocol, prompt, credentials, httpClient, timeoutMs,
-    maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles,
-    isolatedIqRequest = true, consumeRawSample = consumeRawSample,
-)
+): ModelConnectivityExecution {
+    return testSavedChannelModelConnectivity(
+        channel, credentialRef, model, protocol, prompt, credentials, httpClient, timeoutMs,
+        maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles, isolatedIqRequest = true, captureRawSample = true,
+    )
+}
 
 private suspend fun testSavedChannelModelConnectivity(
     channel: ChannelRecord,
@@ -114,11 +121,11 @@ private suspend fun testSavedChannelModelConnectivity(
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
     isolatedIqRequest: Boolean,
-    consumeRawSample: ((String?) -> Unit)?,
-): ModelConnectivityTestResult {
+    captureRawSample: Boolean,
+): ModelConnectivityExecution {
     val credential = resolveSavedCredential(credentials, credentialRef)
     return runModelConnectivityTest(
-        credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars, consumeRawSample,
+        credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars, captureRawSample,
     ) {
         buildModelTestRequest(
             channel, credential, model, protocol, prompt, UpstreamEnvelope.NONE, null,
@@ -159,14 +166,14 @@ internal fun prepareOAuthAccountModelConnectivity(
     val request = try {
         buildModelTestRequest(
             channel, accessToken, model, protocol, prompt, envelope, project, codeAssistUserAgent,
-            maxOutputTokens, globalOverrides, headerProfiles,
+            maxOutputTokens, globalOverrides, headerProfiles, isolatedIqRequest = true,
         )
     } catch (cause: Exception) {
         if (cause is CancellationException) throw cause
         val failure = modelTestConnectionFailure(cause, accessToken, latencyMs = 0)
         return { failure }
     }
-    return { runModelConnectivityTest(accessToken, protocol, httpClient, envelope, timeoutMs, maxResponseChars) { request } }
+    return { runModelConnectivityTest(accessToken, protocol, httpClient, envelope, timeoutMs, maxResponseChars) { request }.result }
 }
 
 private fun buildModelTestRequest(
@@ -181,7 +188,7 @@ private fun buildModelTestRequest(
     maxOutputTokens: Int,
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
-    isolatedIqRequest: Boolean = false,
+    isolatedIqRequest: Boolean,
 ): HttpRequestBuilder {
     val authType = channel.authTypeFor(protocol)
     val policy = UpstreamRequestPolicy(globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl)
@@ -212,9 +219,9 @@ private suspend fun runModelConnectivityTest(
     envelope: UpstreamEnvelope,
     timeoutMs: Long,
     maxResponseChars: Int,
-    consumeRawSample: ((String?) -> Unit)? = null,
+    captureRawSample: Boolean = false,
     request: () -> HttpRequestBuilder,
-): ModelConnectivityTestResult {
+): ModelConnectivityExecution {
     val startedAt = System.currentTimeMillis()
     return try {
         withTimeoutOrNull(timeoutMs) {
@@ -233,8 +240,7 @@ private suspend fun runModelConnectivityTest(
             // Parse status and usage on the original JSON. Redact only the decoded display values.
             val streamError = ok && protocol == GatewayProtocol.RESPONSES && json?.get("error") is JsonObject
             val displayText = if (ok) extractModelTestResponseText(protocol, json) else null
-            if (ok) consumeRawSample?.invoke(displayText?.take(maxResponseChars))
-            ModelConnectivityTestResult(
+            val result = ModelConnectivityTestResult(
                 success = ok && !streamError,
                 statusCode = status,
                 latencyMs = latencyMs,
@@ -242,21 +248,27 @@ private suspend fun runModelConnectivityTest(
                 errorMessage = if (!ok || streamError) extractModelTestError(json, status, credential) {
                     redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
                 } else null,
-                usage = if (ok) extractModelTestUsage(protocol, json) else null,
-                upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
+                usage = if (ok && !streamError) extractModelTestUsage(protocol, json) else null,
+                upstreamReportedModel = if (ok && !streamError) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
             )
-        } ?: ModelConnectivityTestResult(
-            success = false,
-            statusCode = null,
-            latencyMs = System.currentTimeMillis() - startedAt,
-            responseText = null,
-            errorMessage = "测试超时（${timeoutMs / 1000} 秒）",
-            usage = null,
+            ModelConnectivityExecution(
+                result = result,
+                rawSample = displayText?.take(maxResponseChars).takeIf { captureRawSample && result.success },
+            )
+        } ?: ModelConnectivityExecution(
+            result = ModelConnectivityTestResult(
+                success = false,
+                statusCode = null,
+                latencyMs = System.currentTimeMillis() - startedAt,
+                responseText = null,
+                errorMessage = "测试超时（${timeoutMs / 1000} 秒）",
+                usage = null,
+            ),
         )
     } catch (cause: CancellationException) {
         throw cause
     } catch (cause: Exception) {
-        modelTestConnectionFailure(cause, credential, System.currentTimeMillis() - startedAt)
+        ModelConnectivityExecution(modelTestConnectionFailure(cause, credential, System.currentTimeMillis() - startedAt))
     }
 }
 
@@ -480,7 +492,11 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
             terminated = true
         }
         if (type.startsWith("response.failed")) {
-            failedError = event["response"] as? JsonObject
+            failedError = (event["response"] as? JsonObject)
+                ?.let { response ->
+                    (response["error"] as? JsonObject)?.let { error -> buildJsonObject { put("error", error) } }
+                }
+                ?: buildJsonObject { put("error", buildJsonObject { put("message", "上游响应以失败事件终止") }) }
             terminated = true
         }
         if (type.startsWith("response.incomplete")) {

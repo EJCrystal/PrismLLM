@@ -365,7 +365,8 @@ class GatewayApplication internal constructor(
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val pluginInstallationRepository = dev.soven.prismllm.admin.persistence.PluginInstallationRepository(databaseFactory.database)
-    private val pluginInstallationStore = PluginInstallationStoreAdapter(pluginInstallationRepository)
+    internal val connectivitySettingsLock = ConnectivitySettingsLock(databaseFactory.database)
+    private val pluginInstallationStore = PluginInstallationStoreAdapter(pluginInstallationRepository, databaseFactory.database, connectivitySettingsLock)
     val pluginRuntime = dev.soven.prismllm.plugin.host.PluginRuntime(
         catalog = dev.soven.prismllm.plugin.host.PluginCatalog(config.pluginCatalogDir),
         managedDirectory = config.pluginInstallDir,
@@ -610,7 +611,7 @@ class GatewayApplication internal constructor(
                     bootstrapId = CONNECTIVITY_PLUGIN_ID,
                     initialConfiguration = {
                         kotlinx.serialization.json.buildJsonObject {
-                            put("defaultPrompt", modelTestSettingsRepository.load().defaultPrompt)
+                            put("defaultPrompt", modelTestSettingsRepository.loadInTransaction().defaultPrompt)
                         }
                     },
                 )

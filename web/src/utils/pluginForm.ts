@@ -6,7 +6,8 @@ export function pluginFieldDefaults(fields: PluginField[], configuration: Plugin
   return Object.fromEntries(fields.map((field) => {
     const sourceKey = promptAlias && field.key === 'prompt' ? 'defaultPrompt' : field.key
     const configured = configuration[sourceKey]
-    return [field.key, Object.hasOwn(configuration, sourceKey) ? configured : field.defaultValue ?? (field.kind === 'boolean' ? false : '')]
+    const empty = field.kind === 'boolean' ? false : !field.required && (field.kind === 'number' || field.kind === 'select') ? null : ''
+    return [field.key, Object.hasOwn(configuration, sourceKey) ? configured : field.defaultValue ?? empty]
   }))
 }
 

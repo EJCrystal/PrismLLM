@@ -12,6 +12,7 @@ import dev.soven.prismllm.oauth.infra.OAuthTokenProviderRegistry
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.persistence.OAuthRefreshContext
 import dev.soven.prismllm.shared.crypto.CredentialCipher
+import dev.soven.prismllm.shared.crypto.EncryptedCredential
 import dev.soven.prismllm.shared.domain.KeyCredentialResolver
 import dev.soven.prismllm.shared.domain.UpstreamCredential
 import dev.soven.prismllm.shared.domain.saturatedAdd
@@ -119,9 +120,11 @@ class OAuthTokenService(
     private val refreshLifecycleLock = Any()
     private val refreshSupervisor = SupervisorJob()
     private val refreshScope = CoroutineScope(Dispatchers.IO + refreshSupervisor)
-    private val diagnosticRefreshTasks = mutableMapOf<String, Deferred<DiagnosticOAuthAccess>>()
-    private val diagnosticRefreshPermits = Semaphore(MAX_CONCURRENT_DIAGNOSTIC_REFRESHES)
+    private val refreshTasks = mutableMapOf<String, RefreshTask>()
+    private val rotations = linkedMapOf<String, ArrayDeque<Rotation>>()
+    private val refreshPermits = Semaphore(MAX_CONCURRENT_DIAGNOSTIC_REFRESHES)
     private var refreshAdmissionClosed = false
+    @Volatile private var stopPersistenceRetries = false
 
     /**
      * 返回可用的 access token。普通静态密钥返回 null；
@@ -147,12 +150,12 @@ class OAuthTokenService(
                 "OAuth 提供方 ${account.provider.value} 未配置",
             )
         }
-        // Manual diagnosis has the same enabled-account semantics as the existing manual test.
+        // Manual diagnosis also permits ACTIVE accounts whose enabled setting is false.
         cachedAccessToken(account)?.let { return DiagnosticOAuthAccess(account, it.accessToken, account.proxyUrl) }
-        val refresh = ownDiagnosticRefresh(account, preparation)
         return try {
-            DiagnosticPreparationDeadline.within(preparation) { refresh.await() }
-                ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
+            val saved = awaitRefresh(account, preparation = preparation)
+            if (!acceptsSnapshot(account, saved)) throw credentialReplaced()
+            DiagnosticOAuthAccess(saved, decryptAccess(saved).accessToken, saved.proxyUrl)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: Exception) {
@@ -161,89 +164,145 @@ class OAuthTokenService(
         }
     }
 
-    private fun ownDiagnosticRefresh(
-        account: OAuthAccountRecord,
-        preparation: DiagnosticPreparationDeadline.Budget,
-    ): Deferred<DiagnosticOAuthAccess> = synchronized(refreshLifecycleLock) {
-        check(!refreshAdmissionClosed) { "OAuth refresh service is closing" }
-        diagnosticRefreshTasks[account.id]?.let { return@synchronized it }
-        if (diagnosticRefreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS) {
-            throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "账号刷新繁忙，请稍后重试", "refresh_busy")
+    private class RefreshWaiter(
+        val account: OAuthAccountRecord,
+        val caller: Job,
+        val preparation: DiagnosticPreparationDeadline.Budget?,
+        val force: Boolean,
+    ) {
+        fun active(): Boolean {
+            if (!caller.isActive) return false
+            val budget = preparation ?: return true
+            return runCatching { budget.remainingMillis(caller) }.isSuccess
         }
-        val task = refreshScope.async(start = CoroutineStart.LAZY) {
-            var permitHeld = false
-            var accountMutex: Mutex? = null
-            try {
-                // Keep both resources until exchange+CAS finishes, including the handoff out of
-                // this scope. Expiry before exchange releases them without contacting the provider.
-                val action = DiagnosticPreparationDeadline.within(preparation) {
-                    diagnosticRefreshPermits.acquire()
-                    permitHeld = true
-                    val mutex = lockFor(account.id)
-                    mutex.lock()
-                    accountMutex = mutex
-                    val context = repository.loadRefreshContext(account.id)
-                        ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
-                    val latest = context.account
-                    if (latest.provider != account.provider || latest.authorizedAt != account.authorizedAt ||
-                        latest.authState != OAuthAuthState.ACTIVE ||
-                        context.refreshTokenCiphertext != account.refreshTokenCiphertext ||
-                        context.refreshTokenNonce != account.refreshTokenNonce ||
-                        context.refreshTokenKeyVersion != account.refreshTokenKeyVersion ||
-                        latest.accessTokenCiphertext != account.accessTokenCiphertext ||
-                        latest.accessTokenNonce != account.accessTokenNonce ||
-                        latest.accessTokenKeyVersion != account.accessTokenKeyVersion ||
-                        latest.proxyUrl != account.proxyUrl
-                    ) {
-                        throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号当前不可用")
+    }
+
+    private class RefreshTask {
+        val waiters = mutableListOf<RefreshWaiter>()
+        lateinit var work: Deferred<OAuthAccountRecord>
+        var exchangeStarted = false
+    }
+
+    private suspend fun awaitRefresh(
+        account: OAuthAccountRecord,
+        preparation: DiagnosticPreparationDeadline.Budget? = null,
+        force: Boolean = false,
+    ): OAuthAccountRecord {
+        val waiter = RefreshWaiter(account, currentCoroutineContext().job, preparation, force)
+        val task = synchronized(refreshLifecycleLock) {
+            check(!refreshAdmissionClosed) { "OAuth refresh service is closing" }
+            val existing = refreshTasks[account.id]?.takeUnless { it.work.isCancelled || it.work.isCompleted }
+            val selected = existing ?: RefreshTask().also { created ->
+                if (refreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS) {
+                    throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "账号刷新繁忙，请稍后重试", "refresh_busy")
+                }
+                created.work = refreshScope.async(start = CoroutineStart.LAZY) { runRefresh(account.id, created) }
+                refreshTasks[account.id] = created
+                created.work.invokeOnCompletion { cause ->
+                    synchronized(refreshLifecycleLock) {
+                        if (refreshTasks[account.id] === created) refreshTasks.remove(account.id)
                     }
-                    cachedAccessToken(latest)?.let {
-                        return@within DiagnosticRefreshAction.Cached(DiagnosticOAuthAccess(latest, it.accessToken, latest.proxyUrl))
-                    }
-                    DiagnosticRefreshAction.Exchange(prepareRefresh(context))
-                } ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
-                currentCoroutineContext().ensureActive()
-                preparation.remainingMillis(currentCoroutineContext().job)
-                when (action) {
-                    is DiagnosticRefreshAction.Cached -> action.value
-                    is DiagnosticRefreshAction.Exchange -> withContext(NonCancellable) {
-                        // No diagnostic deadline is installed here. Provider request timeouts still
-                        // apply; persistence has its own service budget, independent of all waiters.
-                        val saved = refreshPrepared(action.refresh, serviceOwned = true)
-                        DiagnosticOAuthAccess(saved.account, saved.token.accessToken, action.refresh.context.account.proxyUrl)
+                    if (cause != null && cause !is CancellationException) {
+                        logger.warn("oauth refresh failed, accountId={}, error={}", account.id, cause::class.simpleName)
                     }
                 }
-            } finally {
-                accountMutex?.unlock()
-                if (permitHeld) diagnosticRefreshPermits.release()
             }
+            selected.waiters += waiter
+            selected.work.start()
+            selected
         }
-        diagnosticRefreshTasks[account.id] = task
-        task.invokeOnCompletion { cause ->
+        return try {
+            if (preparation == null) task.work.await()
+            else DiagnosticPreparationDeadline.within(preparation) { task.work.await() }
+                ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
+        } finally {
             synchronized(refreshLifecycleLock) {
-                if (diagnosticRefreshTasks[account.id] === task) diagnosticRefreshTasks.remove(account.id)
-            }
-            if (cause != null && cause !is CancellationException) {
-                logger.warn("oauth diagnostic refresh failed, accountId={}, error={}", account.id, cause::class.simpleName)
+                task.waiters.remove(waiter)
+                if (!task.exchangeStarted && task.waiters.none { it.active() }) task.work.cancel()
             }
         }
-        task.start()
-        task
+    }
+
+    private suspend fun runRefresh(accountId: String, task: RefreshTask): OAuthAccountRecord = refreshPermits.withPermit {
+        lockFor(accountId).withLock {
+            val context = DiagnosticPreparationDeadline.withinSynchronous(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS) {
+                repository.loadRefreshContext(accountId)
+                    ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
+            } ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
+            val latest = context.account
+            val eligible = synchronized(refreshLifecycleLock) {
+                task.waiters.filter { it.active() && (it.preparation == null || acceptsSnapshot(it.account, latest)) }
+            }
+            if (eligible.isEmpty()) throw credentialReplaced()
+            val force = eligible.any { it.force }
+            if (!force) {
+                if (latest.authState != OAuthAuthState.ACTIVE) {
+                    throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号需要重新授权", latest.lastRefreshError)
+                }
+                cachedAccessToken(latest)?.let { return@withLock latest }
+            }
+            val prepared = prepareRefresh(context)
+            synchronized(refreshLifecycleLock) {
+                if (refreshAdmissionClosed || task.waiters.none {
+                    it.active() && (it.preparation == null || acceptsSnapshot(it.account, latest))
+                }) {
+                    throw CancellationException("OAuth refresh admission ended before exchange")
+                }
+                task.exchangeStarted = true
+            }
+            // From the point a provider can rotate its credential, only service shutdown owns
+            // this work. Individual requests and diagnostic deadlines merely stop waiting.
+            withContext(NonCancellable) { persistRefresh(exchange(prepared)) }
+        }
     }
 
     private class PreparedRefresh(
         val context: OAuthRefreshContext,
         val provider: OAuthTokenProvider,
-        val refreshToken: String,
     )
 
-    private class PersistedAccessToken(val token: OAuthAccessToken, val account: OAuthAccountRecord)
-    private class RefreshWrite(val account: OAuthAccountRecord?)
+    /** Only encrypted values survive between persistence attempts or in the completed task. */
+    private class PendingRefresh(
+        val context: OAuthRefreshContext,
+        val accessToken: EncryptedCredential,
+        val rotatedRefreshToken: EncryptedCredential?,
+        val expiresAt: Long,
+        val tokenType: String,
+        val scope: String?,
+    )
 
-    private sealed interface DiagnosticRefreshAction {
-        class Cached(val value: DiagnosticOAuthAccess) : DiagnosticRefreshAction
-        class Exchange(val refresh: PreparedRefresh) : DiagnosticRefreshAction
+    private class RefreshWrite(val account: OAuthAccountRecord?)
+    private class Rotation(val before: OAuthAccountRecord, val after: OAuthAccountRecord)
+
+    private fun sameSnapshot(before: OAuthAccountRecord, after: OAuthAccountRecord): Boolean =
+        DiagnosticOAuthAccess(before, "", before.proxyUrl).matches(after)
+
+    private fun acceptsSnapshot(before: OAuthAccountRecord, after: OAuthAccountRecord): Boolean {
+        if (sameSnapshot(before, after)) return true
+        return synchronized(refreshLifecycleLock) {
+            var current = before
+            rotations[before.id]?.forEach { rotation ->
+                if (sameSnapshot(current, rotation.before)) current = rotation.after
+            }
+            sameSnapshot(current, after)
+        }
     }
+
+    private fun rememberRotation(before: OAuthAccountRecord, after: OAuthAccountRecord) = synchronized(refreshLifecycleLock) {
+        val history = rotations.getOrPut(before.id) { ArrayDeque() }
+        history.addLast(Rotation(before, after))
+        while (history.size > MAX_ROTATIONS_PER_ACCOUNT) history.removeFirst()
+        while (rotations.size > MAX_ROTATION_ACCOUNTS) rotations.remove(rotations.keys.first())
+    }
+
+    private fun decryptAccess(account: OAuthAccountRecord) = OAuthAccessToken(
+        cipher.decrypt(requireNotNull(account.accessTokenCiphertext), requireNotNull(account.accessTokenNonce)),
+        requireNotNull(account.accessTokenExpiresAt), account.tokenType,
+    )
+
+    private fun credentialReplaced() = OAuthTokenUnavailableException(
+        OAuthUnavailableReason.REFRESH_FAILED, "订阅账号凭据已被替换，请重试", "credential_replaced",
+    )
 
     /**
      * 数据面统一的凭据解析入口：OAuth 账号取 access token，普通密钥解密静态凭据。
@@ -261,25 +320,17 @@ class OAuthTokenService(
 
     private suspend fun accessToken(account: OAuthAccountRecord, forceRefresh: Boolean): OAuthAccessToken {
         if (!forceRefresh) cachedAccessToken(account)?.let { return it }
-        return lockFor(account.id).withLock {
-            val latest = repository.find(account.id)
-                ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
-            if (!forceRefresh) cachedAccessToken(latest)?.let { return@withLock it }
-            refreshLocked(latest)
-        }
+        return decryptAccess(awaitRefresh(account, force = forceRefresh))
     }
 
     /** 管理面手动刷新。即使账号已标记为需要重新授权，也允许再试一次。 */
     suspend fun refreshNow(accountId: String): OAuthRefreshResult {
-        if (repository.find(accountId) == null) return OAuthRefreshResult.NotOAuthAccount
-        return lockFor(accountId).withLock {
-            val latest = repository.find(accountId) ?: return@withLock OAuthRefreshResult.NotOAuthAccount
-            try {
-                refreshLocked(latest, force = true)
-                OAuthRefreshResult.Refreshed(repository.findDetailed(accountId) ?: latest)
-            } catch (cause: OAuthTokenUnavailableException) {
-                OAuthRefreshResult.Failed(cause.reason, cause.errorCode)
-            }
+        val account = repository.find(accountId) ?: return OAuthRefreshResult.NotOAuthAccount
+        return try {
+            val saved = awaitRefresh(account, force = true)
+            OAuthRefreshResult.Refreshed(repository.findDetailed(accountId) ?: saved)
+        } catch (cause: OAuthTokenUnavailableException) {
+            OAuthRefreshResult.Failed(cause.reason, cause.errorCode)
         }
     }
 
@@ -301,26 +352,28 @@ class OAuthTokenService(
         if (!worker.compareAndSet(null, job)) job.cancel()
     }
 
-    /** Stop admission and drain before closing the database. Only pre-exchange tasks are cancelled. */
+    /** Stop new exchanges before database shutdown; an in-flight JDBC worker still owns its lease. */
     suspend fun drainRefreshes(timeoutMs: Long = DEFAULT_REFRESH_DRAIN_TIMEOUT_MS): Boolean {
         require(timeoutMs >= 0)
+        worker.getAndSet(null)?.cancel()
         val snapshot = synchronized(refreshLifecycleLock) {
             refreshAdmissionClosed = true
-            diagnosticRefreshTasks.values.toList()
+            refreshTasks.values.map { it.work }
         }
         val drained = snapshot.all { it.isCompleted } || withTimeoutOrNull(timeoutMs) {
             snapshot.forEach { it.join() }
             true
         } == true
         if (!drained) {
+            // Shutdown is the sole boundary at which in-memory retries stop. This is not a durable
+            // queue: process termination or a persistently unavailable database can lose a result.
+            stopPersistenceRetries = true
             refreshSupervisor.cancel()
-            // Built-in providers use config.requestTimeoutMs. A started exchange retains ownership
-            // through its separately bounded DB write, so shutdown never abandons a rotated token.
             val completed = withTimeoutOrNull(saturatedAdd(config.requestTimeoutMs, DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS + 1_000)) {
                 snapshot.forEach { it.join() }
                 true
             } == true
-            if (!completed) logger.warn("OAuth refresh drain exceeded its provider and database shutdown budgets")
+            if (!completed) logger.warn("OAuth refresh shutdown still has an in-flight provider or JDBC operation")
         }
         refreshSupervisor.cancel()
         return drained
@@ -329,6 +382,7 @@ class OAuthTokenService(
     override fun close() {
         worker.getAndSet(null)?.cancel()
         synchronized(refreshLifecycleLock) { refreshAdmissionClosed = true }
+        stopPersistenceRetries = true
         refreshSupervisor.cancel()
     }
 
@@ -372,40 +426,33 @@ class OAuthTokenService(
         return null
     }
 
-    private suspend fun refreshLocked(account: OAuthAccountRecord, force: Boolean = false): OAuthAccessToken {
-        if (!force && account.authState == OAuthAuthState.REAUTH_REQUIRED) {
-            throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号需要重新授权", account.lastRefreshError)
-        }
-        val context = repository.loadRefreshContext(account.id)
-            ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
-        return refreshPrepared(prepareRefresh(context), serviceOwned = false).token
-    }
-
-    private suspend fun prepareRefresh(context: OAuthRefreshContext): PreparedRefresh {
+    private fun prepareRefresh(context: OAuthRefreshContext): PreparedRefresh {
         val provider = providers.find(context.account.provider)
             ?: throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.PROVIDER_NOT_CONFIGURED,
                 "OAuth 提供方 ${context.account.provider.value} 未配置",
             )
+        return PreparedRefresh(context, provider)
+    }
+
+    private suspend fun exchange(prepared: PreparedRefresh): PendingRefresh {
+        val context = prepared.context
         val refreshToken = try {
             cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce)
         } catch (_: Exception) {
-            recordRefreshFailure(context.account.id, "credential_decrypt_failed", terminal = true, context.refreshTokenCiphertext)
+            withinRefreshDatabaseBudget {
+                recordRefreshFailure(context.account.id, "credential_decrypt_failed", terminal = true, context.refreshTokenCiphertext)
+            }
             throw OAuthTokenUnavailableException(
                 OAuthUnavailableReason.REAUTH_REQUIRED,
                 "订阅账号凭据无法解密，请重新导入",
                 "credential_decrypt_failed",
             )
         }
-        return PreparedRefresh(context, provider, refreshToken)
-    }
-
-    private suspend fun refreshPrepared(prepared: PreparedRefresh, serviceOwned: Boolean): PersistedAccessToken {
-        val context = prepared.context
         val response = try {
-            prepared.provider.refresh(prepared.refreshToken, context.account.proxyUrl)
+            prepared.provider.refresh(refreshToken, context.account.proxyUrl)
         } catch (cause: OAuthRefreshException) {
-            withinRefreshDatabaseBudget(serviceOwned) {
+            withinRefreshDatabaseBudget {
                 recordRefreshFailure(context.account.id, cause.errorCode, cause.terminal, context.refreshTokenCiphertext)
             }
             throw OAuthTokenUnavailableException(
@@ -417,39 +464,72 @@ class OAuthTokenService(
             throw cause
         } catch (cause: Throwable) {
             if (cause is VirtualMachineError) throw cause
-            withinRefreshDatabaseBudget(serviceOwned) {
+            withinRefreshDatabaseBudget {
                 recordRefreshFailure(context.account.id, "refresh_failed", terminal = false, context.refreshTokenCiphertext)
             }
             throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "订阅账号刷新失败", "refresh_failed")
         }
-        val accessToken = cipher.encrypt(response.accessToken)
-        val rotatedRefreshToken = response.refreshToken?.takeIf { it.isNotBlank() }?.let(cipher::encrypt)
-        val expiresAt = saturatedAdd(now(), response.expiresInSeconds * 1_000)
-        val saved = withinRefreshDatabaseBudget(serviceOwned) {
-            RefreshWrite(repository.saveRefreshed(
-                accountId = context.account.id,
-                accessToken = accessToken,
-                expiresAt = expiresAt,
-                tokenType = response.tokenType,
-                scope = response.scope,
-                rotatedRefreshToken = rotatedRefreshToken,
-                expectedRefreshCiphertext = context.refreshTokenCiphertext,
-                now = now(),
-            ))
-        }.account ?: throw OAuthTokenUnavailableException(
-            OAuthUnavailableReason.REFRESH_FAILED,
-            "订阅账号凭据已被替换，请重试",
-            "credential_replaced",
+        return PendingRefresh(
+            context = context,
+            accessToken = cipher.encrypt(response.accessToken),
+            rotatedRefreshToken = response.refreshToken?.takeIf { it.isNotBlank() }?.let(cipher::encrypt),
+            expiresAt = saturatedAdd(now(), response.expiresInSeconds * 1_000),
+            tokenType = response.tokenType,
+            scope = response.scope,
         )
-        logger.debug("oauth token refreshed, accountId={}, provider={}, expiresAt={}", context.account.id, context.account.provider.value, expiresAt)
-        return PersistedAccessToken(OAuthAccessToken(response.accessToken, expiresAt, response.tokenType), saved)
     }
 
-    private suspend fun <T : Any> withinRefreshDatabaseBudget(serviceOwned: Boolean, write: suspend () -> T): T {
-        if (!serviceOwned) return write()
-        return DiagnosticPreparationDeadline.within(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS, write)
-            ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "账号刷新保存超时", "refresh_save_timeout")
+    private suspend fun persistRefresh(pending: PendingRefresh): OAuthAccountRecord {
+        val context = pending.context
+        var retryReported = false
+        while (true) {
+            // An exchange already admitted before shutdown must get its first save attempt.
+            // Only subsequent retries may stop at the service shutdown boundary.
+            val write = try {
+                // Wait for the real transaction cleanup before a retry. An unknown commit is
+                // identified under saveRefreshed's row lock using these same encrypted values.
+                DiagnosticPreparationDeadline.withinSynchronousAndDrain(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS) {
+                    RefreshWrite(repository.saveRefreshed(
+                        accountId = context.account.id,
+                        accessToken = pending.accessToken,
+                        expiresAt = pending.expiresAt,
+                        tokenType = pending.tokenType,
+                        scope = pending.scope,
+                        rotatedRefreshToken = pending.rotatedRefreshToken,
+                        expectedRefreshCiphertext = context.refreshTokenCiphertext,
+                        expectedAccount = context.account,
+                        now = now(),
+                    ))
+                }
+            } catch (cause: Exception) {
+                if (!retryReported) {
+                    logger.warn("oauth token save will retry, accountId={}, error={}", context.account.id, cause::class.simpleName)
+                    retryReported = true
+                }
+                null
+            }
+            if (write != null) {
+                val saved = write.account ?: throw credentialReplaced()
+                rememberRotation(context.account, saved)
+                logger.debug("oauth token refreshed, accountId={}, provider={}, expiresAt={}",
+                    saved.id, saved.provider.value, pending.expiresAt)
+                return saved
+            }
+            if (stopPersistenceRetries) {
+                throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED,
+                    "账号刷新结果尚未保存，服务正在关闭", "refresh_save_timeout")
+            }
+            if (!retryReported) {
+                logger.warn("oauth token save timed out; retaining encrypted result, accountId={}", context.account.id)
+                retryReported = true
+            }
+            delay(REFRESH_SAVE_RETRY_DELAY_MS)
+        }
     }
+
+    private suspend fun <T : Any> withinRefreshDatabaseBudget(write: suspend () -> T): T =
+        DiagnosticPreparationDeadline.withinSynchronousAndDrain(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS, write)
+            ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "账号刷新保存超时", "refresh_save_timeout")
 
     /**
      * 记录刷新失败。若凭据在刷新期间被管理员替换，放弃本次失败结果并提示重试，
@@ -475,6 +555,9 @@ class OAuthTokenService(
         const val MAX_CONCURRENT_REFRESHES = 4
         const val MAX_CONCURRENT_DIAGNOSTIC_REFRESHES = 4
         const val MAX_DIAGNOSTIC_REFRESH_TASKS = 20
+        const val MAX_ROTATION_ACCOUNTS = 512
+        const val MAX_ROTATIONS_PER_ACCOUNT = 4
+        const val REFRESH_SAVE_RETRY_DELAY_MS = 250L
         const val DEFAULT_REFRESH_DRAIN_TIMEOUT_MS = 5_000L
         const val DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS = 10_000L
     }

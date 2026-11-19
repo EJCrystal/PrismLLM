@@ -132,7 +132,7 @@ META-INF/services/dev.soven.prismllm.plugin.sdk.DiagnosticPlugin
 </dependency>
 ```
 
-官方独立 POM 见 `extensions/connectivity-diagnostic/pom.xml`。manifest 的 `defaultPrompt` 为 required textarea、默认 `请只回复 OK`、maxLength 4000；运行 UI 使用 SDK 字段种类白名单。包中的 manifest / UI 与 SPI 实现版本必须一致，包版本独立升级；不要通过修改已安装同版本文件绕过摘要验证。构建源码 `src/build/java/PackagePlugin.java` 仅在 Maven 构建中运行，不进入安装包。
+官方独立 POM 见 `extensions/connectivity-diagnostic/pom.xml`。manifest 的 `defaultPrompt` 为 required textarea、默认 `请只回复 OK`、maxLength 4000；运行 UI 使用 SDK 字段种类白名单。每个动作必须声明规范且必填的 `model` 与 `protocol` 控件；若声明 `scope`，必填范围必须在动作声明的每个上下文中至少有一个可用值，OAuth 只能使用 `single`，非批量渠道不能使用 `all`。渠道批量动作由宿主逐目标调用，因此只要动作有 `scope` 控件就必须提供 `single`，即使该控件可选；`all` 只适用于批量渠道动作。包中的 manifest / UI 与 SPI 实现版本必须一致，包版本独立升级；不要通过修改已安装同版本文件绕过摘要验证。构建源码 `src/build/java/PackagePlugin.java` 仅在 Maven 构建中运行，不进入安装包。
 
 扩展的 `unit` 测试仅使用假的纯 SDK 上下文与 outcome，覆盖提示词优先级、限制、声明式元数据、服务注册和安全报告，不访问真实上游。依赖按实际 POM 传播：SDK → host → app，host → app；host 不再传播到 `prism-admin`。从仓库根目录可按以下顺序独立构建真实官方包，并在 host 中对该产物运行组件测试：
 

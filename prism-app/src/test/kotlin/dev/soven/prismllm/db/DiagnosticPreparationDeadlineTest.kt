@@ -11,6 +11,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.junit.jupiter.api.Tag
+import java.lang.reflect.Proxy
 import java.sql.Connection
 import java.util.Base64
 import java.util.concurrent.ArrayBlockingQueue
@@ -201,6 +202,174 @@ class DiagnosticPreparationDeadlineTest {
             allowAcquisitionToReturn.countDown()
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS), "acquisition executor did not terminate")
+        }
+    }
+
+    @Test
+    fun `caller times out during uninterruptible commit and lease stays owned through cleanup`() = runBlocking {
+        val jdbc = BlockingJdbc()
+        val waiter = async(Dispatchers.Default) {
+            DiagnosticPreparationDeadline.withinSynchronous(1_000) {
+                DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use {
+                    it.commit()
+                }
+                true
+            }
+        }
+        try {
+            assertSignalled(jdbc.commitEntered, "commit should enter the fake driver")
+            assertNull(withTimeout(3_000) { waiter.await() }, "caller must stop waiting while commit is blocked")
+            assertEquals(0, jdbc.returns.get(), "commit still owns the lease after the caller times out")
+            assertEquals(1L, jdbc.closeEntered.count)
+            assertEquals(0, jdbc.aborts.get(), "caller must never abort the owner's connection")
+
+            jdbc.allowCommit.countDown()
+            assertSignalled(jdbc.closeEntered, "owner must reach close after commit returns")
+            assertEquals(0, jdbc.returns.get(), "blocked close must retain the lease")
+            assertEquals(jdbc.originalTimeout, jdbc.networkTimeout.get(), "restore timeout before pool return")
+            jdbc.allowClose.countDown()
+            assertSignalled(jdbc.returned, "lease should return once real cleanup finishes")
+            assertEquals(1, jdbc.returns.get())
+            assertEquals(0, jdbc.aborts.get())
+            assertEquals(0, jdbc.discards.get())
+            assertTrue(jdbc.timeoutWrites.get() >= 2)
+
+            // Reusing an ordinary connection cannot be touched by any late diagnostic cancellation.
+            val ordinary = BlockingJdbc().apply { releaseAll() }
+            assertSame(ordinary.connection, DiagnosticPreparationDeadline.diagnosticConnection(ordinary.connection) {
+                ordinary.discards.incrementAndGet()
+            })
+            ordinary.connection.use { it.commit() }
+            assertEquals(0, ordinary.timeoutWrites.get(), "ordinary transactions must keep their timeout settings")
+            assertEquals(0, ordinary.aborts.get())
+        } finally {
+            jdbc.releaseAll()
+            withTimeout(3_000) { waiter.join() }
+            assertSignalled(jdbc.returned, "test must release its owned lease")
+        }
+    }
+
+    @Test
+    fun `external cancellation returns during rollback and drain waits for actual close`() = runBlocking {
+        val jdbc = BlockingJdbc()
+        val enteredOperation = CountDownLatch(1)
+        val waiter = async(Dispatchers.Default) {
+            DiagnosticPreparationDeadline.withinSynchronous(20_000) {
+                DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use {
+                    try {
+                        enteredOperation.countDown()
+                        delay(Long.MAX_VALUE)
+                    } finally {
+                        it.rollback()
+                    }
+                }
+                true
+            }
+        }
+        try {
+            assertSignalled(enteredOperation, "operation should own its lease")
+            waiter.cancel()
+            withTimeout(3_000) { waiter.join() }
+            assertTrue(waiter.isCancelled)
+            assertSignalled(jdbc.rollbackEntered, "cancellation must still execute rollback")
+            assertEquals(0, jdbc.returns.get())
+            assertEquals(0, jdbc.aborts.get())
+            assertTrue(jdbc.networkTimeout.get() in 1..1_000, "rollback needs a positive cleanup timeout")
+            jdbc.allowRollback.countDown()
+            assertSignalled(jdbc.closeEntered, "close follows rollback")
+            assertEquals(0, jdbc.returns.get())
+            jdbc.allowClose.countDown()
+            assertSignalled(jdbc.returned, "lease returns only when cleanup really finishes")
+        } finally {
+            jdbc.releaseAll()
+            withTimeout(3_000) { waiter.join() }
+        }
+
+        val drainingJdbc = BlockingJdbc()
+        val drain = async(Dispatchers.Default) {
+            DiagnosticPreparationDeadline.withinSynchronousAndDrain(1_000) {
+                DiagnosticPreparationDeadline.diagnosticConnection(drainingJdbc.connection) {
+                    drainingJdbc.discards.incrementAndGet()
+                }.use { it.commit() }
+                true
+            }
+        }
+        try {
+            assertSignalled(drainingJdbc.commitEntered, "draining operation should enter commit")
+            // An independent bounded waiter observes expiry without cancelling the draining caller.
+            assertNull(kotlinx.coroutines.withTimeoutOrNull(1_500) { drain.await() })
+            assertTrue(!drain.isCompleted, "drain must wait for the real worker, not its cancellation flag")
+            drainingJdbc.allowCommit.countDown()
+            assertSignalled(drainingJdbc.closeEntered, "drain must also cover blocked close")
+            assertTrue(!drain.isCompleted)
+            drainingJdbc.allowClose.countDown()
+            assertNull(withTimeout(3_000) { drain.await() })
+            assertSignalled(drainingJdbc.returned, "drain returns after the lease is released")
+        } finally {
+            drainingJdbc.releaseAll()
+            withTimeout(3_000) { drain.join() }
+        }
+    }
+
+    private class BlockingJdbc {
+        val originalTimeout = 7_000
+        val networkTimeout = AtomicInteger(originalTimeout)
+        val timeoutWrites = AtomicInteger()
+        val aborts = AtomicInteger()
+        val discards = AtomicInteger()
+        val returns = AtomicInteger()
+        val commitEntered = CountDownLatch(1)
+        val rollbackEntered = CountDownLatch(1)
+        val closeEntered = CountDownLatch(1)
+        val allowCommit = CountDownLatch(1)
+        val allowRollback = CountDownLatch(1)
+        val allowClose = CountDownLatch(1)
+        val returned = CountDownLatch(1)
+        val connection: Connection = Proxy.newProxyInstance(
+            Connection::class.java.classLoader,
+            arrayOf(Connection::class.java),
+        ) { proxy, method, args ->
+            when (method.name) {
+                "getNetworkTimeout" -> networkTimeout.get()
+                "setNetworkTimeout" -> {
+                    timeoutWrites.incrementAndGet()
+                    networkTimeout.set(args!![1] as Int)
+                    null
+                }
+                "commit" -> { block(commitEntered, allowCommit); null }
+                "rollback" -> { block(rollbackEntered, allowRollback); null }
+                "close" -> {
+                    block(closeEntered, allowClose)
+                    returns.incrementAndGet()
+                    returned.countDown()
+                    null
+                }
+                "abort" -> { aborts.incrementAndGet(); null }
+                "isClosed" -> returns.get() != 0
+                "equals" -> proxy === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxy)
+                "toString" -> "BlockingJdbc"
+                else -> throw UnsupportedOperationException(method.name)
+            }
+        } as Connection
+
+        fun releaseAll() {
+            allowCommit.countDown()
+            allowRollback.countDown()
+            allowClose.countDown()
+        }
+
+        private fun block(entered: CountDownLatch, release: CountDownLatch) {
+            entered.countDown()
+            val limit = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
+            while (release.count != 0L) {
+                check(System.nanoTime() < limit) { "test did not release ${Thread.currentThread().name}" }
+                try {
+                    release.await(100, TimeUnit.MILLISECONDS)
+                } catch (_: InterruptedException) {
+                    // Deliberately model a JDBC driver that ignores thread interruption.
+                }
+            }
         }
     }
 

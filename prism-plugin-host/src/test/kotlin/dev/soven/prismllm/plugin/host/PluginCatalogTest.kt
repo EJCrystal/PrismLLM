@@ -1,21 +1,28 @@
 package dev.soven.prismllm.plugin.host
 
 import dev.soven.prismllm.plugin.sdk.PluginApi
+import dev.soven.prismllm.plugin.sdk.PluginChoice
 import dev.soven.prismllm.plugin.sdk.PluginField
+import dev.soven.prismllm.plugin.sdk.PluginUiEntry
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
 import org.apache.commons.compress.archivers.zip.ZipFile
 import org.apache.commons.compress.utils.SeekableInMemoryByteChannel
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
+import java.nio.file.AccessDeniedException
 import java.nio.file.Files
+import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 @Tag("unit")
@@ -40,6 +47,42 @@ internal class PluginCatalogTest : PluginTestSupport() {
     @Test
     fun `missing deployment catalogue is an empty catalogue`() {
         assertEquals(emptyList(), PluginCatalog(catalogDirectory).items())
+    }
+
+    @Test
+    fun `a dangling catalogue symlink is rejected rather than treated as absent`(): Unit = runBlocking {
+        Files.createDirectories(catalogDirectory)
+        Files.createSymbolicLink(catalogDirectory.resolve("catalog.json"), root.resolve("missing-catalog-target.json"))
+        val catalog = PluginCatalog(catalogDirectory)
+        failure("PLUGIN_INVALID_PACKAGE") { catalog.items() }
+        failure("PLUGIN_INVALID_PACKAGE") { catalog.bootstrapPackage("example.probe") }
+    }
+
+    @Test
+    fun `a catalogue directory without search permission reports an IO error`(): Unit = runBlocking {
+        publish()
+        val permissions = try {
+            Files.getPosixFilePermissions(catalogDirectory)
+        } catch (_: UnsupportedOperationException) {
+            assumeTrue(false, "POSIX permissions are not supported")
+            return@runBlocking
+        }
+        try {
+            Files.setPosixFilePermissions(catalogDirectory, setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE))
+            val denied = try {
+                Files.readAttributes(catalogDirectory.resolve("catalog.json"), BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+                false
+            } catch (_: AccessDeniedException) {
+                true
+            }
+            assumeTrue(denied, "The process bypasses directory search permissions")
+            val catalog = PluginCatalog(catalogDirectory)
+            failure("PLUGIN_CATALOG_UNREADABLE") { catalog.items() }
+            failure("PLUGIN_CATALOG_UNREADABLE") { catalog.bootstrapPackage("example.probe") }
+            failure("PLUGIN_CATALOG_UNREADABLE") { catalog.select("example.probe", "1.0.0") }
+        } finally {
+            Files.setPosixFilePermissions(catalogDirectory, permissions)
+        }
     }
 
     @Test
@@ -88,6 +131,37 @@ internal class PluginCatalogTest : PluginTestSupport() {
     }
 
     @Test
+    fun `bootstrap validates requested versions newest first and falls back without a second selection scan`(): Unit = runBlocking {
+        val older = fixture(version = "1.8.0")
+        val newer = fixture(version = "2.0.0", apiVersion = 2)
+        val unrelated = fixture(id = "unrelated.probe", version = "9.0.0")
+        publish(unrelated, older, newer)
+        Files.write(catalogDirectory.resolve(unrelated.fileName), byteArrayOf(1))
+
+        val selected = assertNotNull(PluginCatalog(catalogDirectory).bootstrapPackage(older.manifest.id))
+        assertEquals(older.manifest.version, selected.item.manifest.version)
+        assertTrue(selected.archive.contentEquals(older.archive))
+        assertEquals(0, older.count("initialized"))
+        assertEquals(0, newer.count("initialized"))
+        assertNull(PluginCatalog(catalogDirectory).bootstrapPackage("missing.probe"))
+    }
+
+    @Test
+    fun `bootstrap preserves an actionable error when every requested candidate is unavailable`(): Unit = runBlocking {
+        val broken = fixture(version = "2.0.0")
+        val incompatible = fixture(version = "1.0.0", apiVersion = 2)
+        publish(incompatible, broken)
+        Files.write(catalogDirectory.resolve(broken.fileName), broken.archive + 0)
+
+        val error = failure("PLUGIN_INCOMPATIBLE") {
+            PluginCatalog(catalogDirectory).bootstrapPackage(broken.manifest.id)
+        }
+        assertTrue(error.message.orEmpty().contains("PLUGIN_HASH_MISMATCH"))
+        assertEquals(0, broken.count("initialized"))
+        assertEquals(0, incompatible.count("initialized"))
+    }
+
+    @Test
     fun `semantic prerelease comparison treats signed-looking identifiers as ASCII alphanumeric`() {
         assertTrue(PluginCatalog.compareVersions("1.0.0--1", "1.0.0--2") < 0)
         assertTrue(PluginCatalog.compareVersions("1.0.0-9", "1.0.0--1") < 0)
@@ -109,7 +183,7 @@ internal class PluginCatalogTest : PluginTestSupport() {
         val invalid = listOf(
             bounded.copy(id = identifier + "a"),
             bounded.copy(action = bounded.action.copy(id = identifier + "a")),
-            bounded.copy(action = bounded.action.copy(fields = listOf(PluginField(identifier + "a", "Field", "text")))),
+            bounded.copy(action = bounded.action.copy(fields = bounded.action.fields.map { if (it.key == identifier) it.copy(key = identifier + "a") else it })),
         )
         invalid.forEach { candidate -> failure("PLUGIN_INVALID_PACKAGE") { PluginValidation.descriptors(packaged.manifest, packaged.ui.copy(entries = listOf(candidate))) } }
     }
@@ -144,6 +218,47 @@ internal class PluginCatalogTest : PluginTestSupport() {
         assertFalse(Files.exists(managedDirectory))
         assertEquals(0, api.count("initialized"))
         assertEquals(0, capability.count("initialized"))
+    }
+
+    @Test
+    fun `scope choices must be executable in every declared context`(): Unit = runBlocking {
+        val packaged = fixture()
+        val channel = packaged.ui.entries.first()
+        val oauth = packaged.ui.entries.last()
+
+        fun entryWithScope(
+            entry: PluginUiEntry,
+            choices: List<String>?,
+            required: Boolean = true,
+            supportsBatch: Boolean = entry.action.supportsBatch,
+        ) = entry.copy(action = entry.action.copy(
+            supportsBatch = supportsBatch,
+            fields = entry.action.fields.filterNot { it.kind == "scope" } + if (choices == null) emptyList() else listOf(
+                PluginField("scope", "Scope", "scope", required = required, options = choices.map { PluginChoice(it, it) }),
+            ),
+        ))
+
+        fun validate(entry: PluginUiEntry) = PluginValidation.descriptors(
+            packaged.manifest, packaged.ui.copy(entries = listOf(entry)),
+        )
+
+        failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(oauth, listOf("all"))) }
+        assertEquals(null, validate(entryWithScope(oauth, listOf("single"))))
+
+        failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(channel, listOf("all"), supportsBatch = false)) }
+        failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(channel, listOf("all"))) }
+        failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(channel, listOf("all"), required = false)) }
+        assertEquals(null, validate(entryWithScope(channel, listOf("single"))))
+        assertEquals(null, validate(entryWithScope(channel, listOf("single", "all"))))
+        assertEquals(null, validate(entryWithScope(channel, null)))
+
+        val shared = entryWithScope(
+            channel.copy(placement = "plugin-page", contexts = listOf("channel", "oauth-account")), listOf("single", "all"),
+        )
+        assertEquals(null, validate(shared))
+        failure("PLUGIN_INVALID_PACKAGE") {
+            validate(entryWithScope(channel.copy(contexts = listOf("channel", "oauth-account")), listOf("all")))
+        }
     }
 
     @Test
@@ -282,22 +397,21 @@ internal class PluginCatalogTest : PluginTestSupport() {
         val actions = listOf(
             entry.action.copy(resource = "https://not-allowed.invalid"),
             entry.action.copy(resultKind = "html"),
-            entry.action.copy(fields = listOf(PluginField("prompt", "Prompt", "javascript"))),
-            entry.action.copy(fields = listOf(PluginField("endpoint", "Endpoint", "text"))),
-            entry.action.copy(fields = listOf(PluginField("chosenModel", "Model", "model"))),
-            entry.action.copy(fields = listOf(PluginField("chosenCredential", "Credential", "credential"))),
-            entry.action.copy(fields = listOf(PluginField("chosenProtocol", "Protocol", "protocol"))),
-            entry.action.copy(fields = listOf(PluginField("chosenScope", "Scope", "scope"))),
-            entry.action.copy(fields = listOf(PluginField("model", "Model", "text"))),
-            entry.action.copy(fields = listOf(PluginField("flag", "Flag", "boolean", defaultValue = JsonPrimitive("true")))),
-            entry.action.copy(fields = listOf(PluginField("count", "Count", "number", min = 2.0, max = 1.0))),
+            entry.action.copy(fields = entry.action.fields.map { if (it.key == "prompt") it.copy(kind = "javascript") else it }),
+            entry.action.copy(fields = entry.action.fields + PluginField("endpoint", "Endpoint", "text")),
+            entry.action.copy(fields = entry.action.fields + PluginField("chosenModel", "Model", "model")),
+            entry.action.copy(fields = entry.action.fields + PluginField("chosenCredential", "Credential", "credential")),
+            entry.action.copy(fields = entry.action.fields + PluginField("chosenProtocol", "Protocol", "protocol")),
+            entry.action.copy(fields = entry.action.fields + PluginField("chosenScope", "Scope", "scope", options = listOf(PluginChoice("single", "Single")))),
+            entry.action.copy(fields = entry.action.fields + PluginField("flag", "Flag", "boolean", defaultValue = JsonPrimitive("true"))),
+            entry.action.copy(fields = entry.action.fields + PluginField("count", "Count", "number", min = 2.0, max = 1.0)),
             entry.action.copy(fields = entry.action.fields.filterNot { it.key == "model" }),
             entry.action.copy(fields = entry.action.fields.map { if (it.key == "model") it.copy(required = false) else it }),
             entry.action.copy(fields = entry.action.fields.map { if (it.key == "model") it.copy(kind = "text") else it }),
             entry.action.copy(fields = entry.action.fields.filterNot { it.key == "protocol" }),
             entry.action.copy(fields = entry.action.fields.map { if (it.key == "protocol") it.copy(required = false) else it }),
             entry.action.copy(fields = entry.action.fields.map { if (it.key == "protocol") it.copy(kind = "text") else it }),
-            entry.action.copy(fields = List(33) { PluginField("field$it", "Field", "text") }),
+            entry.action.copy(fields = entry.action.fields + List(33 - entry.action.fields.size) { PluginField("field$it", "Field", "text") }),
         )
         actions.forEach { action ->
             val ui = packaged.ui.copy(entries = listOf(entry.copy(action = action)))

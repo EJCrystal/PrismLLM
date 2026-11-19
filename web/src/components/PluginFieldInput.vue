@@ -17,6 +17,7 @@ const isChoice = computed(() => ['select', 'model', 'credential', 'protocol', 's
 function update(event: Event) {
   const input = event.target as HTMLInputElement
   if (props.field.kind === 'boolean') emit('update:modelValue', input.checked)
+  else if (props.field.kind === 'number' && input.validity.badInput) emit('update:modelValue', Number.NaN)
   else if (props.field.kind === 'number') emit('update:modelValue', input.value === '' ? null : Number(input.value))
   else if (props.field.kind === 'select' && !props.field.required && input.value === '') emit('update:modelValue', null)
   else emit('update:modelValue', input.value)

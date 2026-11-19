@@ -10,6 +10,8 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.put
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -40,7 +42,7 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
     get("/plugin-catalog") {
         call.requireAdmin(app)
         call.response.headers.append("Cache-Control", "no-store")
-        call.respond(app.pluginRuntime.catalogItems())
+        call.respond(withContext(Dispatchers.IO) { app.pluginRuntime.catalogItems() })
     }
     get("/plugins") {
         call.requireAdmin(app)
@@ -63,7 +65,7 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
         val request = call.receive<PluginInstallationRequest>()
         val state = app.pluginRuntime.install(id, request.version, request.approvedPermissions) {
             if (id == CONNECTIVITY_PLUGIN_ID) {
-                buildJsonObject { put("defaultPrompt", app.modelTestSettingsRepository.load().defaultPrompt) }
+                buildJsonObject { put("defaultPrompt", app.modelTestSettingsRepository.loadInTransaction().defaultPrompt) }
             } else JsonObject(emptyMap())
         }
         call.markAdminAuditDetails(buildJsonObject {

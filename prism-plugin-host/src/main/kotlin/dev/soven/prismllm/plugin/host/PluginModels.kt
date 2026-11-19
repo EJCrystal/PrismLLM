@@ -39,6 +39,16 @@ interface PluginInstallationStore {
     suspend fun list(): List<PluginInstallation>
     suspend fun find(id: String): PluginInstallation?
     suspend fun insertIfAbsent(installation: PluginInstallation): Boolean
+
+    /** Persistent stores coordinate the lazy seed read and insert with legacy settings writers. */
+    suspend fun getOrCreate(id: String, create: suspend () -> PluginInstallation): PluginInstallation {
+        find(id)?.let { return it }
+        val installation = create()
+        check(installation.id == id)
+        if (insertIfAbsent(installation)) return installation
+        return find(id) ?: throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
+    }
+
     suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean
 }
 

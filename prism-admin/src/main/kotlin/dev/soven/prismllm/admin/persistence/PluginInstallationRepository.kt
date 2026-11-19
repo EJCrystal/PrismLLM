@@ -12,6 +12,7 @@ import org.jetbrains.exposed.v1.core.statements.UpdateBuilder
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.update
 
@@ -35,12 +36,24 @@ class PluginInstallationRepository(private val database: Database) {
         PluginInstallations.selectAll().map(::toRecord)
     }
 
-    suspend fun find(id: String): PluginInstallationRecord? = suspendTransaction(database) {
-        PluginInstallations.selectAll().where { PluginInstallations.id eq id }.singleOrNull()?.let(::toRecord)
+    suspend fun find(id: String): PluginInstallationRecord? = suspendTransaction(database) { findInTransaction(id) }
+
+    fun findInTransaction(id: String): PluginInstallationRecord? {
+        requireTransaction()
+        return PluginInstallations.selectAll().where { PluginInstallations.id eq id }.singleOrNull()?.let(::toRecord)
     }
 
     suspend fun insertIfAbsent(installation: PluginInstallationRecord): Boolean = suspendTransaction(database) {
-        PluginInstallations.insertIgnore { write(it, installation) }.insertedCount == 1
+        insertIfAbsentInTransaction(installation)
+    }
+
+    fun insertIfAbsentInTransaction(installation: PluginInstallationRecord): Boolean {
+        requireTransaction()
+        return PluginInstallations.insertIgnore { write(it, installation) }.insertedCount == 1
+    }
+
+    private fun requireTransaction() {
+        check(TransactionManager.current().db === database) { "plugin installation transaction database mismatch" }
     }
 
     suspend fun save(installation: PluginInstallationRecord, expectedRevision: Long): Boolean = suspendTransaction(database) {

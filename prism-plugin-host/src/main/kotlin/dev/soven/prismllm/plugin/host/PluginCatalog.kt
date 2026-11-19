@@ -6,7 +6,9 @@ import kotlinx.serialization.Serializable
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
+import java.nio.file.NoSuchFileException
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
 
 /** Only deployment-owned, hash-pinned local packages are selectable. No class loading occurs here. */
 class PluginCatalog(catalogDirectory: Path) {
@@ -35,23 +37,38 @@ class PluginCatalog(catalogDirectory: Path) {
         validate(reference).also { requireCompatible(it.item) }
     }
 
-    internal fun bootstrapPackage(id: String): ValidatedPluginPackage? {
-        val packages = items().filter { it.manifest.id == id }
-        val candidate = packages.filter { it.compatible }.maxWithOrNull { a, b -> compareVersions(a.manifest.version, b.manifest.version) }
-        if (candidate == null) {
-            // Preserve an actionable bootstrap failure when the optional package exists but none
-            // of its versions can be admitted. An absent package remains a normal no-op.
-            packages.maxWithOrNull { a, b -> compareVersions(a.manifest.version, b.manifest.version) }?.let { requireCompatible(it) }
-            return null
+    internal fun bootstrapPackage(id: String): ValidatedPluginPackage? = io {
+        val candidates = references().filter { it.id == id }
+            .sortedWith { a, b -> compareVersions(b.version, a.version) }
+        var firstFailure: PluginHostException? = null
+        for (reference in candidates) {
+            try {
+                val candidate = io { validate(reference) }
+                requireCompatible(candidate.item)
+                return@io candidate
+            } catch (error: PluginHostException) {
+                // A broken or incompatible newer version must not hide a usable older version.
+                // If none works, preserve the highest version's actionable failure as before.
+                if (firstFailure == null) {
+                    firstFailure = if (error.code == "PLUGIN_INCOMPATIBLE") error else PluginHostException(
+                        "PLUGIN_INCOMPATIBLE", "${error.code}: ${error.message}".take(4_000),
+                    )
+                }
+            }
         }
-        return select(id, candidate.manifest.version)
+        firstFailure?.let { throw it }
+        null // An absent optional plugin is a normal no-op.
     }
 
     private fun references(): List<CatalogReference> {
         val catalogPath = directory.resolve("catalog.json")
         PluginPackages.ensureNoLinks(directory)
         PluginValidation.requireData(!Files.exists(directory, NOFOLLOW_LINKS) || Files.isDirectory(directory, NOFOLLOW_LINKS), "Catalogue path must be a directory")
-        if (!Files.exists(catalogPath, NOFOLLOW_LINKS)) return emptyList()
+        try {
+            Files.readAttributes(catalogPath, BasicFileAttributes::class.java, NOFOLLOW_LINKS)
+        } catch (_: NoSuchFileException) {
+            return emptyList()
+        }
         val document = PluginValidation.decode<CatalogDocument>(PluginPackages.readFile(catalogPath, PluginValidation.MAX_CATALOG_BYTES), "catalogue")
         PluginValidation.requireData(document.schemaVersion == 1, "Unsupported catalogue schema version")
         PluginValidation.requireData(document.packages.size <= PluginValidation.MAX_PACKAGES, "Too many catalogue packages")

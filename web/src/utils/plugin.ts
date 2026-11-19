@@ -254,6 +254,13 @@ function entry(value: unknown): PluginUiEntry {
   requireContract(parsed.placement !== 'channel-tests' || (contexts.length === 1 && contexts[0] === 'channel'), '上下文')
   requireContract(parsed.placement !== 'oauth-account-tests' || (contexts.length === 1 && contexts[0] === 'oauth-account'), '上下文')
   requireContract(!parsed.action.supportsBatch || contexts.includes('channel'), '批量范围')
+  const scope = parsed.action.fields.find(item => item.kind === 'scope')
+  if (scope) {
+    const scopeOptions = scope.options.map(option => option.value)
+    requireContract(!parsed.action.supportsBatch || scopeOptions.includes('single'), '批量范围')
+    requireContract(!scope.required || scopeOptions.includes('single') ||
+      (contexts.includes('channel') && parsed.action.supportsBatch && scopeOptions.includes('all')), '范围')
+  }
   if (contexts.includes('oauth-account')) {
     requireContract(!parsed.action.supportsBatch && !parsed.action.fields.some(item => item.kind === 'credential'), '账号控件')
     requireContract(!parsed.action.fields.some(item => item.kind === 'scope' && item.options.some(option => option.value === 'all')), '账号范围')

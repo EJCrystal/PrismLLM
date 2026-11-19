@@ -2,6 +2,18 @@ package dev.soven.prismllm.proxy.codeassist
 
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
+import dev.soven.prismllm.db.DiagnosticPreparationDeadline
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
+import io.ktor.http.HttpHeaders
+import io.ktor.http.headersOf
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withContext
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.test.assertNotNull
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
@@ -412,6 +424,81 @@ class CodeAssistProjectResolverTest {
         }
     }
 
+    @Test
+    fun `diagnostic context read timeout does not continue discovery after the database returns`() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val exited = CountDownLatch(1)
+        val requests = AtomicInteger()
+        val accounts = FakeAccounts(AtomicReference(), beforeRead = {
+            entered.countDown()
+            try {
+                assertTrue(release.await(5, TimeUnit.SECONDS))
+            } finally {
+                exited.countDown()
+            }
+        })
+        HttpClient(MockEngine {
+            requests.incrementAndGet()
+            respond("""{"cloudaicompanionProject":"proj-1"}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(accounts, client)
+            try {
+                val caller = async(Dispatchers.Default) {
+                    runCatching {
+                        resolver.contextForDiagnostic(account(), "token", null, DiagnosticPreparationDeadline.start(500))
+                    }
+                }
+                assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+                val failure = withTimeout(3_000) { caller.await() }.exceptionOrNull()
+                assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
+                assertEquals(0, requests.get())
+            } finally {
+                release.countDown()
+                assertTrue(withContext(Dispatchers.IO) { exited.await(5, TimeUnit.SECONDS) })
+            }
+            assertEquals(0, requests.get(), "late database completion must not start discovery")
+        }
+    }
+
+    @Test
+    fun `diagnostic context write timeout returns while its database worker still owns cleanup`() = runBlocking {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val exited = CountDownLatch(1)
+        val requests = AtomicInteger()
+        val accounts = FakeAccounts(AtomicReference(), beforeWrite = {
+            entered.countDown()
+            try {
+                assertTrue(release.await(5, TimeUnit.SECONDS))
+            } finally {
+                exited.countDown()
+            }
+        })
+        HttpClient(MockEngine {
+            requests.incrementAndGet()
+            respond("""{"cloudaicompanionProject":"proj-1"}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(accounts, client)
+            try {
+                val caller = async(Dispatchers.Default) {
+                    runCatching {
+                        resolver.contextForDiagnostic(account(), "token", null, DiagnosticPreparationDeadline.start(500))
+                    }
+                }
+                assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+                val failure = withTimeout(3_000) { caller.await() }.exceptionOrNull()
+                assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
+                assertEquals(1L, exited.count, "the caller must return before the blocked write finishes")
+                assertEquals(1, requests.get())
+            } finally {
+                release.countDown()
+                assertTrue(withContext(Dispatchers.IO) { exited.await(5, TimeUnit.SECONDS) })
+            }
+            assertEquals(1, requests.get())
+        }
+    }
+
     private fun account(): OAuthAccountRecord = OAuthAccountRecord(
         id = "account-1",
         name = "antigravity",
@@ -433,9 +520,13 @@ class CodeAssistProjectResolverTest {
     /** 测试用内存实现：替换 repository 的缓存读写，不触碰真实数据库。 */
     private class FakeAccounts(
         private val saved: AtomicReference<OAuthAccountRepository.UpstreamContext?>,
+        private val beforeRead: () -> Unit = {},
+        private val beforeWrite: () -> Unit = {},
     ) : OAuthAccountRepository(unusedDatabase(), ProviderChannelLookup { emptySet() }) {
-        override suspend fun loadUpstreamContext(accountId: String): OAuthAccountRepository.UpstreamContext? =
-            saved.get()
+        override suspend fun loadUpstreamContext(accountId: String): OAuthAccountRepository.UpstreamContext? {
+            beforeRead()
+            return saved.get()
+        }
 
         override suspend fun persistUpstreamContext(
             accountId: String,
@@ -443,6 +534,7 @@ class CodeAssistProjectResolverTest {
             tier: String?,
             checkedAt: Long,
         ): Boolean {
+            beforeWrite()
             saved.set(OAuthAccountRepository.UpstreamContext(project, tier, checkedAt))
             return true
         }

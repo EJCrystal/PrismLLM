@@ -9,8 +9,15 @@ const props = defineProps<{ execution: PluginExecution }>()
 const result = computed(() => pluginExecutionToModelTestResult(props.execution))
 const error = computed(() => {
   const view = modelTestErrorView(result.value)
-  if (view && props.execution.target.kind === 'channel' && props.execution.outcome.statusCode === 401) {
+  if (!view || props.execution.target.kind !== 'channel') return view
+  if (props.execution.outcome.statusCode === 401) {
     return { ...view, title: '渠道凭据认证失败', hint: '请检查当前选中的渠道凭据是否有效；必要时替换该凭据后重试。' }
+  }
+  if (props.execution.outcome.statusCode === 403) {
+    return { ...view, title: '渠道凭据无权调用这个模型', hint: '请检查所选凭据的上游权限及模型授权范围。' }
+  }
+  if (props.execution.outcome.statusCode === 404) {
+    return { ...view, title: '渠道未找到这个模型', hint: '请检查渠道模型配置，并确认上游已提供该模型。' }
   }
   return view
 })

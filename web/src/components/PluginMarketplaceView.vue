@@ -22,11 +22,17 @@ const busy = ref(false)
 const approvedPermissions = ref<string[]>([])
 const configuration = reactive<PluginValues>({})
 const originalConfiguration = ref('{}')
+const draftOwnerId = ref('')
+const draftInstalledVersion = ref<string | null>(null)
+const draftFields = ref<PluginRuntimeState['configurationFields']>([])
 const diagnosticEntryId = ref('')
 const invalidDiagnosticKey = ref('')
 const diagnosticGeneration = ref(0)
+const diagnosticRechecking = ref(false)
+const diagnosticRecheckError = ref('')
 const guard = createLatestRequestGuard()
 let controller: AbortController | null = null
+let diagnosticRecheckToken = 0
 let disposed = false
 let diagnosticTrigger: HTMLButtonElement | null = null
 
@@ -41,61 +47,109 @@ const selectedCatalog = computed(() => versions.value.find((item) => item.manife
 const selectedName = computed(() => selectedState.value?.displayName || selectedCatalog.value?.manifest.displayName || selectedId.value)
 const permissions = computed(() => selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
 const fullGrant = computed(() => permissions.value.every((permission) => approvedPermissions.value.includes(permission)))
-const configurationFields = computed(() => selectedState.value?.configurationFields ?? [])
 const dirty = computed(() => JSON.stringify(configuration) !== originalConfiguration.value)
+const draftConflict = computed(() => !!draftOwnerId.value && (
+  draftOwnerId.value !== selectedId.value || draftInstalledVersion.value !== (selectedState.value?.installedVersion ?? null)
+))
+const configurationFields = computed(() => draftFields.value)
 const configurationError = computed(() => pluginFormError(configurationFields.value, configuration))
 const canInstall = computed(() => !!selectedCatalog.value?.compatible && fullGrant.value && !busy.value && (!selectedState.value?.installed || selectedVersion.value !== selectedState.value.installedVersion))
 const currentVersionSelected = computed(() => !selectedCatalog.value || selectedCatalog.value.manifest.version === selectedState.value?.installedVersion)
 const pageEntries = computed(() => selectedState.value?.admissionEnabled ? selectedState.value.activeUi?.entries.filter((entry) => entry.placement === 'plugin-page') ?? [] : [])
 const diagnosticContribution = computed<PluginUiContribution | null>(() => {
+  if (diagnosticRechecking.value || invalidDiagnosticKey.value) return null
   const entry = pageEntries.value.find((item) => item.id === diagnosticEntryId.value)
   const state = selectedState.value
-  const key = entry && state?.activeVersion ? `${state.id}:${state.activeVersion}:${entry.id}` : ''
-  return entry && state?.activeVersion && key !== invalidDiagnosticKey.value ? { pluginId: state.id, activeVersion: state.activeVersion, entry } : null
+  return entry && state?.activeVersion ? { pluginId: state.id, activeVersion: state.activeVersion, entry } : null
 })
 
 function errorMessage(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
 
 function resetConfiguration() {
+  const current = selectedState.value
+  draftOwnerId.value = selectedId.value
+  draftInstalledVersion.value = current?.installedVersion ?? null
+  draftFields.value = current?.configurationFields.map((field) => ({ ...field, options: field.options.map((option) => ({ ...option })) })) ?? []
   for (const key of Object.keys(configuration)) delete configuration[key]
-  Object.assign(configuration, pluginFieldDefaults(configurationFields.value, selectedState.value?.configuration ?? {}, false))
+  Object.assign(configuration, pluginFieldDefaults(draftFields.value, current?.configuration ?? {}, false))
   originalConfiguration.value = JSON.stringify(configuration)
 }
 
+function discardVersionConflict() {
+  if (busy.value || !draftConflict.value) return
+  syncVersion()
+}
+
 function canLeave(): boolean {
-  return !busy.value && (!dirty.value || window.confirm('插件配置尚未保存，确定放弃这些修改吗？'))
+  return !busy.value && (!(dirty.value || draftConflict.value) || window.confirm('插件配置尚未保存，确定放弃这些修改吗？'))
 }
 
 defineExpose({ canLeave })
 
 function selectPlugin(id: string) {
   if (id === selectedId.value || !canLeave()) return
+  invalidateDiagnosticRecheck()
   selectedId.value = id
   diagnosticEntryId.value = ''
 }
 
+function invalidateDiagnosticRecheck() {
+  diagnosticRecheckToken++
+  diagnosticRechecking.value = false
+}
+
 function openDiagnostic(entryId: string, event: MouseEvent) {
+  invalidateDiagnosticRecheck()
   diagnosticTrigger = event.currentTarget as HTMLButtonElement
   invalidDiagnosticKey.value = ''
+  diagnosticRecheckError.value = ''
   diagnosticGeneration.value++
   diagnosticEntryId.value = entryId
 }
 
 function markDiagnosticUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
+  const current = diagnosticContribution.value
+  if (current?.pluginId !== value.pluginId || current.activeVersion !== value.activeVersion || current.entry.id !== value.entryId) return
   invalidDiagnosticKey.value = `${value.pluginId}:${value.activeVersion}:${value.entryId}`
+  diagnosticRecheckError.value = ''
 }
 
-function recheckDiagnostic() {
-  invalidDiagnosticKey.value = ''
-  diagnosticGeneration.value++
+async function recheckDiagnostic() {
+  if (busy.value || diagnosticRechecking.value || !invalidDiagnosticKey.value || !diagnosticEntryId.value) return
+  const pluginId = selectedId.value
+  const entryId = diagnosticEntryId.value
+  const invalidKey = invalidDiagnosticKey.value
+  const token = ++diagnosticRecheckToken
+  diagnosticRechecking.value = true
+  diagnosticRecheckError.value = ''
+  try {
+    const refreshed = await load()
+    if (disposed || token !== diagnosticRecheckToken || selectedId.value !== pluginId ||
+      diagnosticEntryId.value !== entryId || invalidDiagnosticKey.value !== invalidKey) return
+    if (!refreshed) {
+      diagnosticRecheckError.value = loadError.value || '入口状态刷新未完成，请重新检查。'
+      return
+    }
+    const entry = pageEntries.value.find((item) => item.id === entryId && item.contexts.includes('channel'))
+    if (!selectedState.value?.activeVersion || !entry) {
+      diagnosticRecheckError.value = '刷新后当前生效版本的入口已不可用，弹窗保持关闭。'
+      return
+    }
+    diagnosticGeneration.value++
+    invalidDiagnosticKey.value = ''
+  } finally {
+    if (!disposed && token === diagnosticRecheckToken) diagnosticRechecking.value = false
+  }
 }
 
-async function closeDiagnostic() {
+function closeDiagnostic() {
+  invalidateDiagnosticRecheck()
   const trigger = diagnosticTrigger
   diagnosticTrigger = null
   diagnosticEntryId.value = ''
-  await nextTick()
-  if (!disposed && trigger?.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true })
+  void nextTick(() => {
+    if (!disposed && trigger?.isConnected && !trigger.disabled) trigger.focus({ preventScroll: true })
+  })
 }
 
 function syncVersion() {
@@ -112,8 +166,8 @@ function cancelListRequest() {
   loading.value = false
 }
 
-async function load(preserveDraft = true) {
-  if (busy.value || disposed) return
+async function load(preserveDraft = true): Promise<boolean> {
+  if (busy.value || disposed) return false
   controller?.abort()
   const current = new AbortController()
   controller = current
@@ -124,18 +178,20 @@ async function load(preserveDraft = true) {
     const result = await guard.run(() => Promise.all([
       api.listPluginCatalog({ signal: current.signal }), api.listPlugins({ signal: current.signal }),
     ]))
-    if (!result.isLatest || disposed) return
-    const hadDraft = preserveDraft && dirty.value
+    if (!result.isLatest || disposed || current.signal.aborted) return false
+    const hadDraft = preserveDraft && (dirty.value || draftConflict.value)
     catalog.value = result.value[0]
     states.value = result.value[1]
     if (!selectedId.value) selectedId.value = items.value[0]?.id ?? ''
     if (!hadDraft) syncVersion()
     settled = true
+    return true
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
       loadError.value = errorMessage(cause)
       settled = true
     }
+    return false
   } finally {
     if (settled) loading.value = false
     if (controller === current) controller = null
@@ -181,7 +237,7 @@ function toggleEnabled() {
 
 function saveConfiguration() {
   const state = selectedState.value
-  if (!state || configurationError.value || busy.value || !dirty.value) return
+  if (!state || draftOwnerId.value !== state.id || draftInstalledVersion.value !== state.installedVersion || draftConflict.value || configurationError.value || busy.value || !dirty.value) return
   const values = { ...configuration }
   void mutate(() => api.configurePlugin(state.id, { values }), '插件配置已保存。', true, false)
 }
@@ -244,11 +300,12 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
             <button v-if="selectedState?.installed" type="button" class="button ghost danger-text" :disabled="busy" @click="uninstall">卸载</button>
           </div>
         </section>
-        <section v-if="configurationFields.length" class="plugin-market-section">
-          <h3>插件配置<span class="muted small"> · 安装选择 {{ selectedState?.installedVersion }}</span></h3>
+        <section v-if="configurationFields.length || draftConflict" class="plugin-market-section">
+          <h3>插件配置<span class="muted small"> · 草稿归属 {{ draftOwnerId || selectedId }} · 安装选择 {{ draftInstalledVersion ?? '无' }}</span></h3>
+          <p v-if="draftConflict" class="callout warning" role="alert">当前配置草稿属于 {{ draftOwnerId }} 安装版本 {{ draftInstalledVersion ?? '无' }}；当前安装选择为 {{ selectedId }} {{ selectedState?.installedVersion ?? '无' }}。请放弃旧草稿后载入当前配置，不能将旧版本草稿保存到新版本。</p>
           <p v-if="selectedState?.activeVersion && selectedState.activeVersion !== selectedState.installedVersion" class="muted small">这里保存待生效版本的配置；当前运行的旧版本继续使用自己的配置快照。</p>
-          <form class="plugin-market-config" @submit.prevent="saveConfiguration"><PluginFieldInput v-for="field in configurationFields" :key="field.key" :field="field" v-model="configuration[field.key]" :disabled="busy" />
-            <small v-if="configurationError" class="danger-text" role="status">{{ configurationError }}</small><div class="plugin-market-actions"><button type="submit" class="button primary" :disabled="busy || !dirty || !!configurationError">保存配置</button><button type="button" class="button ghost" :disabled="busy || !dirty" @click="resetConfiguration">撤销修改</button></div></form>
+          <form class="plugin-market-config" @submit.prevent="saveConfiguration"><PluginFieldInput v-for="field in configurationFields" :key="field.key" :field="field" v-model="configuration[field.key]" :disabled="busy || draftConflict" />
+            <small v-if="configurationError" class="danger-text" role="status">{{ configurationError }}</small><div class="plugin-market-actions"><button type="submit" class="button primary" :disabled="busy || draftConflict || !dirty || !!configurationError">保存配置</button><button v-if="draftConflict" type="button" class="button ghost" :disabled="busy" @click="discardVersionConflict">放弃旧草稿并载入当前配置</button><button v-else type="button" class="button ghost" :disabled="busy || !dirty" @click="resetConfiguration">撤销修改</button></div></form>
         </section>
         <section v-if="pageEntries.length" class="plugin-market-section"><h3>运行诊断<span class="muted small"> · 当前生效 {{ selectedState?.activeVersion }}</span></h3>
           <div class="plugin-market-actions"><template v-for="entry in pageEntries" :key="entry.id"><button v-if="entry.contexts.includes('channel')" type="button" class="button" :disabled="busy" @click="openDiagnostic(entry.id, $event)"><Icon :name="entry.icon" :size="16" />{{ entry.label }}</button><small v-else class="muted">{{ entry.label }}请从订阅账号页面打开。</small></template></div>
@@ -257,7 +314,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
       <TestEmptyState v-else icon="layers" title="选择一个插件" description="从清单查看版本、能力授权和配置。安装不代表当前进程已经加载。" />
     </div>
     <Modal v-if="diagnosticContribution" :key="diagnosticGeneration" :title="diagnosticContribution.entry.label" full :body-scrollable="false" @close="closeDiagnostic"><PluginDiagnosticHost :contribution="diagnosticContribution" @unavailable="markDiagnosticUnavailable" /></Modal>
-    <p v-else-if="diagnosticEntryId && invalidDiagnosticKey" class="callout danger" role="alert">此生效版本的诊断入口已不可用。<button type="button" class="button ghost" @click="recheckDiagnostic">重新检查</button>或关闭弹窗后重试。</p>
+    <p v-else-if="diagnosticEntryId && (invalidDiagnosticKey || diagnosticRecheckError)" class="callout danger" role="alert">{{ diagnosticRecheckError || '此生效版本的诊断入口已不可用。' }}<button v-if="invalidDiagnosticKey" type="button" class="button ghost" :disabled="busy || diagnosticRechecking" @click="recheckDiagnostic">{{ diagnosticRechecking ? '正在检查…' : '重新检查' }}</button>或关闭弹窗后重试。</p>
   </section>
 </template>
 

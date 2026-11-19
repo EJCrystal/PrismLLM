@@ -38,6 +38,7 @@ interface TestRow {
   execution: PluginExecution | null
   error: string
   waitingStopped: boolean
+  skipped: boolean
 }
 
 const targets = ref<ModelTestTarget[]>([])
@@ -64,12 +65,24 @@ const contextKey = computed(() => JSON.stringify([
   props.context?.kind, props.context?.id, props.accountModels, props.accountProtocols, props.initialModel,
 ]))
 const fields = computed(() => props.contribution.entry.action.fields)
+const protocolField = computed(() => fields.value.find((field) => field.kind === 'protocol'))
 const selectedTarget = computed(() => targets.value.find((target) => modelTestTargetKey(target.channelId, target.model) === selectedTargetKey.value))
 const isAccount = computed(() => props.context?.kind === 'oauth-account')
 const batch = computed(() => form.scope === 'all' && props.contribution.entry.action.supportsBatch && !isAccount.value)
 const defaultValues = computed(() => pluginFieldDefaults(fields.value, state.value?.activeConfiguration ?? {}, true))
 const formError = computed(() => pluginFormError(fields.value, form))
-const canRun = computed(() => !loading.value && !loadError.value && !running.value && !formError.value && targets.value.length > 0 && !!selectedTarget.value && !!form.protocol)
+
+function protocolsFor(target: ModelTestTarget | undefined): string[] {
+  const declared = protocolField.value?.options.map((choice) => choice.value) ?? []
+  return (target?.protocols ?? []).filter((protocol) => !declared.length || declared.includes(protocol))
+}
+
+const availableProtocols = computed(() => {
+  const choices = batch.value ? targets.value.flatMap((target) => protocolsFor(target)) : protocolsFor(selectedTarget.value)
+  return [...new Set(choices)]
+})
+const canRun = computed(() => !loading.value && !loadError.value && !running.value && !formError.value &&
+  targets.value.length > 0 && !!selectedTarget.value && availableProtocols.value.length > 0 && !!form.protocol)
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
@@ -88,7 +101,7 @@ function notifyUnavailable() {
 function syncSelection() {
   const target = selectedTarget.value
   const choices = target?.credentials ?? []
-  const protocols = target?.protocols ?? []
+  const protocols = availableProtocols.value
   form.model = target?.model ?? ''
   if (fields.value.some((field) => field.kind === 'credential')) {
     if (!choices.some((choice) => choice.id === form.keyId)) form.keyId = choices[0]?.id ?? ''
@@ -106,7 +119,7 @@ function fieldOptions(field: PluginField): PluginChoice[] | undefined {
     label: props.context ? target.model : `${target.model} · ${target.channelName}`,
   }))
   if (field.kind === 'credential') return (selectedTarget.value?.credentials ?? []).map((credential) => ({ value: credential.id, label: credential.name }))
-  if (field.kind === 'protocol') return (selectedTarget.value?.protocols ?? []).map((protocol) => ({ value: protocol, label: modelTestProtocolLabel(protocol) }))
+  if (field.kind === 'protocol') return availableProtocols.value.map((protocol) => ({ value: protocol, label: modelTestProtocolLabel(protocol) }))
   if (field.kind === 'scope') return field.options.filter((choice) => !isAccount.value || choice.value === 'single').map((choice) => ({
     ...choice, label: choice.value === 'all' ? `${choice.label}（${targets.value.length}）` : choice.label,
   }))
@@ -195,16 +208,18 @@ async function load(reset = true) {
 function createRow(target: ModelTestTarget, values: PluginValues): TestRow {
   const credential = target.credentials.find((choice) => choice.id === values.keyId) ?? target.credentials[0]!
   const requestedProtocol = String(values.protocol ?? '')
-  const protocol = target.protocols.find((choice) => choice === requestedProtocol) ?? target.protocols[0]!
+  const protocols = protocolsFor(target)
+  const protocol = protocols.find((choice) => choice === requestedProtocol) ?? protocols[0] ?? ''
   const context: PluginInvocationContext = { kind: props.context?.kind ?? 'channel', id: props.context?.id ?? target.channelId }
   const rowValues: PluginValues = { ...values, model: target.model, protocol }
   if (fields.value.some((field) => field.kind === 'credential')) rowValues.keyId = credential.id
   // 批量编排留在浏览器；每次调用依然绑定一个目标。
   if (fields.value.some((field) => field.kind === 'scope')) rowValues.scope = 'single'
+  const skipped = !protocol
   return {
     key: modelTestTargetKey(target.channelId, target.model), context, model: target.model,
     keyId: credential.id, keyName: credential.name, protocol, values: rowValues,
-    running: false, execution: null, error: '', waitingStopped: false,
+    running: false, execution: null, error: skipped ? '未发送：该目标与诊断协议没有交集。' : '', waitingStopped: false, skipped,
   }
 }
 
@@ -214,11 +229,18 @@ async function run() {
   const pluginId = props.contribution.pluginId
   const version = props.contribution.activeVersion
   const actionId = props.contribution.entry.action.id
+  const entryId = props.contribution.entry.id
+  const hasCredential = fields.value.some((field) => field.kind === 'credential')
   const all = batch.value
   const values: PluginValues = Object.fromEntries(fields.value.map((field) => [field.key, form[field.key] ?? null]))
   const chosen = (all ? targets.value : [selectedTarget.value!]).map((target) => ({
     ...target, protocols: [...target.protocols], credentials: target.credentials.map((credential) => ({ ...credential })),
   }))
+  const requestRows = chosen.map((target) => {
+    const targetValues = { ...values }
+    if (all && hasCredential) targetValues.keyId = target.credentials[0]!.id
+    return createRow(target, targetValues)
+  })
   const controller = new AbortController()
   runController = controller
   running.value = true
@@ -230,18 +252,14 @@ async function run() {
     const currentState = await api.getPlugin(pluginId, { signal: controller.signal })
     if (!isCurrent()) return
     if (!currentState.admissionEnabled || currentState.activeVersion !== version ||
-      !currentState.activeUi?.entries.some((entry) => entry.id === props.contribution.entry.id)) {
+      !currentState.activeUi?.entries.some((entry) => entry.id === entryId)) {
       notifyUnavailable()
       throw new Error('插件已停用、生效版本已改变或入口已失效，请重新打开诊断入口。')
     }
     state.value = currentState
-    rows.value = chosen.map((target) => {
-      const targetValues = { ...values }
-      if (all && fields.value.some((field) => field.kind === 'credential')) targetValues.keyId = target.credentials[0]!.id
-      return createRow(target, targetValues)
-    })
+    rows.value = requestRows
     // 使用响应式代理更新批量进度，而不是修改赋值前的原始对象。
-    const queue = [...rows.value]
+    const queue = rows.value.filter((row) => !row.skipped)
     workbench.value?.showResults()
     const workers = Array.from({ length: Math.min(2, queue.length) }, async () => {
       while (queue.length && isCurrent()) {
@@ -255,7 +273,7 @@ async function run() {
           if (execution.pluginId !== pluginId || execution.activeVersion !== version ||
             execution.target.kind !== row.context.kind || execution.target.id !== row.context.id ||
             execution.target.model !== row.model || execution.target.protocol !== row.protocol ||
-            (row.context.kind === 'channel' && fields.value.some((field) => field.kind === 'credential') && execution.target.credentialId !== row.keyId)) {
+            (row.context.kind === 'channel' && hasCredential && execution.target.credentialId !== row.keyId)) {
             throw new Error('插件响应与本次检测目标不一致，已丢弃。')
           }
           row.execution = execution
@@ -274,9 +292,11 @@ async function run() {
     })
     await Promise.all(workers)
     if (!isCurrent()) return
-    const failed = rows.value.filter((row) => row.error || !row.execution?.outcome.success).length
-    if (all) notify(`${rows.value.length - failed} 个探测成功，${failed} 个失败`, failed ? 'warning' : 'success')
-    else {
+    const failed = rows.value.filter((row) => row.skipped || row.error || !row.execution?.outcome.success).length
+    if (all) {
+      const skipped = rows.value.filter((row) => row.skipped).length
+      notify(`${rows.value.length - failed} 个探测成功，${failed - skipped} 个失败${skipped ? `，${skipped} 个未发送` : ''}`, failed ? 'warning' : 'success')
+    } else {
       const row = rows.value[0]!
       notify(row.error || row.execution?.report.title || '诊断结束', row.error || !row.execution?.outcome.success ? 'error' : 'success')
     }
@@ -293,7 +313,7 @@ async function run() {
 }
 
 function refreshState() { if (active) void load(false) }
-watch(selectedTargetKey, syncSelection)
+watch([selectedTargetKey, availableProtocols], syncSelection)
 watch(contextKey, () => {
   if (!active) contextChangedWhileDeactivated = true
   stopWaiting()
@@ -378,8 +398,8 @@ onBeforeUnmount(() => {
         <template v-for="row in rows" :key="row.key">
           <PluginDiagnosticResult v-if="row.execution" :execution="row.execution" />
           <article v-else class="panel plugin-diagnostic-pending">
-            <header><strong>{{ row.model }}</strong><span class="badge" :class="row.error && !row.waitingStopped ? 'danger' : 'neutral'">{{ row.running ? '诊断中' : row.error ? (row.waitingStopped ? '已停止等待' : '诊断失败') : '等待中' }}</span></header>
-            <small class="muted">{{ row.keyName }} · {{ modelTestProtocolLabel(row.protocol) }}</small>
+            <header><strong>{{ row.model }}</strong><span class="badge" :class="row.skipped ? 'neutral' : row.error && !row.waitingStopped ? 'danger' : 'neutral'">{{ row.skipped ? '未发送' : row.running ? '诊断中' : row.error ? (row.waitingStopped ? '已停止等待' : '诊断失败') : '等待中' }}</span></header>
+            <small class="muted">{{ row.keyName }} · {{ row.protocol ? modelTestProtocolLabel(row.protocol) : '无协议交集' }}</small>
             <p v-if="row.error" :class="row.waitingStopped ? 'muted' : 'danger-text'">{{ row.error }}</p>
           </article>
         </template>

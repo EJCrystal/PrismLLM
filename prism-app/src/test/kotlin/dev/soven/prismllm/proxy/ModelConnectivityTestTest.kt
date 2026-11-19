@@ -10,16 +10,20 @@ import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.protocol.extractReportedModel
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.KeyCredentialResolver
+import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
+import dev.soven.prismllm.shared.domain.UpstreamProtocolOverrides
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.shared.domain.Usage
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
+import io.ktor.http.content.OutgoingContent
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
@@ -489,6 +493,182 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun channel_diagnostics_preserve_model_and_prompt_for_every_protocol_while_honoring_safe_settings() = runBlocking {
+        for (protocol in GatewayProtocol.entries) {
+            val captured = captureDiagnosticRequest(protocol)
+            assertIsolatedDiagnosticRequest(captured, protocol, provider = null)
+        }
+    }
+
+    @Test
+    fun oauth_diagnostics_preserve_inputs_and_authorization_for_responses_and_antigravity_envelope() = runBlocking {
+        val oauthCases = listOf(
+            OAuthProvider.CHATGPT to GatewayProtocol.RESPONSES,
+            OAuthProvider.ANTIGRAVITY to GatewayProtocol.GEMINI,
+        )
+        for ((provider, protocol) in oauthCases) {
+            val captured = captureDiagnosticRequest(protocol, provider)
+            assertIsolatedDiagnosticRequest(captured, protocol, provider)
+        }
+    }
+
+    private fun assertIsolatedDiagnosticRequest(
+        captured: CapturedDiagnosticRequest,
+        protocol: GatewayProtocol,
+        provider: OAuthProvider?,
+    ) {
+        val payload = if (provider == OAuthProvider.ANTIGRAVITY) captured.body["request"]!!.jsonObject else captured.body
+        val prompt = when (protocol) {
+            GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES ->
+                payload["messages"]!!.jsonArray.single().jsonObject["content"]!!.jsonPrimitive.content
+            GatewayProtocol.RESPONSES ->
+                payload["input"]!!.jsonArray.single().jsonObject["content"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content
+            GatewayProtocol.GEMINI ->
+                payload["contents"]!!.jsonArray.single().jsonObject["parts"]!!.jsonArray.single().jsonObject["text"]!!.jsonPrimitive.content
+        }
+        assertEquals("diagnostic prompt", prompt)
+        assertFalse(captured.body.toString().contains("overridden-input"), "Overrides must not replace the diagnostic prompt")
+        assertFalse(captured.body.toString().contains("overridden-model"), "Overrides must not replace the selected model")
+        assertFalse(captured.body.toString().contains("injected-tool"), "Tools must not enter diagnostic requests")
+        assertFalse("metadata" in payload)
+        assertFalse("tools" in payload)
+        assertEquals("0.4", when (protocol) {
+            GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES -> payload["temperature"]?.jsonPrimitive?.content
+            GatewayProtocol.GEMINI -> payload["generationConfig"]?.jsonObject?.get("temperature")?.jsonPrimitive?.content
+        })
+        assertEquals("Bearer diagnostic-token", captured.authorization)
+        assertEquals("kept-channel-header", captured.channelHeader)
+        assertEquals("kept-protocol-header", captured.protocolHeader)
+        assertEquals("kept-global-header", captured.globalHeader)
+        if (provider == OAuthProvider.ANTIGRAVITY) {
+            assertTrue(captured.userAgent.orEmpty().startsWith("antigravity/"))
+        } else {
+            assertEquals("diagnostic-global-UA", captured.userAgent)
+        }
+        when (provider) {
+            OAuthProvider.ANTIGRAVITY -> assertEquals("diagnostic-model", captured.body["model"]?.jsonPrimitive?.content)
+            OAuthProvider.CHATGPT -> assertEquals("diagnostic-model", captured.body["model"]?.jsonPrimitive?.content)
+            null -> if (protocol != GatewayProtocol.GEMINI) {
+                assertEquals("diagnostic-model", payload["model"]?.jsonPrimitive?.content)
+            } else {
+                assertTrue(captured.path.endsWith("/models/diagnostic-model:generateContent"))
+            }
+        }
+    }
+
+    private suspend fun captureDiagnosticRequest(
+        protocol: GatewayProtocol,
+        provider: OAuthProvider? = null,
+    ): CapturedDiagnosticRequest {
+        val captured = AtomicReference<CapturedDiagnosticRequest>()
+        val channelOverrides = UpstreamRequestOverrides(
+            headers = mapOf("X-Diagnostic-Channel" to "kept-channel-header"),
+            body = Json.parseToJsonElement("""{"metadata":{"source":"channel"},"tools":[{"type":"function","name":"injected-tool"}]}""").jsonObject,
+            protocols = mapOf(
+                protocol.value to UpstreamProtocolOverrides(
+                    headers = mapOf("X-Diagnostic-Protocol" to "kept-protocol-header"),
+                    body = hostileDiagnosticBody(protocol),
+                ),
+            ),
+        )
+        val channel = ChannelRecord(
+            id = "diagnostic-request-channel",
+            name = "diagnostic-request-channel",
+            baseUrl = "https://diagnostic.example.test/v1",
+            authType = "bearer",
+            protocols = listOf(protocol),
+            enabled = true,
+            createdAt = 0,
+            updatedAt = 0,
+            requestOverrides = channelOverrides,
+            kind = if (provider == null) ChannelKind.CUSTOM else ChannelKind.PROVIDER,
+            provider = provider,
+        )
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    val content = request.body as? OutgoingContent.ByteArrayContent
+                        ?: error("Expected synthetic diagnostic JSON content")
+                    captured.set(
+                        CapturedDiagnosticRequest(
+                            path = request.url.encodedPath,
+                            body = Json.parseToJsonElement(content.bytes().decodeToString()).jsonObject,
+                            authorization = request.headers[HttpHeaders.Authorization],
+                            channelHeader = request.headers["X-Diagnostic-Channel"],
+                            protocolHeader = request.headers["X-Diagnostic-Protocol"],
+                            globalHeader = request.headers["X-Diagnostic-Global"],
+                            userAgent = request.headers[HttpHeaders.UserAgent],
+                        ),
+                    )
+                    respond("{}", headers = headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+                }
+            }
+        }
+        client.use {
+            val globalOverrides = UpstreamRequestOverrides(
+                userAgent = "diagnostic-global-UA",
+                headers = mapOf("X-Diagnostic-Global" to "kept-global-header"),
+                body = Json.parseToJsonElement("""{"metadata":{"source":"global"},"tools":[{"type":"function","name":"injected-tool"}]}""").jsonObject,
+            )
+            if (provider == null) {
+                val key = ChannelKeyRecord(
+                    id = "diagnostic-request-key",
+                    channelId = channel.id,
+                    name = "synthetic-key",
+                    credentialCiphertext = "synthetic-ciphertext",
+                    credentialNonce = "synthetic-nonce",
+                    credentialKeyVersion = 1,
+                    state = ChannelKeyState.ACTIVE,
+                    priority = 0,
+                    createdAt = 0,
+                    updatedAt = 0,
+                )
+                testChannelModelConnectivity(
+                    channel = channel,
+                    credentialRef = key,
+                    model = "diagnostic-model",
+                    protocol = protocol,
+                    prompt = "diagnostic prompt",
+                    credentials = KeyCredentialResolver { "diagnostic-token" },
+                    httpClient = it,
+                    globalOverrides = globalOverrides,
+                )
+            } else {
+                prepareOAuthAccountModelConnectivity(
+                    channel = channel,
+                    accessToken = "diagnostic-token",
+                    project = if (provider == OAuthProvider.ANTIGRAVITY) "synthetic-project" else null,
+                    model = "diagnostic-model",
+                    protocol = protocol,
+                    prompt = "diagnostic prompt",
+                    httpClient = it,
+                    globalOverrides = globalOverrides,
+                )()
+            }
+        }
+        return requireNotNull(captured.get())
+    }
+
+    private fun hostileDiagnosticBody(protocol: GatewayProtocol) = Json.parseToJsonElement(
+        when (protocol) {
+            GatewayProtocol.CHAT_COMPLETIONS -> """{"model":"overridden-model","messages":[{"role":"user","content":"overridden-input"}],"tools":[{"type":"function","function":{"name":"injected-tool"}}],"temperature":0.4,"metadata":{"source":"protocol"}}"""
+            GatewayProtocol.RESPONSES -> """{"model":"overridden-model","input":[{"role":"user","content":"overridden-input"}],"tools":[{"type":"function","name":"injected-tool"}],"temperature":0.4,"metadata":{"source":"protocol"}}"""
+            GatewayProtocol.MESSAGES -> """{"model":"overridden-model","messages":[{"role":"user","content":"overridden-input"}],"tools":[{"name":"injected-tool"}],"temperature":0.4,"metadata":{"source":"protocol"}}"""
+            GatewayProtocol.GEMINI -> """{"contents":[{"role":"user","parts":[{"text":"overridden-input"}]}],"tools":[{"functionDeclarations":[{"name":"injected-tool"}]}],"generationConfig":{"temperature":0.4,"maxOutputTokens":3},"metadata":{"source":"protocol"}}"""
+        },
+    ).jsonObject
+
+    private data class CapturedDiagnosticRequest(
+        val path: String,
+        val body: kotlinx.serialization.json.JsonObject,
+        val authorization: String?,
+        val channelHeader: String?,
+        val protocolHeader: String?,
+        val globalHeader: String?,
+        val userAgent: String?,
+    )
+
+    @Test
     fun `extracts text from each protocol response`() {
         val chat = Json.parseToJsonElement(
             """{"choices":[{"message":{"content":"chat ok"}}]}""",
@@ -830,12 +1010,41 @@ class ModelConnectivityTestTest {
     }
 
     @Test
-    fun fingerprint_sample_callback_receives_bounded_original_response_without_leaking_it_in_result() = runBlocking {
+    fun fingerprint_execution_does_not_return_raw_samples_for_transport_failure_or_timeout() = runBlocking {
+        val credential = "fingerprint-transport-secret"
+        val body = """{"choices":[{"message":{"content":"$credential should not escape"}}]}"""
+        val transportFailure = fingerprintDiagnosticTransport(
+            credential,
+            body,
+            maxResponseChars = 100,
+            failure = IllegalStateException("upstream rejected $credential"),
+        )
+        val timeout = fingerprintDiagnosticTransport(
+            credential,
+            body,
+            maxResponseChars = 100,
+            timeoutMs = 10,
+            responseDelayMs = 100,
+        )
+
+        assertFalse(transportFailure.result.success)
+        assertNull(transportFailure.rawSample)
+        assertFalse(transportFailure.result.errorMessage.orEmpty().contains(credential))
+        assertFalse(timeout.result.success)
+        assertNull(timeout.rawSample)
+        assertNull(timeout.result.responseText)
+        assertFalse(timeout.result.errorMessage.orEmpty().contains(credential))
+    }
+
+    @Test
+    fun fingerprint_execution_returns_bounded_original_response_with_redacted_result() = runBlocking {
         val credential = "fingerprint-synthetic-secret"
         val originalText = "sample $credential remains unchanged"
         val body = """{"choices":[{"message":{"content":"$originalText"}}],"model":"model-$credential"}"""
 
-        val (result, rawSample) = fingerprintDiagnosticTransport(credential, body, maxResponseChars = 24)
+        val execution = fingerprintDiagnosticTransport(credential, body, maxResponseChars = 24)
+        val result = execution.result
+        val rawSample = execution.rawSample
 
         assertEquals(originalText.take(24), rawSample)
         assertFalse(result.responseText.orEmpty().contains(credential))
@@ -854,16 +1063,18 @@ class ModelConnectivityTestTest {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}",
         ).joinToString("\n")
 
-        val (result, rawSample) = fingerprintDiagnosticTransport(
+        val execution = fingerprintDiagnosticTransport(
             credential,
             body,
             maxResponseChars = 100,
             protocol = GatewayProtocol.RESPONSES,
             responseContentType = ContentType.Text.EventStream,
         )
+        val result = execution.result
+        val rawSample = execution.rawSample
 
         assertFalse(result.success)
-        assertEquals("partial $credential", rawSample)
+        assertNull(rawSample)
         assertEquals("partial [REDACTED]", result.responseText)
         assertFalse(result.errorMessage.orEmpty().contains(credential))
     }
@@ -910,16 +1121,18 @@ class ModelConnectivityTestTest {
             }
         }.joinToString("\n")
 
-        val (result, rawSample) = fingerprintDiagnosticTransport(
+        val execution = fingerprintDiagnosticTransport(
             credential,
             body,
             maxResponseChars = 100,
             protocol = GatewayProtocol.RESPONSES,
             responseContentType = ContentType.Text.EventStream,
         )
+        val result = execution.result
+        val rawSample = execution.rawSample
 
         assertFalse(result.success)
-        assertEquals("partial $credential", rawSample)
+        assertNull(rawSample)
         assertEquals("partial [REDACTED]", result.responseText)
         assertFalse(result.errorMessage.orEmpty().contains(credential))
     }
@@ -957,7 +1170,7 @@ class ModelConnectivityTestTest {
             "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}",
         ).joinToString("\n")
 
-        val (result, rawSample) = fingerprintDiagnosticTransport(
+        val execution = fingerprintDiagnosticTransport(
             credential,
             body,
             maxResponseChars = 100,
@@ -965,6 +1178,8 @@ class ModelConnectivityTestTest {
             responseContentType = ContentType.Text.EventStream,
             status = HttpStatusCode.BadGateway,
         )
+        val result = execution.result
+        val rawSample = execution.rawSample
 
         assertFalse(result.success)
         assertNull(result.responseText)
@@ -995,7 +1210,10 @@ class ModelConnectivityTestTest {
         protocol: GatewayProtocol = GatewayProtocol.CHAT_COMPLETIONS,
         responseContentType: ContentType = ContentType.Application.Json,
         status: HttpStatusCode = HttpStatusCode.OK,
-    ): Pair<ModelConnectivityTestResult, String?> {
+        timeoutMs: Long = 45_000,
+        failure: Throwable? = null,
+        responseDelayMs: Long = 0,
+    ): ModelConnectivityExecution {
         val channel = ChannelRecord(
             id = "fingerprint-channel", name = "fingerprint-channel",
             baseUrl = "https://diagnostic.example.test", authType = "bearer",
@@ -1008,11 +1226,12 @@ class ModelConnectivityTestTest {
             credentialKeyVersion = 1, state = ChannelKeyState.ACTIVE, priority = 0,
             createdAt = 0, updatedAt = 0,
         )
-        var rawSample: String? = null
         val client = HttpClient(MockEngine) {
             engine {
                 addHandler { request ->
                     assertEquals("Bearer $credential", request.headers[HttpHeaders.Authorization])
+                    failure?.let { throw it }
+                    if (responseDelayMs > 0) delay(responseDelayMs)
                     respond(responseBody, status, headersOf(HttpHeaders.ContentType, responseContentType.toString()))
                 }
             }
@@ -1026,9 +1245,9 @@ class ModelConnectivityTestTest {
                 prompt = "say ok",
                 credentials = KeyCredentialResolver { credential },
                 httpClient = it,
+                timeoutMs = timeoutMs,
                 maxResponseChars = maxResponseChars,
-                consumeRawSample = { rawSample = it },
-            ) to rawSample
+            )
         }
     }
 

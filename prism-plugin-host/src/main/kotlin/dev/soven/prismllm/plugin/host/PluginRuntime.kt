@@ -92,24 +92,28 @@ class PluginRuntime(
                         val bundled = withContext(Dispatchers.IO) { catalog.bootstrapPackage(bootstrapId) }
                         if (bundled != null && store.find(bootstrapId) == null) {
                             checkOpen()
-                            val values = try {
-                                initialConfiguration()
-                            } catch (error: CancellationException) {
-                                throw error
-                            } catch (_: Exception) {
-                                throw PluginHostException("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
-                            }
-                            val configuration = PluginValidation.installationConfiguration(bundled.item.manifest.configuration, values)
                             val staged = withContext(Dispatchers.IO) { installer.stage(bundled) }
-                            val installation = PluginInstallation(
-                                id = bootstrapId, version = staged.item.manifest.version, sha256 = staged.item.sha256,
-                                source = staged.item.source, installed = true, desiredEnabled = true,
-                                approvedPermissions = PluginValidation.grants(staged.item.manifest, staged.item.manifest.permissions),
-                                configuration = configuration, updatedAt = System.currentTimeMillis(), revision = 0,
-                            )
-                            checkOpen()
+                            val installation = store.getOrCreate(bootstrapId) {
+                                val values = try {
+                                    initialConfiguration()
+                                } catch (error: CancellationException) {
+                                    throw error
+                                } catch (_: Exception) {
+                                    throw PluginHostException("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
+                                }
+                                val configuration = PluginValidation.installationConfiguration(bundled.item.manifest.configuration, values)
+                                checkOpen()
+                                PluginInstallation(
+                                    id = bootstrapId, version = staged.item.manifest.version, sha256 = staged.item.sha256,
+                                    source = staged.item.source, installed = true, desiredEnabled = true,
+                                    approvedPermissions = PluginValidation.grants(staged.item.manifest, staged.item.manifest.permissions),
+                                    configuration = configuration, updatedAt = System.currentTimeMillis(), revision = 0,
+                                )
+                            }
                             // A concurrently inserted manual record or tombstone always wins over bootstrap.
-                            if (store.insertIfAbsent(installation)) metadata[Selection(installation)] = staged
+                            if (installation.version == staged.item.manifest.version && installation.sha256.equals(staged.item.sha256, ignoreCase = true)) {
+                                metadata[Selection(installation)] = staged
+                            }
                             bootstrapErrors.remove(bootstrapId)
                         }
                     } catch (error: PluginHostException) {
@@ -164,6 +168,20 @@ class PluginRuntime(
             ?: throw PluginHostException("PLUGIN_NOT_INSTALLED", "No plugin installation or tombstone exists for this id", 404)
     }
 
+    /** Recheck live admission and the grants belonging to the executable version, not a pending install. */
+    suspend fun requireActivePermission(id: String, expectedActiveVersion: String, permission: String) {
+        mutex.withLock {
+            checkReady()
+            val installation = find(id)
+            observe(installation)
+            val loaded = active[id] ?: throw PluginHostException("PLUGIN_NOT_ACTIVE", "Plugin is not loaded; enable it and restart the application", 409)
+            requireAdmission(installation, loaded, expectedActiveVersion)
+            if (permission !in loaded.grants || permission !in loaded.staged.item.manifest.permissions) {
+                throw PluginHostException("PLUGIN_PERMISSION_REQUIRED", "Plugin is not approved for this diagnostic context", 403)
+            }
+        }
+    }
+
     suspend fun contributions(): List<PluginUiContribution> = mutex.withLock {
         checkReady()
         val installations = store.list().sortedBy { it.id }
@@ -196,30 +214,27 @@ class PluginRuntime(
             // Do not erase configuration, toggle enablement or increment the revision on replay.
             return@withLock render(previous)
         }
-        val configurationValues = previous?.configuration ?: try {
-            initialConfiguration()
-        } catch (error: CancellationException) {
-            throw error
-        } catch (_: Exception) {
-            throw PluginHostException("PLUGIN_INITIAL_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
-        }
-        val next = PluginInstallation(
+        fun installation(values: JsonObject) = PluginInstallation(
             id = id, version = version, sha256 = staged.item.sha256, source = staged.item.source,
             installed = true, desiredEnabled = previous?.let { it.installed && it.desiredEnabled } ?: false,
             approvedPermissions = grants,
-            configuration = PluginValidation.installationConfiguration(staged.item.manifest.configuration, configurationValues),
+            configuration = PluginValidation.installationConfiguration(staged.item.manifest.configuration, values),
             updatedAt = now(previous), revision = nextRevision(previous),
         )
-        checkOpen()
-        if (previous == null) {
-            if (!store.insertIfAbsent(next)) {
-                // A concurrent installation or tombstone owns the identity; never overwrite it.
-                val winner = store.find(id)
-                    ?: throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
-                return@withLock render(winner)
+        val next = if (previous == null) {
+            store.getOrCreate(id) {
+                val values = try {
+                    initialConfiguration()
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    throw PluginHostException("PLUGIN_INITIAL_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
+                }
+                checkOpen()
+                installation(values)
             }
-        } else if (!store.save(next, previous.revision)) {
-            throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
+        } else {
+            installation(previous.configuration).also { persist(it, previous) }
         }
         bootstrapErrors.remove(id)
         render(next)
@@ -245,7 +260,14 @@ class PluginRuntime(
         }
     }
 
-    suspend fun configure(id: String, values: JsonObject): PluginRuntimeState = mutex.withLock {
+    suspend fun configure(id: String, values: JsonObject): PluginRuntimeState = configureUsing(id) { values }
+
+    /** Merge against the configuration read with the revision used by the subsequent CAS. */
+    suspend fun configureFields(id: String, values: JsonObject): PluginRuntimeState = configureUsing(id) {
+        JsonObject(it + values)
+    }
+
+    private suspend fun configureUsing(id: String, values: (JsonObject) -> JsonObject): PluginRuntimeState = mutex.withLock {
         checkReady()
         val previous = find(id)
         val item = try {
@@ -255,7 +277,7 @@ class PluginRuntime(
             // Metadata-only recovery allows editing retained tombstone config, not installation.
             withContext(Dispatchers.IO) { pinnedPackage(previous).item }
         }
-        val configuration = configuration(item, values)
+        val configuration = configuration(item, values(PluginValidation.snapshot(previous.configuration)))
         if (configuration == previous.configuration) return@withLock render(previous)
         val next = previous.copy(configuration = configuration, updatedAt = now(previous), revision = nextRevision(previous))
         persist(next, previous)
@@ -317,7 +339,7 @@ class PluginRuntime(
                 }
                 ExecutionSnapshot(loaded, DiagnosticInput(input.actionId, values), DiagnosticContext(target.copy(), configuration, actionLimits))
             }
-            val rawPlan = runCode("plan", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader) { snapshot.loaded.plugin.plan(snapshot.input, snapshot.context) }
+            val rawPlan = runCode("plan", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader, owner = snapshot.loaded) { snapshot.loaded.plugin.plan(snapshot.input, snapshot.context) }
             val plan = plan(rawPlan, snapshot.context.limits)
             val boundedOutcome = withProbePermit(plan.timeoutMs) {
                 mutex.withLock {
@@ -341,7 +363,7 @@ class PluginRuntime(
                 // Coroutine cancellation is best-effort, not a promise to abort already-started HTTP.
                 outcome(result)
             }
-            val report = report(runCode("report", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader) { snapshot.loaded.plugin.report(plan, boundedOutcome) })
+            val report = report(runCode("report", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader, owner = snapshot.loaded) { snapshot.loaded.plugin.report(plan, boundedOutcome) })
             return PluginExecution(id, snapshot.loaded.staged.item.manifest.version, snapshot.context.target, plan, boundedOutcome, report)
         } finally {
             executions.release()
@@ -554,7 +576,7 @@ class PluginRuntime(
     @Suppress("DEPRECATION") // Fatal ThreadDeath must not become a normal plugin execution failure.
     private suspend fun <T : Any> runCode(
         operation: String, timeoutMs: Long, loader: ClassLoader = parentClassLoader,
-        onDiscard: (T) -> Unit = {}, block: () -> T,
+        onDiscard: (T) -> Unit = {}, owner: LoadedPlugin? = null, block: () -> T,
     ): T {
         val ownership = CodeResultOwnership(onDiscard)
         try {
@@ -562,15 +584,25 @@ class PluginRuntime(
                 suspendCancellableCoroutine<Unit> { continuation ->
                     try {
                         val future = codeWorkers.submit {
-                            if (continuation.isActive) {
-                                try {
+                            var entered = false
+                            try {
+                                if (continuation.isActive) {
+                                    // The worker and disposer share this start gate. Queued/cancelled
+                                    // tasks own nothing, while a running task retains the loader even
+                                    // after its continuation times out or its Future is cancelled.
+                                    if (owner != null) {
+                                        if (!owner.beginWork()) throw PluginHostException("PLUGIN_RUNTIME_CLOSED", "Plugin is closing", 503)
+                                        entered = true
+                                    }
                                     ownership.offer(withLoader(loader, block))
                                     continuation.resume(Unit, onCancellation = { _, _, _ -> ownership.discard() })
-                                } catch (error: Throwable) {
-                                    if (error is VirtualMachineError || error is ThreadDeath) throw error
-                                    val safe = if (error is PluginHostException) error else PluginHostException("PLUGIN_CODE_FAILED", "Plugin $operation failed (${error.javaClass.simpleName})", 503)
-                                    continuation.resumeWithException(safe)
                                 }
+                            } catch (error: Throwable) {
+                                if (error is VirtualMachineError || error is ThreadDeath) throw error
+                                val safe = if (error is PluginHostException) error else PluginHostException("PLUGIN_CODE_FAILED", "Plugin $operation failed (${error.javaClass.simpleName})", 503)
+                                continuation.resumeWithException(safe)
+                            } finally {
+                                if (entered && owner!!.finishWork()) closeLoader(owner.loader)
                             }
                         }
                         continuation.invokeOnCancellation {
@@ -595,12 +627,12 @@ class PluginRuntime(
 
     private fun dispose(loaded: LoadedPlugin): Future<*>? {
         loaded.admission.set(false)
-        if (!loaded.disposalStarted.compareAndSet(false, true)) return null
+        if (!loaded.startDisposal()) return null
         return cleanupWorkers.submit {
             try {
                 withLoader(loaded.loader) { loaded.plugin.close() }
             } finally {
-                closeLoader(loaded.loader)
+                if (loaded.finishDisposal()) closeLoader(loaded.loader)
             }
         }
     }
@@ -657,8 +689,45 @@ class PluginRuntime(
     private class LoadedPlugin(
         val staged: StagedPluginPackage, val plugin: DiagnosticPlugin, val loader: PackageClassLoader,
         val grants: Set<String>, var configuration: JsonObject, val admission: AtomicBoolean = AtomicBoolean(true),
-        val disposalStarted: AtomicBoolean = AtomicBoolean(false),
-    )
+    ) {
+        private var workers = 0
+        private var disposalStarted = false
+        private var providerClosed = false
+        private var loaderReleased = false
+
+        @Synchronized
+        fun beginWork(): Boolean {
+            if (disposalStarted) return false
+            workers++
+            return true
+        }
+
+        @Synchronized
+        fun finishWork(): Boolean {
+            check(workers > 0)
+            workers--
+            return releaseLoader()
+        }
+
+        @Synchronized
+        fun startDisposal(): Boolean {
+            if (disposalStarted) return false
+            disposalStarted = true
+            return true
+        }
+
+        @Synchronized
+        fun finishDisposal(): Boolean {
+            providerClosed = true
+            return releaseLoader()
+        }
+
+        private fun releaseLoader(): Boolean {
+            if (!providerClosed || workers != 0 || loaderReleased) return false
+            loaderReleased = true
+            return true
+        }
+    }
 
     /** Exactly one caller claims a result, or its producer/cancellation path disposes it. */
     internal class CodeResultOwnership<T : Any>(private val onDiscard: (T) -> Unit) {

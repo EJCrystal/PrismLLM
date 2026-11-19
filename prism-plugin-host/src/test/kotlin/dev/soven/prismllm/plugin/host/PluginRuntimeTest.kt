@@ -24,6 +24,7 @@ import org.junit.jupiter.api.Test
 import java.net.URLClassLoader
 import java.nio.file.Files
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -479,6 +480,67 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `active permission rechecks use executable grants while an upgrade is pending`(): Unit = runBlocking {
+        val previous = fixture()
+        publish(previous)
+        val host = runtime()
+        host.initialize(previous.manifest.id)
+        val replacement = fixture(
+            version = "2.0.0",
+            permissions = listOf(PluginApi.CHANNEL_PROBE),
+            ui = defaultUi("2.0.0").let { it.copy(entries = it.entries.filter { entry -> entry.id == "channel" }) },
+        )
+        publish(previous, replacement)
+        val pending = host.install(previous.manifest.id, "2.0.0", replacement.manifest.permissions)
+        assertEquals(listOf(PluginApi.CHANNEL_PROBE), pending.approvedPermissions)
+        host.requireActivePermission(previous.manifest.id, "1.0.0", PluginApi.OAUTH_ACCOUNT_PROBE)
+        failure("PLUGIN_ACTIVE_VERSION_CONFLICT") {
+            host.requireActivePermission(previous.manifest.id, "2.0.0", PluginApi.OAUTH_ACCOUNT_PROBE)
+        }
+        host.setEnabled(previous.manifest.id, false)
+        failure("PLUGIN_DISABLED") {
+            host.requireActivePermission(previous.manifest.id, "1.0.0", PluginApi.OAUTH_ACCOUNT_PROBE)
+        }
+    }
+
+    @Test
+    fun `active permission rechecks observe revocation for the same executable selection`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id)
+        val record = assertNotNull(store.find(packaged.manifest.id))
+        store.seed(record.copy(approvedPermissions = listOf(PluginApi.CHANNEL_PROBE), revision = record.revision + 1))
+        failure("PLUGIN_DISABLED") {
+            host.requireActivePermission(packaged.manifest.id, "1.0.0", PluginApi.OAUTH_ACCOUNT_PROBE)
+        }
+        assertFalse(host.state(packaged.manifest.id).admissionEnabled)
+    }
+
+    @Test
+    fun `field updates merge the configuration paired with their CAS revision`(): Unit = runBlocking {
+        val packaged = fixture(configuration = defaultConfiguration() + PluginField("other", "Other", "text"))
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(packaged.manifest.id) { buildJsonObject { put("defaultPrompt", "old"); put("other", "original") } }
+        val record = assertNotNull(store.find(packaged.manifest.id))
+        store.seed(record.copy(configuration = buildJsonObject { put("defaultPrompt", "old"); put("other", "concurrent") }, revision = record.revision + 1))
+        val updated = host.configureFields(packaged.manifest.id, config("new"))
+        assertEquals(buildJsonObject { put("defaultPrompt", "new"); put("other", "concurrent") }, updated.configuration)
+        assertEquals(record.revision + 2, store.find(packaged.manifest.id)?.revision)
+        val beforeConflict = assertNotNull(store.find(packaged.manifest.id))
+        store.beforeSave = {
+            store.seed(beforeConflict.copy(configuration = buildJsonObject { put("defaultPrompt", "new"); put("other", "winner") }, revision = beforeConflict.revision + 1))
+        }
+        failure("PLUGIN_REVISION_CONFLICT") { host.configureFields(packaged.manifest.id, config("loser")) }
+        store.beforeSave = null
+        assertEquals(buildJsonObject { put("defaultPrompt", "new"); put("other", "winner") }, host.state(packaged.manifest.id).configuration)
+        assertEquals(2, store.writes)
+    }
+
+    @Test
     fun `same-version configuration updates are immediate but each invocation gets a stable snapshot`(): Unit = runBlocking {
         val packaged = fixture(planPrefix = { property -> """
             System.setProperty("$property.ready", "true");
@@ -662,6 +724,40 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertEquals("请只回复 OK", invoke(host).plan.prompt)
         val valid = host.configure(packaged.manifest.id, buildJsonObject { put("defaultPrompt", "valid"); put("count", 3); put("flag", true) })
         assertEquals(JsonPrimitive(true), valid.activeConfiguration?.get("flag"))
+    }
+
+    @Test
+    fun `configuration that exceeds the UTF-8 size limit after defaults is never saved`(): Unit = runBlocking {
+        // Vary the multibyte text so the fixture manifest also meets the archive compression bound.
+        val text = buildString { repeat(4_000) { append(('一'.code + it).toChar()) } }
+        val defaults = List(12) { PluginField("default$it", "Default", "textarea", defaultValue = JsonPrimitive(text)) }
+        val supplied = List(12) { PluginField("supplied$it", "Supplied", "textarea") }
+        val packaged = fixture(configuration = defaultConfiguration() + defaults + supplied)
+        publish(packaged)
+        val id = packaged.manifest.id
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize(id)
+
+        val valid = host.configure(id, buildJsonObject { put("supplied0", text) })
+        assertEquals(JsonPrimitive(text), valid.activeConfiguration?.get("default0"))
+        assertEquals(JsonPrimitive(text), valid.activeConfiguration?.get("supplied0"))
+        val before = assertNotNull(store.find(id))
+        val writes = store.writes
+
+        val values = JsonObject(supplied.associate { it.key to JsonPrimitive(text) })
+        val merged = JsonObject(before.configuration + values).toString()
+        assertTrue(values.toString().toByteArray(Charsets.UTF_8).size <= PluginValidation.MAX_METADATA_BYTES)
+        assertTrue(merged.length <= PluginValidation.MAX_METADATA_BYTES)
+        assertTrue(merged.toByteArray(Charsets.UTF_8).size > PluginValidation.MAX_METADATA_BYTES)
+        failure("PLUGIN_INVALID_CONFIGURATION") { host.configure(id, values) }
+
+        assertEquals(writes, store.writes)
+        assertEquals(before, store.find(id))
+        val state = host.state(id)
+        assertTrue(state.admissionEnabled)
+        assertEquals(before.configuration, state.activeConfiguration)
+        assertEquals("请只回复 OK", invoke(host).plan.prompt)
     }
 
     @Test
@@ -1009,20 +1105,37 @@ internal class PluginRuntimeTest : PluginTestSupport() {
 
     @Test
     fun `blocking plan which ignores interrupts cannot defeat its host deadline`(): Unit = runBlocking {
-        val packaged = fixture(planPrefix = { """
-            long deadline = System.nanoTime() + 700000000L;
-            while (System.nanoTime() < deadline) {
-                try { Thread.sleep(5); } catch (InterruptedException ignored) { }
+        val release = CountDownLatch(1)
+        val packaged = fixture(planPrefix = { property -> """
+            java.util.concurrent.CountDownLatch release =
+                (java.util.concurrent.CountDownLatch) System.getProperties().get("$property.plan-release");
+            mark("plan-ready");
+            while (true) {
+                try { release.await(); break; } catch (InterruptedException ignored) { }
             }
+            mark("plan-released");
         """.trimIndent() })
+        System.getProperties().put("${packaged.property}.plan-release", release)
         publish(packaged)
         val host = runtime()
         host.initialize(packaged.manifest.id)
         val probes = AtomicInteger()
-        val started = System.nanoTime()
-        failure("PLUGIN_CODE_TIMEOUT") { host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 150)) { probes.incrementAndGet(); ok } }
-        assertTrue((System.nanoTime() - started) / 1_000_000 < 600, "Caller must not wait for the blocking plan")
-        assertEquals(0, probes.get())
+        withTimeout(10_000) {
+            val caller = async(Dispatchers.Default) {
+                failure("PLUGIN_CODE_TIMEOUT") {
+                    host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok }
+                }
+            }
+            try {
+                awaitProperty("${packaged.property}.plan-ready", "1", timeoutMs = 8_000)
+                caller.await()
+                assertEquals(0, packaged.count("plan-released"), "The caller must time out while the plan is blocked")
+                assertEquals(0, probes.get())
+            } finally {
+                release.countDown()
+            }
+            awaitProperty("${packaged.property}.plan-released", "1", timeoutMs = 5_000)
+        }
     }
 
     @Test
@@ -1314,6 +1427,62 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             assertDisposed(it)
         }
         assertNoActive(host)
+    }
+
+    @Test
+    fun `timed out workers retain their loader after provider close until actual exit`(): Unit = runBlocking {
+        for (operation in listOf("plan", "report")) {
+            val ready = CountDownLatch(1)
+            val release = CountDownLatch(1)
+            val blockingWork = """
+                ((java.util.concurrent.CountDownLatch) System.getProperties().get(getClass().getName() + ".ready")).countDown();
+                boolean released = false;
+                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                while (!released && System.nanoTime() < deadline) {
+                    try { released = ((java.util.concurrent.CountDownLatch) System.getProperties().get(getClass().getName() + ".release")).await(10, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
+                if (!released) throw new IllegalStateException("test work was not released");
+                if (getClass().getClassLoader().getResource("fixture/owned-resource.txt") == null) throw new IllegalStateException("loader closed during work");
+                mark("resource-after-close");
+            """.trimIndent()
+            val packaged = fixture(
+                id = "retained.$operation",
+                constructorPrefix = { property -> "System.getProperties().put(\"$property.loader\", getClass().getClassLoader());" },
+                planPrefix = { if (operation == "plan") blockingWork else "" },
+                reportPrefix = if (operation == "report") blockingWork else "",
+                closePrefix = { "mark(\"closed-with-loader\");" },
+                jarEntries = listOf(ZipFixtureEntry("fixture/owned-resource.txt", "owned".toByteArray())),
+            )
+            System.getProperties()["${packaged.providerClass}.ready"] = ready
+            System.getProperties()["${packaged.providerClass}.release"] = release
+            publish(packaged)
+            val host = runtime()
+            host.initialize(packaged.manifest.id)
+            coroutineScope {
+                val invocation = async(Dispatchers.Default) {
+                    runCatching {
+                        host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 500)) { ok }
+                    }
+                }
+                try {
+                    assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+                    val error = withTimeout(3_000) { invocation.await() }.exceptionOrNull() as PluginHostException
+                    assertEquals("PLUGIN_CODE_TIMEOUT", error.code)
+                    host.close()
+                    awaitProperty("${packaged.property}.closed", "1")
+                    assertNotNull(loader(packaged).findResource("fixture/owned-resource.txt"))
+                    assertEquals(0, packaged.count("resource-after-close"))
+                } finally {
+                    release.countDown()
+                    host.close()
+                }
+            }
+            awaitProperty("${packaged.property}.resource-after-close", "1")
+            assertDisposed(packaged)
+            System.getProperties().remove("${packaged.providerClass}.ready")
+            System.getProperties().remove("${packaged.providerClass}.release")
+        }
     }
 
     @Test

@@ -154,7 +154,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
         }
         "oauth-account" -> {
             val preparation = DiagnosticPreparationDeadline.start(oauthDiagnosticPreparationTimeoutMs, oauthDiagnosticNanoTime)
-            val initialAccount = DiagnosticPreparationDeadline.within(preparation) {
+            val initialAccount = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
                 oauthAccountRepository.findDetailed(context.id)
                     ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
             } ?: throw oauthPreparationTimeout()
@@ -172,17 +172,17 @@ internal suspend fun GatewayApplication.executePluginProbe(
                 preparation.resume()
                 val probe = DiagnosticPreparationDeadline.within(preparation) {
                     suspend fun revalidatePluginGrant() {
-                        val state = pluginRuntime.state(id)
-                        if (!state.admissionEnabled || state.activeVersion != expectedActiveVersion ||
-                            PluginApi.OAUTH_ACCOUNT_PROBE !in state.approvedPermissions
-                        ) {
-                            throw PluginHostException("PLUGIN_PERMISSION_REQUIRED", "Plugin OAuth diagnostic permission was revoked", 403)
-                        }
+                        DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                            pluginRuntime.requireActivePermission(id, expectedActiveVersion, PluginApi.OAUTH_ACCOUNT_PROBE)
+                            Unit
+                        } ?: throw oauthPreparationTimeout()
                     }
 
                     suspend fun revalidateAccount(): dev.soven.prismllm.oauth.domain.OAuthAccountRecord {
-                        val latest = oauthAccountRepository.findDetailed(context.id)
-                            ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+                        val latest = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                            oauthAccountRepository.findDetailed(context.id)
+                                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+                        } ?: throw oauthPreparationTimeout()
                         validateOAuthDiagnosticAccount(latest, context.id, model, protocol)
                         if (latest.provider != initialAccount.provider || latest.authorizedAt != initialAccount.authorizedAt) {
                             throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
@@ -191,7 +191,9 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     }
 
                     suspend fun revalidateSystemChannel(channelId: String): ChannelRecord {
-                        val current = channelRepository.find(channelId) ?: throw notFound("channel_not_found", "系统端点渠道不存在")
+                        val current = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                            channelRepository.find(channelId) ?: throw notFound("channel_not_found", "系统端点渠道不存在")
+                        } ?: throw oauthPreparationTimeout()
                         if (current.kind != ChannelKind.PROVIDER || current.provider != initialAccount.provider) {
                             throw badRequest("oauth_provider_channel_unavailable", "订阅账号的系统端点渠道不可用")
                         }
@@ -203,8 +205,10 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     }
 
                     revalidatePluginGrant()
-                    val channelId = providerChannelProvisioner.ensure(initialAccount.provider)
-                        ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + initialAccount.provider.value)
+                    val channelId = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                        providerChannelProvisioner.ensure(initialAccount.provider)
+                            ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + initialAccount.provider.value)
+                    } ?: throw oauthPreparationTimeout()
                     var currentAccount = revalidateAccount()
                     var channel = revalidateSystemChannel(channelId)
                     val token = try {
@@ -224,7 +228,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     }
                     channel = revalidateSystemChannel(channelId)
                     val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
-                        codeAssistProjectResolver.context(currentAccount, token.accessToken, proxy).project
+                        codeAssistProjectResolver.contextForDiagnostic(currentAccount, token.accessToken, proxy, preparation).project
                     } else null
 
                     // Discovery can be slow. Revalidate the exact token snapshot and endpoint request
@@ -236,8 +240,12 @@ internal suspend fun GatewayApplication.executePluginProbe(
                         throw badRequest("oauth_provider_channel_changed", "系统端点配置已变化，请刷新后重试")
                     }
                     revalidatePluginGrant()
-                    val overrides = upstreamRequestSettingsRepository.load().overrides
-                    val headerProfiles = upstreamHeaderCatalogService.profiles()
+                    val overrides = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                        upstreamRequestSettingsRepository.load().overrides
+                    } ?: throw oauthPreparationTimeout()
+                    val headerProfiles = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                        upstreamHeaderCatalogService.profiles()
+                    } ?: throw oauthPreparationTimeout()
 
                     currentAccount = revalidateAccount()
                     if (!token.matches(currentAccount)) throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
@@ -304,11 +312,16 @@ internal suspend fun GatewayApplication.connectivitySettings(): ModelTestSetting
 }
 
 internal suspend fun GatewayApplication.saveConnectivitySettings(prompt: String): ModelTestSettingsResponse {
-    if (pluginInstallationRepository.find(CONNECTIVITY_PLUGIN_ID) == null) {
-        modelTestSettingsRepository.save(prompt)
-    } else {
-        val state = pluginRuntime.state(CONNECTIVITY_PLUGIN_ID)
-        pluginRuntime.configure(CONNECTIVITY_PLUGIN_ID, JsonObject(state.configuration + ("defaultPrompt" to JsonPrimitive(prompt))))
+    val savedLegacy = connectivitySettingsLock.withLock {
+        if (pluginInstallationRepository.findInTransaction(CONNECTIVITY_PLUGIN_ID) == null) {
+            modelTestSettingsRepository.saveInTransaction(prompt)
+            true
+        } else false
+    }
+    // Never enter the runtime while holding the database lock: installation takes them in the
+    // opposite direction. A newly committed install already contains the locked legacy value.
+    if (!savedLegacy) {
+        pluginRuntime.configureFields(CONNECTIVITY_PLUGIN_ID, JsonObject(mapOf("defaultPrompt" to JsonPrimitive(prompt))))
     }
     return connectivitySettings()
 }

@@ -1,5 +1,6 @@
 package dev.soven.prismllm.proxy.codeassist
 
+import dev.soven.prismllm.db.DiagnosticPreparationDeadline
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import io.ktor.client.HttpClient
@@ -91,10 +92,25 @@ class CodeAssistProjectResolver(
     /**
      * @param proxy 账号出口代理；与刷新 access token 使用同一个，避免两套 IP。
      */
-    suspend fun context(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Context {
+    suspend fun context(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Context =
+        resolveContext(account, accessToken, proxy, preparation = null)
+
+    internal suspend fun contextForDiagnostic(
+        account: OAuthAccountRecord,
+        accessToken: String,
+        proxy: InetSocketAddress?,
+        preparation: DiagnosticPreparationDeadline.Budget,
+    ): Context = resolveContext(account, accessToken, proxy, preparation)
+
+    private suspend fun resolveContext(
+        account: OAuthAccountRecord,
+        accessToken: String,
+        proxy: InetSocketAddress?,
+        preparation: DiagnosticPreparationDeadline.Budget?,
+    ): Context {
         val proxyKey = egressKey(account, proxy)
         val export = negotiated[account.id]
-        val cached = accounts.upstreamContext(account.id)
+        val cached = databaseStep(preparation) { accounts.upstreamContext(account.id) }
         // 缓存是按某个出口协商出来的：出口一变就必须重新发现，而不是等 TTL 过期。
         // 进程刚启动、还没有协商记录时也按未知出口处理：持久化的上下文可能来自别的出口。
         val sameEgress = export?.egress == proxyKey
@@ -124,7 +140,7 @@ class CodeAssistProjectResolver(
         }
         // 只有成功解析出 project 才更新协商状态；下次换出口时只认这条。
         // 内存与数据库写同一份合并结果，避免重启后读到与本次请求不同的 tier。
-        return recordContext(account.id, proxyKey, project, loaded.catalogTier(), loaded.reportsTier())
+        return recordContext(account.id, proxyKey, project, loaded.catalogTier(), loaded.reportsTier(), preparation)
     }
 
     /**
@@ -141,12 +157,24 @@ class CodeAssistProjectResolver(
         project: String,
         tier: String?,
         tierReported: Boolean = tier != null,
+        preparation: DiagnosticPreparationDeadline.Budget? = null,
     ): Context {
         val previous = negotiated[accountId]
         val merged = if (tierReported) tier else previous?.takeIf { it.egress == egress }?.tier
-        accounts.saveUpstreamContext(accountId, project, merged, now())
+        databaseStep(preparation) { accounts.saveUpstreamContext(accountId, project, merged, now()) }
         negotiated[accountId] = Export(egress, project, merged)
         return Context(project, merged)
+    }
+
+    private class DatabaseValue<T>(val value: T)
+
+    private suspend fun <T> databaseStep(
+        preparation: DiagnosticPreparationDeadline.Budget?,
+        operation: suspend () -> T,
+    ): T {
+        if (preparation == null) return operation()
+        return (DiagnosticPreparationDeadline.withinSynchronous(preparation) { DatabaseValue(operation()) }
+            ?: throw DiagnosticPreparationDeadline.deadlineExceeded()).value
     }
 
     /**

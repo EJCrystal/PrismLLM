@@ -554,21 +554,60 @@ open class OAuthAccountRepository(
         scope: String?,
         rotatedRefreshToken: EncryptedCredential? = null,
         expectedRefreshCiphertext: String? = null,
+        /**
+         * Snapshot used by service-owned retries. The row lock makes the comparison a fence:
+         * an ambiguous commit is accepted only when this exact result is already present, or when
+         * the original authorization and credential snapshot is still current.
+         */
+        expectedAccount: OAuthAccountRecord? = null,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
         val row = OAuthAccounts.selectAll()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
-        if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
+        val normalizedTokenType = tokenType.take(32)
+        val exactRefreshResult = expectedAccount != null && when {
+            rotatedRefreshToken == null -> sameRefresh(row, expectedAccount)
+            else -> row[OAuthAccounts.refreshTokenCiphertext] == rotatedRefreshToken.ciphertext &&
+                row[OAuthAccounts.refreshTokenNonce] == rotatedRefreshToken.nonce &&
+                row[OAuthAccounts.refreshTokenKeyVersion] == rotatedRefreshToken.keyVersion
+        }
+        val sameAccessResult =
+            row[OAuthAccounts.accessTokenCiphertext] == accessToken.ciphertext &&
+                row[OAuthAccounts.accessTokenNonce] == accessToken.nonce &&
+                row[OAuthAccounts.accessTokenKeyVersion] == accessToken.keyVersion &&
+                row[OAuthAccounts.accessTokenExpiresAt] == expiresAt &&
+                row[OAuthAccounts.tokenType] == normalizedTokenType &&
+                row[OAuthAccounts.scope] == scope &&
+                row[OAuthAccounts.authState] == OAuthAuthState.ACTIVE.value
+        // The original snapshot may be REAUTH_REQUIRED: refreshNow can force one last refresh.
+        // The current row must still be ACTIVE, and the exact result plus authorization context
+        // must match before an ambiguous commit is treated as already applied.
+        if (expectedAccount != null && expectedAccount.id == accountId &&
+            sameAuthorization(row, expectedAccount) && sameAccessResult && exactRefreshResult
+        ) {
+            return@suspendTransaction toRecord(row, emptyList(), emptySet())
+        }
+        if (expectedRefreshCiphertext != null &&
+            row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext
+        ) {
             return@suspendTransaction null
+        }
+        expectedAccount?.let { expected ->
+            if (expected.id != accountId || !sameAuthorization(row, expected) ||
+                row[OAuthAccounts.authState] != expected.authState.value ||
+                !sameRefresh(row, expected) || !sameAccess(row, expected)
+            ) {
+                return@suspendTransaction null
+            }
         }
         val updated = OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[accessTokenCiphertext] = accessToken.ciphertext
             it[accessTokenNonce] = accessToken.nonce
             it[accessTokenKeyVersion] = accessToken.keyVersion
             it[accessTokenExpiresAt] = expiresAt
-            it[OAuthAccounts.tokenType] = tokenType.take(32)
+            it[OAuthAccounts.tokenType] = normalizedTokenType
             it[OAuthAccounts.scope] = scope
             it[authState] = OAuthAuthState.ACTIVE.value
             it[refreshFailureCount] = 0
@@ -587,6 +626,24 @@ open class OAuthAccountRepository(
             .single()
             .let { toRecord(it, emptyList(), emptySet()) }
     }
+
+    private fun sameAuthorization(row: ResultRow, expected: OAuthAccountRecord): Boolean =
+        row[OAuthAccounts.provider] == expected.provider.value &&
+            row[OAuthAccounts.authorizedAt] == expected.authorizedAt &&
+            row[OAuthAccounts.proxyUrl] == expected.proxyUrl
+
+    private fun sameRefresh(row: ResultRow, expected: OAuthAccountRecord): Boolean =
+        row[OAuthAccounts.refreshTokenCiphertext] == expected.refreshTokenCiphertext &&
+            row[OAuthAccounts.refreshTokenNonce] == expected.refreshTokenNonce &&
+            row[OAuthAccounts.refreshTokenKeyVersion] == expected.refreshTokenKeyVersion
+
+    private fun sameAccess(row: ResultRow, expected: OAuthAccountRecord): Boolean =
+        row[OAuthAccounts.accessTokenCiphertext] == expected.accessTokenCiphertext &&
+            row[OAuthAccounts.accessTokenNonce] == expected.accessTokenNonce &&
+            row[OAuthAccounts.accessTokenKeyVersion] == expected.accessTokenKeyVersion &&
+            row[OAuthAccounts.accessTokenExpiresAt] == expected.accessTokenExpiresAt &&
+            row[OAuthAccounts.tokenType] == expected.tokenType &&
+            row[OAuthAccounts.scope] == expected.scope
 
     /**
      * 记录一次刷新失败；终态错误同时把账号标记为需要重新授权。
