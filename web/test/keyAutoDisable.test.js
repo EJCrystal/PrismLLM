@@ -36,16 +36,21 @@ describe('密钥自动禁用规则', () => {
     assert.equal(normalized.rules[0].id, 'insufficient_balance')
     assert.equal(normalized.rules[0].action, 'PERMANENT')
     assert.deepEqual(normalized.rules[0].bodyPatterns, [
-      'INSUFFICIENT_BALANCE',
-      'billing[\\s_-]*error',
-      'insufficient[\\s_-]*(balance|quota|credit|funds)',
-      'payment[\\s_-]*required',
+      '(?:^|[^\\w-])INSUFFICIENT_BALANCE(?:$|[^\\w-])',
+      '(?:^|[^\\w-])billing[\\s_-]*error(?:$|[^\\w-])',
+      '(?:^|[^\\w-])insufficient[\\s_-]*(balance|credit|funds)(?:$|[^\\w-])',
+      '(?:^|[^\\w-])payment[\\s_-]*required(?:$|[^\\w-])',
       '余额不足',
       '欠费',
       '请充值',
       '额度(不足|用尽)',
     ])
     assert.equal(normalized.rules[1].id, 'credential_invalid')
+    assert.deepEqual(normalized.rules[2].bodyPatterns, [
+      'account[^\\n]{0,40}(disabled|suspended|deactivated)',
+      '(?:^|[^\\w-])billing(?:$|[^\\w-])',
+      '(?:^|[^\\w-])payment(?:$|[^\\w-])',
+    ])
     assert.equal(normalized.rules[3].action, 'TEMPORARY')
   })
 

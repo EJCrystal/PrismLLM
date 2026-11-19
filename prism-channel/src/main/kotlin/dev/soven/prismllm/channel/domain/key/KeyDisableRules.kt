@@ -484,10 +484,10 @@ data class KeyDisablePolicy(
                 name = "账户余额或计费异常",
                 statusCodes = listOf(401, 402, 403),
                 bodyPatterns = listOf(
-                    "INSUFFICIENT_BALANCE",
-                    "billing[\\s_-]*error",
-                    "insufficient[\\s_-]*(balance|quota|credit|funds)",
-                    "payment[\\s_-]*required",
+                    "(?:^|[^\\w-])INSUFFICIENT_BALANCE(?:$|[^\\w-])",
+                    "(?:^|[^\\w-])billing[\\s_-]*error(?:$|[^\\w-])",
+                    "(?:^|[^\\w-])insufficient[\\s_-]*(balance|credit|funds)(?:$|[^\\w-])",
+                    "(?:^|[^\\w-])payment[\\s_-]*required(?:$|[^\\w-])",
                     "余额不足",
                     "欠费",
                     "请充值",
@@ -496,7 +496,19 @@ data class KeyDisablePolicy(
                 threshold = 1,
                 action = KeyDisableAction.PERMANENT,
             ),
-        ) + LEGACY_DEFAULT_RULES
+        ) + LEGACY_DEFAULT_RULES.map { rule ->
+            if (rule.id == "account_blocked") {
+                rule.copy(
+                    bodyPatterns = listOf(
+                        "account[^\\n]{0,40}(disabled|suspended|deactivated)",
+                        "(?:^|[^\\w-])billing(?:$|[^\\w-])",
+                        "(?:^|[^\\w-])payment(?:$|[^\\w-])",
+                    ),
+                )
+            } else {
+                rule
+            }
+        }
     }
 }
 

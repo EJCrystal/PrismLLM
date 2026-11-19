@@ -189,7 +189,7 @@ class KeyDisableRulesTest {
             "billing-error",
             "billing_error",
             "insufficient balance",
-            "insufficient-quota",
+            "insufficient-credit",
             "payment required",
         )) {
             val decision = assertNotNull(
@@ -199,6 +199,28 @@ class KeyDisableRulesTest {
             assertEquals("insufficient_balance", decision.ruleId, body)
             assertEquals(KeyDisableAction.PERMANENT, decision.action, body)
         }
+    }
+
+    @Test
+    fun `billing words inside model names stay recoverable`() {
+        val update = KeyDisablePolicy().record(
+            KeyHealthState(),
+            KeyAttemptSignal.UpstreamResponse(403, "model billing-error-classifier is not enabled"),
+            now,
+        )
+        assertNull(update.decision)
+        assertEquals(1, update.state.counters.getValue("auth_rejected").timestamps.size)
+    }
+
+    @Test
+    fun `unscoped quota insufficiency stays recoverable`() {
+        val update = KeyDisablePolicy().record(
+            KeyHealthState(),
+            KeyAttemptSignal.UpstreamResponse(403, "insufficient quota for this request"),
+            now,
+        )
+        assertNull(update.decision)
+        assertEquals(1, update.state.counters.getValue("auth_rejected").timestamps.size)
     }
 
     @Test

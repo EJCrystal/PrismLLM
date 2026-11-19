@@ -220,7 +220,7 @@
     <div class="rules">
       <div class="rule">
         <div class="rule-head"><span class="rule-name">账户余额或计费异常</span><span class="rule-action">永久 · 人工处理</span></div>
-        <p class="cond">状态码 <b>401 / 402 / 403</b>，响应体或上游错误码命中 <code>INSUFFICIENT_BALANCE</code>、<code>billing_error</code>（空格/下划线/连字符均可）、<code>insufficient_*</code>、<code>payment_required</code> 或余额/欠费提示，<b>1</b> 次。</p>
+        <p class="cond">状态码 <b>401 / 402 / 403</b>，响应体或上游错误码命中 <code>INSUFFICIENT_BALANCE</code>、<code>billing_error</code>（空格/下划线/连字符均可）、<code>insufficient_balance/credit/funds</code>、<code>payment_required</code> 或余额/欠费提示，<b>1</b> 次；关键词按 token 边界匹配，未限定作用域的 quota 不在此列。</p>
       </div>
       <div class="rule">
         <div class="rule-head"><span class="rule-name">凭据失效</span><span class="rule-action">永久 · 人工处理</span></div>
@@ -379,7 +379,7 @@ ACTIVE           正常</pre>
   const rules = [
     { id: 'insufficient_balance', name: '账户余额或计费异常', action: 'PERMANENT', actionLabel: '永久禁用',
       threshold: 1, windowMinutes: 5, streak: true, codes: [401, 402, 403],
-      patterns: [/INSUFFICIENT_BALANCE/i, /billing[\s_-]*error/i, /insufficient[\s_-]*(balance|quota|credit|funds)/i, /payment[\s_-]*required/i, /余额不足|欠费|请充值|额度(不足|用尽)/i],
+      patterns: [/(?:^|[^\w-])INSUFFICIENT_BALANCE(?:$|[^\w-])/i, /(?:^|[^\w-])billing[\s_-]*error(?:$|[^\w-])/i, /(?:^|[^\w-])insufficient[\s_-]*(balance|credit|funds)(?:$|[^\w-])/i, /(?:^|[^\w-])payment[\s_-]*required(?:$|[^\w-])/i, /余额不足|欠费|请充值|额度(不足|用尽)/i],
       reason: '上游账户余额或计费异常，充值或修复账户后人工启用' },
     { id: 'credential_invalid', name: '凭据失效', action: 'PERMANENT', actionLabel: '永久禁用',
       threshold: 2, windowMinutes: 5, streak: true, codes: [401, 403],
@@ -387,7 +387,7 @@ ACTIVE           正常</pre>
       reason: '凭据已被上游判定失效，不会自动解封' },
     { id: 'account_blocked', name: '上游账号被停', action: 'PERMANENT', actionLabel: '永久禁用',
       threshold: 1, windowMinutes: 5, streak: true, codes: [401, 403],
-      patterns: [/account[^\n]{0,40}(disabled|suspended|deactivated)/i, /\bbilling\b/i, /\bpayment\b/i],
+      patterns: [/account[^\n]{0,40}(disabled|suspended|deactivated)/i, /(?:^|[^\w-])billing(?:$|[^\w-])/i, /(?:^|[^\w-])payment(?:$|[^\w-])/i],
       reason: '账号或结算状态异常，只能人工处理' },
     { id: 'auth_unknown', name: '未知鉴权拒绝', action: 'TEMPORARY', actionLabel: '临时 30 分钟',
       threshold: 3, windowMinutes: 5, streak: false, disableMinutes: 30, codes: [401, 403], patterns: [],
