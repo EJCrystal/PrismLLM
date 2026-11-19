@@ -1,7 +1,14 @@
 package dev.soven.prismllm.integration
 
+import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.admin.domain.NewIqTestRun
+import dev.soven.prismllm.channel.persistence.NewChannelKey
+import dev.soven.prismllm.proxy.fingerprint.FingerprintAnalysis
+import dev.soven.prismllm.proxy.fingerprint.FingerprintOutput
+import io.ktor.client.HttpClient
+import io.ktor.client.engine.mock.MockEngine
+import io.ktor.client.engine.mock.respond
 import io.ktor.client.request.header
 import io.ktor.client.request.get
 import io.ktor.client.request.post
@@ -20,6 +27,8 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.boolean
@@ -110,6 +119,154 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("custom prompt", json["defaultPrompt"]?.jsonPrimitive?.content)
             assertTrue("defaultReasoningEffort" in json)
             assertEquals(JsonNull, json["defaultReasoningEffort"])
+        }
+    }
+
+    @Test
+    fun `fingerprint route analyzes raw numeric samples while only exposing redacted display text`() = runBlocking {
+        val credential = "7"
+        val rawSample = List(200) { credential }.joinToString(", ")
+        val model = "fingerprint-synthetic-model"
+        data class CapturedRequest(
+            val method: String,
+            val host: String,
+            val path: String,
+            val authorized: Boolean,
+        )
+        val captured = java.util.concurrent.ConcurrentLinkedQueue<CapturedRequest>()
+        val mockClient = HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    val host = request.url.host
+                    val path = request.url.encodedPath
+                    val authorized = request.headers[HttpHeaders.Authorization] == "Bearer $credential"
+                    captured.add(CapturedRequest(request.method.value, host, path, authorized))
+                    when {
+                        request.method == io.ktor.http.HttpMethod.Get && host == "models.dev" && path == "/catalog.json" ->
+                            respond("{}", headers = io.ktor.http.headersOf(HttpHeaders.ContentType, ContentType.Application.Json.toString()))
+                        request.method == io.ktor.http.HttpMethod.Post && host == "fingerprint.synthetic.invalid" && path == "/v1/responses" ->
+                            respond(
+                                listOf(
+                                    "event: response.output_text.delta",
+                                    "data: {\"type\":\"response.output_text.delta\",\"delta\":${Json.encodeToString(rawSample)}}",
+                                    "",
+                                    "event: response.failed",
+                                    "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}",
+                                ).joinToString("\n", postfix = "\n\n"),
+                                status = HttpStatusCode.OK,
+                                headers = io.ktor.http.headersOf(HttpHeaders.ContentType, ContentType.Text.EventStream.toString()),
+                            )
+                        else -> error("Unexpected mocked HTTP request: ${request.method.value} $host$path")
+                    }
+                }
+            }
+        }
+        app.close()
+        app = GatewayApplication(app.config.copy(upstreamHeaderRefreshEnabled = false), httpClientOverride = mockClient)
+        val channel = app.channelRepository.create(
+            name = "fingerprint numeric credential",
+            baseUrl = "https://fingerprint.synthetic.invalid/v1",
+            keys = listOf(
+                NewChannelKey(
+                    name = "synthetic numeric key",
+                    credential = app.credentialCipher.encrypt(credential),
+                    models = listOf(model),
+                ),
+            ),
+            authType = "bearer",
+            protocols = listOf(GatewayProtocol.RESPONSES),
+            enabled = true,
+            modelMappings = mappingsOf(model),
+        )
+
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val run = client.post("/admin/api/model-tests/fingerprint") {
+                header(HttpHeaders.Cookie, sessionCookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"channelId":"${channel.id}","model":"$model","protocol":"responses"}""")
+            }
+            assertEquals(HttpStatusCode.OK, run.status, run.bodyAsText())
+            val runText = run.bodyAsText()
+            val runBody = Json.parseToJsonElement(runText).jsonObject
+            val runId = runBody["id"]!!.jsonPrimitive.content
+            val displayedSamples = runBody["samples"]!!.jsonArray.map { it.jsonObject }
+            assertEquals(3, displayedSamples.size)
+            assertTrue(displayedSamples.all { it["accepted"]!!.jsonPrimitive.boolean })
+            assertTrue(displayedSamples.all { it["parsedNumbers"]!!.jsonPrimitive.int == 200 })
+            assertTrue(displayedSamples.all { it["text"]!!.jsonPrimitive.content == rawSample.replace(credential, "[REDACTED]") })
+            assertTrue(displayedSamples.all { it["statusCode"]!!.jsonPrimitive.int == 200 })
+            assertTrue(displayedSamples.all { it["errorMessage"]!!.jsonPrimitive.content.contains("denied [REDACTED]") })
+            assertFalse(runText.contains(rawSample), "The response must not expose the original numeric samples")
+
+            val analysis = Json.decodeFromString<FingerprintAnalysis>(runBody["analysis"]!!.toString())
+            val expectedRawAnalysis = assertNotNull(app.fingerprintDetector).analyze(
+                displayedSamples.map { sample ->
+                    FingerprintOutput(
+                        expectedCount = sample["expectedCount"]!!.jsonPrimitive.int,
+                        text = rawSample,
+                    )
+                },
+            )
+            assertEquals(expectedRawAnalysis, analysis, "The route's analysis must use each original upstream sample")
+            assertTrue(displayedSamples.all { it["accepted"]!!.jsonPrimitive.boolean })
+            assertEquals(3, analysis.usedOutputs)
+            val displayOnlyAnalysis = app.fingerprintDetector!!.analyze(
+                displayedSamples.map { sample ->
+                    FingerprintOutput(
+                        expectedCount = sample["expectedCount"]!!.jsonPrimitive.int,
+                        text = sample["text"]!!.jsonPrimitive.content,
+                    )
+                },
+            )
+            assertEquals(0, displayOnlyAnalysis.usedOutputs, "Redacted display strings must not be reused as detector input")
+
+            val postedSamplesJson = Json.parseToJsonElement(app.fingerprintTestRunRepository.find(runId.toLong())!!.samplesJson)
+            assertFalse(postedSamplesJson.toString().contains(rawSample))
+            assertTrue(postedSamplesJson.jsonArray.all { it.jsonObject["text"]!!.jsonPrimitive.content == rawSample.replace(credential, "[REDACTED]") })
+
+            val detail = client.get("/admin/api/model-tests/fingerprint/$runId") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, detail.status, detail.bodyAsText())
+            val detailText = detail.bodyAsText()
+            val detailBody = Json.parseToJsonElement(detailText).jsonObject
+            assertFalse(detailText.contains(rawSample), "Retrieved history must not expose the original numeric samples")
+            assertEquals(displayedSamples.map { it["text"] }, detailBody["samples"]!!.jsonArray.map { it.jsonObject["text"] })
+            assertEquals(analysis, Json.decodeFromString<FingerprintAnalysis>(detailBody["analysis"]!!.toString()))
+
+            val history = client.get("/admin/api/model-tests/fingerprint") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, history.status, history.bodyAsText())
+            val historyText = history.bodyAsText()
+            val historyItem = Json.parseToJsonElement(historyText).jsonArray.single { it.jsonObject["id"]!!.jsonPrimitive.content == runId }
+            assertFalse(historyText.contains(rawSample), "History listing must not expose sample text")
+            assertNull(historyItem.jsonObject["analysis"])
+            assertTrue(historyItem.jsonObject["samples"]!!.jsonArray.isEmpty())
+
+            val audit = client.get("/admin/api/audit-logs?action=model_test.fingerprint_run") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            assertEquals(HttpStatusCode.OK, audit.status, audit.bodyAsText())
+            val auditText = audit.bodyAsText()
+            val auditItem = Json.parseToJsonElement(auditText).jsonArray.single {
+                it.jsonObject["action"]!!.jsonPrimitive.content == "model_test.fingerprint_run"
+            }.jsonObject
+            val auditDetails = auditItem["details"]!!.jsonObject
+            val requiredAuditFields = setOf("channelId", "model", "keyId", "protocol", "decision")
+            assertTrue(auditDetails.keys == requiredAuditFields || auditDetails.keys == requiredAuditFields + "prediction")
+            assertFalse(auditText.contains(rawSample), "Audit output must not contain upstream sample text")
+            assertFalse("samples" in auditDetails)
+
+            val upstreamRequests = captured.filter { it.method == "POST" }
+            assertEquals(3, upstreamRequests.size)
+            assertTrue(upstreamRequests.all {
+                it.host == "fingerprint.synthetic.invalid" && it.path == "/v1/responses" && it.authorized
+            }, "Every sample request must stay in MockEngine with only the synthetic credential")
         }
     }
 

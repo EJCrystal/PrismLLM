@@ -2,10 +2,11 @@ import type { PluginField, PluginValue, PluginValues } from '../types/api'
 
 export const PLUGIN_STATE_CHANGED = 'gateway:plugins-changed'
 
-export function pluginFieldDefaults(fields: PluginField[], configuration: PluginValues = {}): PluginValues {
+export function pluginFieldDefaults(fields: PluginField[], configuration: PluginValues = {}, promptAlias = false): PluginValues {
   return Object.fromEntries(fields.map((field) => {
-    const configured = field.key === 'prompt' ? configuration.defaultPrompt : configuration[field.key]
-    return [field.key, configured ?? field.defaultValue ?? (field.kind === 'boolean' ? false : '')]
+    const sourceKey = promptAlias && field.key === 'prompt' ? 'defaultPrompt' : field.key
+    const configured = configuration[sourceKey]
+    return [field.key, Object.hasOwn(configuration, sourceKey) ? configured : field.defaultValue ?? (field.kind === 'boolean' ? false : '')]
   }))
 }
 

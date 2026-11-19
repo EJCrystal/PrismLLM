@@ -646,4 +646,120 @@ describe('ModelRoutesView mounted credential-order editor', () => {
       window.matchMedia = originalMatchMedia
     }
   })
+
+  it('filters selected credentials while preserving global positions, editing, focus, and reset on model switch', async () => {
+    await mount()
+    const selectedStatus = () => host.querySelector('.route-selected-pane .route-section-head [role="status"]')
+    // Start with [staticA, oauthB], verify always-mounted status live region updates while input keeps focus
+    const selectedInput = host.querySelector('[aria-label="搜索已选凭据"]')
+    const initialStatusNode = selectedStatus()
+    assert.ok(initialStatusNode)
+    assert.equal(text(initialStatusNode), '2 个')
+    selectedInput.focus()
+    await search('搜索已选凭据', 'upstream-b')
+    assert.equal(document.activeElement, selectedInput)
+    assert.equal(selectedStatus(), initialStatusNode)
+    assert.equal(text(initialStatusNode), '匹配 1 / 2 个')
+    assert.deepEqual(entryIds(), [keyFor(oauthB)])
+    assert.equal(text(entryRow(keyFor(oauthB)).querySelector('.route-position')), '2')
+
+    // Adding a credential that does not match the active selected filter keeps focus in the add pane
+    availableRow(keyFor(staticC)).querySelector('button').click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(oauthB)])
+    assert.equal(selectedStatus(), initialStatusNode)
+    assert.equal(text(initialStatusNode), '匹配 1 / 3 个')
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索可添加凭据')
+
+    // Filter to staticC by protocol and double-click its real global position (3 -> 1)
+    await search('搜索已选凭据', 'messages')
+    assert.deepEqual(entryIds(), [keyFor(staticC)])
+    assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '3')
+    entryRow(keyFor(staticC)).querySelector('.route-position').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await settle()
+    const posInput = entryRow(keyFor(staticC)).querySelector('input[data-action="position-input"]')
+    assert.ok(posInput)
+    assert.equal(posInput.value, '3')
+    posInput.value = '1'
+    posInput.dispatchEvent(new Event('input', { bubbles: true }))
+    posInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '1')
+
+    // Removing the only matching entry moves focus to the selected search input and offers clear action
+    entryButton('remove', keyFor(staticC)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.match(text(host.querySelector('.route-filter-empty')), /没有匹配的已选凭据/)
+
+    // Clicking clear restores remaining entries and keeps focus on the selected search input
+    button('清除搜索').click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticA), keyFor(oauthB)])
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.equal(text(selectedStatus()), '2 个')
+
+    // Works in readonly caller perspective mode too, preserving global positions
+    await selectPerspective('caller-a')
+    await search('搜索已选凭据', '渠道 B')
+    assert.deepEqual(entryIds(), [keyFor(oauthB)])
+    assert.equal(text(entryRow(keyFor(oauthB)).querySelector('.route-position')), '2')
+    assert.equal(text(selectedStatus()), '匹配 1 / 2 个')
+
+    // Switching models clears selectedQuery
+    host.querySelector(`[data-model-id="${modelB}"]`).click()
+    await settle()
+    assert.equal(host.querySelector('[aria-label="搜索已选凭据"]').value, '')
+
+    // Back in global mode on an empty model, filtering shows 0 / 0 with clear action and reveals added non-matching entries after clearing
+    await selectPerspective('')
+    await search('搜索已选凭据', '不存在的渠道')
+    assert.equal(text(selectedStatus()), '匹配 0 / 0 个')
+    assert.match(text(host.querySelector('.route-empty-order')), /当前搜索条件已生效/)
+    button('清除搜索').click()
+    await settle()
+    assert.equal(host.querySelector('[aria-label="搜索已选凭据"]').value, '')
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.equal(text(selectedStatus()), '0 个')
+
+    await search('搜索已选凭据', '不存在的渠道')
+    availableRow(keyFor(staticC)).querySelector('button').click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.equal(text(selectedStatus()), '匹配 0 / 1 个')
+    assert.match(text(host.querySelector('.route-filter-empty')), /没有匹配的已选凭据/)
+    assert.match(text(host.querySelector('.sr-only')), /未匹配当前已选搜索条件/)
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索可添加凭据')
+
+    button('清除搜索').click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticC)])
+    assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '1')
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.equal(text(selectedStatus()), '1 个')
+
+    // Removing the last selected entry while filtered preserves the keyword, focuses the selected search box, and keeps filtering newly added entries
+    window.confirm = () => true
+    host.querySelector(`[data-model-id="${modelA}"]`).click()
+    await settle()
+    entryButton('remove', keyFor(oauthB)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticA)])
+    await search('搜索已选凭据', '渠道 A')
+    entryButton('remove', keyFor(staticA)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.equal(host.querySelector('[aria-label="搜索已选凭据"]').value, '渠道 A')
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.equal(text(selectedStatus()), '匹配 0 / 0 个')
+    assert.match(text(host.querySelector('.route-empty-order')), /当前搜索条件已生效/)
+
+    availableRow(keyFor(staticC)).querySelector('button').click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.equal(text(selectedStatus()), '匹配 0 / 1 个')
+    assert.match(text(host.querySelector('.route-filter-empty')), /没有匹配的已选凭据/)
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '添加 渠道 A / 主密钥')
+  })
 })

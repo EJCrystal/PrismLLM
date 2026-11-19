@@ -68,10 +68,7 @@ def resolve_modules(changes: Mapping[str, bool], full_regression: bool = False) 
         selected = {module for flag, module in DIRECT_MODULES if flag in changed}
         if "pluginsdk" in changed:
             selected.add("prism-plugin-host")
-        # The persistence adapter consumes host models; SDK/host code changes
-        # follow the real reactor dependency edge, not just package fixtures.
-        if changed & {"pluginsdk", "pluginhost"}:
-            selected.add("prism-admin")
+        # Plugin-host changes reach the app composition adapter through the Maven graph.
         # Independently built extensions are absent from the reactor graph.
         # Exercise the host package boundary and existing channel regressions
         # without promoting an extension-only PR to every slow app integration.

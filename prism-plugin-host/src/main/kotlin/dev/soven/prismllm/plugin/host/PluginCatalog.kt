@@ -95,8 +95,8 @@ class PluginCatalog(catalogDirectory: Path) {
             val partsA = left[1].split('.')
             val partsB = right[1].split('.')
             for (index in 0 until minOf(partsA.size, partsB.size)) {
-                val numberA = partsA[index].toBigIntegerOrNull()
-                val numberB = partsB[index].toBigIntegerOrNull()
+                val numberA = partsA[index].takeIf { it.matches(Regex("[0-9]+")) }?.toBigInteger()
+                val numberB = partsB[index].takeIf { it.matches(Regex("[0-9]+")) }?.toBigInteger()
                 val comparison = when {
                     numberA != null && numberB != null -> numberA.compareTo(numberB)
                     numberA != null -> -1

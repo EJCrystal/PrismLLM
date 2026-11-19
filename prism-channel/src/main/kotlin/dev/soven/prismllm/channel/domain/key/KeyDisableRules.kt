@@ -21,7 +21,7 @@ sealed interface KeyAttemptSignal {
     /** 客户端取消、网关本地限流或请求体错误：既不奖也不罚。 */
     data object Ignored : KeyAttemptSignal
 
-    /** 上游返回 HTTP 错误；[errorBody] 由调用方截断后传入，[upstreamCode] 仅用于审计。 */
+    /** 上游返回 HTTP 错误；[errorBody] 由调用方截断后传入，[upstreamCode] 同时参与规则文本匹配。 */
     data class UpstreamResponse(
         val statusCode: Int,
         val errorBody: String = "",
@@ -151,14 +151,16 @@ data class KeyDisableRule(
         is KeyAttemptSignal.UpstreamResponse -> {
             val codeMatched = signal.statusCode in statusCodes ||
                 (statusCodeAtLeast != null && signal.statusCode >= statusCodeAtLeast)
-            if (codeMatched) matchText(signal.errorBody) else null
+            if (codeMatched) matchText(signal.errorBody, signal.upstreamCode) else null
         }
     }
 
-    private fun matchText(text: String): KeyRuleMatch? {
+    private fun matchText(vararg texts: String?): KeyRuleMatch? {
         if (compiledPatterns.isEmpty()) return KeyRuleMatch(null)
-        if (text.isEmpty()) return null
-        val hit = compiledPatterns.firstOrNull { it.matcher(text).find() } ?: return null
+        val candidates = texts.filterNotNull().filter { it.isNotEmpty() }
+        if (candidates.isEmpty()) return null
+        val hit = compiledPatterns.firstOrNull { pattern -> candidates.any { pattern.matcher(it).find() } }
+            ?: return null
         return KeyRuleMatch(hit.pattern())
     }
 
@@ -479,13 +481,34 @@ data class KeyDisablePolicy(
         val DEFAULT_RULES: List<KeyDisableRule> = listOf(
             KeyDisableRule(
                 id = "insufficient_balance",
-                name = "账户余额不足",
+                name = "账户余额或计费异常",
                 statusCodes = listOf(401, 402, 403),
-                bodyPatterns = listOf("INSUFFICIENT_BALANCE"),
+                bodyPatterns = listOf(
+                    "(?:^|[^\\w-])INSUFFICIENT_BALANCE(?:$|[^\\w-])",
+                    "(?:^|[^\\w-])billing[\\s_-]*error(?:$|[^\\w-])",
+                    "(?:^|[^\\w-])insufficient[\\s_-]*(balance|credit|funds)(?:$|[^\\w-])",
+                    "(?:^|[^\\w-])payment[\\s_-]*required(?:$|[^\\w-])",
+                    "余额不足",
+                    "欠费",
+                    "请充值",
+                    "额度(不足|用尽)",
+                ),
                 threshold = 1,
                 action = KeyDisableAction.PERMANENT,
             ),
-        ) + LEGACY_DEFAULT_RULES
+        ) + LEGACY_DEFAULT_RULES.map { rule ->
+            if (rule.id == "account_blocked") {
+                rule.copy(
+                    bodyPatterns = listOf(
+                        "account[^\\n]{0,40}(disabled|suspended|deactivated)",
+                        "(?:^|[^\\w-])billing(?:$|[^\\w-])",
+                        "(?:^|[^\\w-])payment(?:$|[^\\w-])",
+                    ),
+                )
+            } else {
+                rule
+            }
+        }
     }
 }
 

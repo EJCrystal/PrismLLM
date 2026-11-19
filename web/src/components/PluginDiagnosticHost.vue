@@ -24,7 +24,7 @@ const props = defineProps<{
   accountProtocols?: string[]
   channelEnabled?: boolean
 }>()
-const emit = defineEmits<{ (event: 'unavailable'): void }>()
+const emit = defineEmits<{ (event: 'unavailable', contribution: { pluginId: string; activeVersion: string; entryId: string }): void }>()
 
 interface TestRow {
   key: string
@@ -55,22 +55,34 @@ const runGuard = createLatestRequestGuard()
 let loadController: AbortController | null = null
 let runController: AbortController | null = null
 let disposed = false
-let activated = false
+let active = true
+let contextChangedWhileDeactivated = false
+let unavailableNotifiedFor = ''
 
 const contextKey = computed(() => JSON.stringify([
   props.contribution.pluginId, props.contribution.activeVersion, props.contribution.entry.id,
-  props.context?.kind, props.context?.id, props.accountModels, props.accountProtocols,
+  props.context?.kind, props.context?.id, props.accountModels, props.accountProtocols, props.initialModel,
 ]))
 const fields = computed(() => props.contribution.entry.action.fields)
 const selectedTarget = computed(() => targets.value.find((target) => modelTestTargetKey(target.channelId, target.model) === selectedTargetKey.value))
 const isAccount = computed(() => props.context?.kind === 'oauth-account')
 const batch = computed(() => form.scope === 'all' && props.contribution.entry.action.supportsBatch && !isAccount.value)
-const defaultValues = computed(() => pluginFieldDefaults(fields.value, state.value?.activeConfiguration ?? {}))
+const defaultValues = computed(() => pluginFieldDefaults(fields.value, state.value?.activeConfiguration ?? {}, true))
 const formError = computed(() => pluginFormError(fields.value, form))
 const canRun = computed(() => !loading.value && !loadError.value && !running.value && !formError.value && targets.value.length > 0 && !!selectedTarget.value && !!form.protocol)
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
+}
+
+function isUnavailableError(cause: unknown): boolean {
+  return cause instanceof ApiError && ['plugin_unavailable', 'PLUGIN_DISABLED', 'PLUGIN_NOT_ACTIVE', 'PLUGIN_ACTIVE_VERSION_CONFLICT', 'PLUGIN_ACTION_NOT_AVAILABLE', 'PLUGIN_NOT_INSTALLED'].includes(cause.code ?? '')
+}
+
+function notifyUnavailable() {
+  if (unavailableNotifiedFor === contextKey.value) return
+  unavailableNotifiedFor = contextKey.value
+  emit('unavailable', { pluginId: props.contribution.pluginId, activeVersion: props.contribution.activeVersion, entryId: props.contribution.entry.id })
 }
 
 function syncSelection() {
@@ -125,23 +137,26 @@ function stopWaiting() {
 }
 
 async function load(reset = true) {
+  if (disposed || !active) return
   loadController?.abort()
-  const controller = new AbortController()
-  loadController = controller
+  const current = new AbortController()
+  loadController = current
   const key = contextKey.value
   loading.value = true
   loadError.value = ''
   let settled = false
   try {
     const loaded = await loadGuard.run(() => Promise.all([
-      api.getPlugin(props.contribution.pluginId, { signal: controller.signal }),
-      api.listPluginTargets(props.contribution.pluginId, props.context, { signal: controller.signal }),
+      api.getPlugin(props.contribution.pluginId, { signal: current.signal }),
+      api.listPluginTargets(props.contribution.pluginId, props.context, { signal: current.signal }),
     ]))
-    if (!loaded.isLatest || disposed || key !== contextKey.value) return
+    if (!loaded.isLatest || disposed || !active || key !== contextKey.value) return
     const [currentState, available] = loaded.value
-    if (!currentState.admissionEnabled || currentState.activeVersion !== props.contribution.activeVersion) {
+    if (!currentState.admissionEnabled || currentState.activeVersion !== props.contribution.activeVersion ||
+      !currentState.activeUi?.entries.some((entry) => entry.id === props.contribution.entry.id)) {
       stopWaiting()
-      throw new Error('插件已停用或生效版本已改变，请重新打开诊断入口。')
+      notifyUnavailable()
+      throw new Error('插件已停用、生效版本已改变或入口已失效，请重新打开诊断入口。')
     }
     state.value = currentState
     targets.value = available.filter((target) => {
@@ -156,7 +171,7 @@ async function load(reset = true) {
     })).filter((target) => target.protocols.length && target.credentials.length)
     const previous = { ...form }
     for (const fieldKey of Object.keys(form)) delete form[fieldKey]
-    Object.assign(form, pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}))
+    Object.assign(form, pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}, true))
     if (!reset) for (const field of fields.value) if (Object.hasOwn(previous, field.key)) form[field.key] = previous[field.key]!
     if (!targets.value.some((target) => modelTestTargetKey(target.channelId, target.model) === selectedTargetKey.value)) {
       const preferred = targets.value.find((target) => target.model === props.initialModel) ?? targets.value[0]
@@ -166,14 +181,14 @@ async function load(reset = true) {
     settled = true
   } catch (cause) {
     const latest = (cause as { isLatest?: boolean }).isLatest !== false
-    if (!disposed && latest && key === contextKey.value && !controller.signal.aborted) {
+    if (!disposed && active && latest && key === contextKey.value && !current.signal.aborted) {
       loadError.value = errorMessage(cause)
       settled = true
-      emit('unavailable')
+      if (isUnavailableError(cause)) notifyUnavailable()
     }
   } finally {
     if (settled) loading.value = false
-    if (loadController === controller) loadController = null
+    if (loadController === current) loadController = null
   }
 }
 
@@ -194,7 +209,7 @@ function createRow(target: ModelTestTarget, values: PluginValues): TestRow {
 }
 
 async function run() {
-  if (!canRun.value) return
+  if (!active || !canRun.value) return
   const key = contextKey.value
   const pluginId = props.contribution.pluginId
   const version = props.contribution.activeVersion
@@ -214,9 +229,10 @@ async function run() {
   try {
     const currentState = await api.getPlugin(pluginId, { signal: controller.signal })
     if (!isCurrent()) return
-    if (!currentState.admissionEnabled || currentState.activeVersion !== version) {
-      emit('unavailable')
-      throw new Error('插件已停用或生效版本已改变，请重新打开诊断入口。')
+    if (!currentState.admissionEnabled || currentState.activeVersion !== version ||
+      !currentState.activeUi?.entries.some((entry) => entry.id === props.contribution.entry.id)) {
+      notifyUnavailable()
+      throw new Error('插件已停用、生效版本已改变或入口已失效，请重新打开诊断入口。')
     }
     state.value = currentState
     rows.value = chosen.map((target) => {
@@ -246,7 +262,11 @@ async function run() {
         } catch (cause) {
           if (!isCurrent()) return
           row.error = errorMessage(cause)
-          if (cause instanceof ApiError && (cause.status === 409 || cause.status === 503)) emit('unavailable')
+          if (isUnavailableError(cause)) {
+            row.running = false
+            stopWaiting()
+            notifyUnavailable()
+          }
         } finally {
           if (isCurrent()) row.running = false
         }
@@ -263,6 +283,7 @@ async function run() {
   } catch (cause) {
     if (isCurrent()) {
       runError.value = errorMessage(cause)
+      if (isUnavailableError(cause)) notifyUnavailable()
       notify(runError.value, 'error')
     }
   } finally {
@@ -271,9 +292,10 @@ async function run() {
   }
 }
 
-function refreshState() { void load(false) }
+function refreshState() { if (active) void load(false) }
 watch(selectedTargetKey, syncSelection)
 watch(contextKey, () => {
+  if (!active) contextChangedWhileDeactivated = true
   stopWaiting()
   rows.value = []
   selectedTargetKey.value = ''
@@ -283,10 +305,23 @@ onMounted(() => {
   void load()
   window.addEventListener(PLUGIN_STATE_CHANGED, refreshState)
 })
-onActivated(() => { if (activated) void load(false); activated = true })
-onDeactivated(stopWaiting)
+onActivated(() => {
+  const wasDeactivated = !active
+  const contextChangedWhileHidden = contextChangedWhileDeactivated
+  active = true
+  contextChangedWhileDeactivated = false
+  if (wasDeactivated) void load(contextChangedWhileHidden)
+})
+onDeactivated(() => {
+  active = false
+  loadGuard.invalidate()
+  loadController?.abort()
+  loadController = null
+  stopWaiting()
+})
 onBeforeUnmount(() => {
   disposed = true
+  active = false
   loadGuard.invalidate()
   loadController?.abort()
   stopWaiting()
@@ -324,7 +359,8 @@ onBeforeUnmount(() => {
               <summary>请求限制与记录说明</summary><p v-for="(note, index) in contribution.entry.action.notes" :key="index">{{ note }}</p>
             </details>
           </div>
-          <p class="test-form-note">请求最长 45 秒、最多 128 输出 token；当前生效 {{ contribution.activeVersion }}。每次诊断使用独立的输入与配置快照。</p>
+          <p class="test-form-note">模型探测最长 45 秒、最多 128 输出 token；当前生效 {{ contribution.activeVersion }}。每次诊断使用独立的输入与配置快照。</p>
+          <p v-if="isAccount" class="test-form-note">探测前的 OAuth 准备最多耗时 20 秒。</p>
         </div>
       </template>
       <template #actions>

@@ -22,7 +22,7 @@ dom.window.HTMLElement.prototype.scrollIntoView = () => {}
 const originalFetch = globalThis.fetch
 const originalConfirm = window.confirm
 const runtime = await import('vue')
-const { createApp, h, nextTick, reactive, ssrContextKey } = runtime
+const { createApp, h, nextTick, reactive, ref, ssrContextKey } = runtime
 const { parse } = await import('@vue/compiler-sfc')
 const { compile: compileTemplate } = await import('@vue/compiler-dom')
 const { transform } = await import('esbuild')
@@ -89,6 +89,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
   let captures, calls, mock, confirmResult, confirmCalls, recordMounts
   const components = new Map()
   const mounted = []
+  let diagnosticHostSetups = 0
   const channel = { id: 'channel-1', name: '合成渠道', enabled: true }
 
   async function clientComponent(name, children = {}) {
@@ -104,6 +105,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     component.components = children
     component.setup = (props, context) => {
       const state = setup(props, context)
+      if (name === 'PluginDiagnosticHost') diagnosticHostSetups++
       if (name === 'ChannelTestDrawer') {
         state.components.iq = legacyStub('iq')
         state.components.fingerprint = legacyStub('fingerprint')
@@ -138,15 +140,25 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     return clonePluginData(next)
   }
   function installHooks() {
-    api.listPluginCatalog = async options => { calls.catalog.push(options); return clonePluginData(mock.catalog) }
-    api.listPlugins = async options => { calls.plugins.push(options); return clonePluginData([...mock.states.values()]) }
+    api.listPluginCatalog = options => {
+      calls.catalog.push(options)
+      return mock.listCatalog ? mock.listCatalog(options) : Promise.resolve(clonePluginData(mock.catalog))
+    }
+    api.listPlugins = options => {
+      calls.plugins.push(options)
+      return mock.listPlugins ? mock.listPlugins(options) : Promise.resolve(clonePluginData([...mock.states.values()]))
+    }
     api.getPlugin = async (id, options = {}) => {
       calls.state.push({ id, options })
       return mock.getState ? mock.getState(id, options) : stateFor(id)
     }
-    api.getPluginContributions = async options => {
+    api.getPluginContributions = options => {
       calls.contributions.push(options)
-      return clonePluginData(mock.contributions.filter(item => mock.states.get(item.pluginId)?.admissionEnabled))
+      const available = mock.contributions.filter(item => {
+        const state = mock.states.get(item.pluginId)
+        return state?.admissionEnabled && state.activeVersion === item.activeVersion && state.activeUi?.entries.some(entry => entry.id === item.entry.id)
+      })
+      return mock.listContributions ? mock.listContributions(options, clonePluginData(available)) : Promise.resolve(clonePluginData(available))
     }
     api.listPluginTargets = async (id, context, options = {}) => {
       calls.targets.push({ id, context: context ? clonePluginData(context) : undefined, options })
@@ -217,6 +229,23 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     return entry
   }
 
+  async function mountDiagnosticSurface(name, fixture = makeOfficialPluginFixture()) {
+    setFixtures(fixture)
+    captures.delete('PluginDiagnosticHost')
+    const account = { id: 'account-1', name: 'Synthetic account', accountEmail: 'test@example.invalid', provider: 'chatgpt' }
+    mock.targets = [makeTarget(name === 'OAuthModelTestModal'
+      ? { channelId: account.id, protocols: ['responses'], credentials: [{ id: account.id, name: '账号原生授权', priority: 1 }] }
+      : {})]
+    const entry = await mount(name, name === 'OAuthModelTestModal' ? { account, models: ['test-model'] }
+      : name === 'PluginMarketplaceView' ? {} : { channel })
+    if (name === 'PluginMarketplaceView') {
+      await waitFor(() => !entry.state.loading.value)
+      button(entry.container, fixture.pageContribution.entry.label).click()
+    }
+    await waitFor(() => captures.has('PluginDiagnosticHost'), `${name} diagnostic mount`)
+    return entry
+  }
+
   before(async () => {
     server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, envFile: false,
       cacheDir: join(tmpdir(), 'prism-plugin-ui-tests-' + process.pid), plugins: [vue()], optimizeDeps: { noDiscovery: true, include: [] },
@@ -243,7 +272,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     captures = new Map()
     calls = { catalog: [], plugins: [], state: [], contributions: [], targets: [], invocations: [], install: [], enabled: [], configuration: [], uninstall: [], legacy: [], fetch: [] }
     mock = { catalog: [], states: new Map(), contributions: [], targets: [makeTarget()] }
-    confirmResult = false; confirmCalls = []; recordMounts = 0
+    confirmResult = false; confirmCalls = []; recordMounts = 0; diagnosticHostSetups = 0
     window.confirm = message => { confirmCalls.push(message); return confirmResult }
     globalThis.fetch = window.fetch = async (...args) => { calls.fetch.push(args); throw new Error('Plugin UI tests forbid unmocked network') }
     toasts.splice(0)
@@ -335,6 +364,24 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(field(entry.container, '本次提示词').value, 'active default')
   })
 
+  it('clears an optional enum to null but never adds a blank choice to required enums', async () => {
+    const events = []
+    const optional = await mount('PluginFieldInput', {
+      field: makeField('mode', '可选模式', 'select', { options: [{ value: 'brief', label: '简洁' } ] }),
+      modelValue: 'brief', 'onUpdate:modelValue': value => events.push(value),
+    })
+    const optionalSelect = field(optional.container, '可选模式')
+    assert.equal([...optionalSelect.options].some(option => option.value === '' && option.textContent === '未设置'), true)
+    await change(optionalSelect, '')
+    assert.deepEqual(events, [null])
+
+    const required = await mount('PluginFieldInput', {
+      field: makeField('requiredMode', '必选模式', 'select', { required: true, options: [{ value: 'brief', label: '简洁' }] }),
+      modelValue: 'brief',
+    })
+    assert.equal([...field(required.container, '必选模式').options].some(option => option.value === ''), false)
+  })
+
   it('uses real scalar events and descriptor validation to block invalid diagnostics', async () => {
     const entry = await hostFor()
     const runButton = () => entry.container.querySelector('.test-workbench-actions .button.primary')
@@ -408,7 +455,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     const host = await mount('PluginDiagnosticHost', { contribution: old.contribution, context: { kind: 'channel', id: channel.id } })
     await waitFor(() => !host.state.loading.value)
     assert.equal(host.state.form.prompt, 'old running configuration')
-    assert.equal(host.state.fields.value.some(field => field.key === 'futurePrompt'), false)
+    assert.equal(host.state.fields.value.some(field => field.key === 'futureField'), false)
+    assert.equal(host.state.fields.value.some(field => field.key === 'label'), true)
     await host.state.run(); await settle()
     assert.equal(calls.invocations[0].payload.expectedActiveVersion, '1.0.0')
     assert.equal(calls.invocations[0].payload.values.prompt, 'old running configuration')
@@ -504,6 +552,313 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(calls.invocations.at(-1).id, unknown.manifest.id)
     assert.equal(calls.invocations.at(-1).payload.actionId, unknown.accountContribution.entry.action.id)
     assert.deepEqual(calls.legacy, [])
+  })
+
+  it('only notifies confirmed unavailable codes once and leaves ordinary failures and PLUGIN_BUSY retryable', async () => {
+    for (const [code, expected] of [['network', 0], ['PLUGIN_BUSY', 0], ['PLUGIN_DISABLED', 1], ['PLUGIN_ACTIVE_VERSION_CONFLICT', 1]]) {
+      const fixture = makePluginFixture()
+      const unavailable = []
+      const entry = await hostFor(fixture, { onUnavailable: value => unavailable.push(value) })
+      const firstInvocation = calls.invocations.length
+      const pending = deferred()
+      mock.invoke = () => pending.promise
+      const run = entry.state.run()
+      await waitFor(() => calls.invocations.length === firstInvocation + 1)
+      pending.reject(code === 'network' ? new Error('temporary resource failure') : new ApiError('plugin response', code.includes('BUSY') ? 503 : 409, code))
+      await run; await settle()
+      assert.equal(unavailable.length, expected)
+      assert.equal(entry.state.rows.value[0]?.error.includes('plugin response') ?? false, code !== 'network')
+      if (!expected) {
+        assert.ok(entry.state.rows.value.length > 0, 'ordinary failures remain in the host result view')
+        assert.equal(entry.state.loadError.value, '')
+      } else {
+        assert.deepEqual(unavailable[0], { pluginId: fixture.manifest.id, activeVersion: '1.0.0', entryId: fixture.contribution.entry.id })
+      }
+      entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+    }
+  })
+
+  it('notifies wrappers when confirmed unavailable is returned by invocation preflight', async () => {
+    const fixture = makePluginFixture()
+    const unavailable = []
+    const entry = await hostFor(fixture, { onUnavailable: value => unavailable.push(value) })
+    mock.getState = () => Promise.reject(new ApiError('entry no longer available', 409, 'PLUGIN_ACTION_NOT_AVAILABLE'))
+    await entry.state.run(); await settle()
+    assert.deepEqual(unavailable, [{ pluginId: fixture.manifest.id, activeVersion: '1.0.0', entryId: fixture.contribution.entry.id }])
+    assert.match(entry.state.runError.value, /entry no longer available/)
+    assert.equal(calls.invocations.length, 0)
+  })
+
+  it('keeps target-load errors in the channel and account wrappers until manual retry', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    const channelSetupBaseline = diagnosticHostSetups
+    const firstTargetLoad = deferred()
+    mock.getTargets = () => calls.targets.length === 1 ? firstTargetLoad.promise : Promise.resolve(clonePluginData(mock.targets))
+    const channelWrapper = await mount('ChannelConnectivityPanel', { channel })
+    await waitFor(() => calls.targets.length === 1)
+    firstTargetLoad.reject(new Error('resource endpoint temporarily unavailable'))
+    await waitFor(() => !channelWrapper.state.loading.value && !captures.get('PluginDiagnosticHost').loading.value)
+    assert.equal(text(channelWrapper.container.querySelector('.plugin-diagnostic-load-error')), 'resource endpoint temporarily unavailable重新读取')
+    assert.equal(diagnosticHostSetups, 1)
+    button(channelWrapper.container, '重新读取').click(); await waitFor(() => calls.targets.length === 2 && !captures.get('PluginDiagnosticHost').loading.value)
+    assert.equal(diagnosticHostSetups, 1, 'ordinary target errors do not remount the diagnostic host')
+    channelWrapper.unmount(); mounted.splice(mounted.indexOf(channelWrapper), 1)
+
+    setFixtures(fixture)
+    const account = { id: 'account-1', name: 'Synthetic account', accountEmail: 'test@example.invalid', provider: 'chatgpt' }
+    const accountSetupBaseline = diagnosticHostSetups
+    const accountContributionBaseline = calls.contributions.length
+    mock.getTargets = () => Promise.reject(new Error('resource endpoint temporarily unavailable'))
+    const accountWrapper = await mount('OAuthModelTestModal', { account, models: ['test-model'] })
+    await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+    assert.equal(diagnosticHostSetups, accountSetupBaseline + 1)
+    assert.match(text(accountWrapper.container), /resource endpoint temporarily unavailable/)
+    assert.equal(calls.contributions.length, accountContributionBaseline + 1, 'host resource error must not trigger contribution reload')
+    accountWrapper.unmount(); mounted.splice(mounted.indexOf(accountWrapper), 1)
+  })
+
+  it('removes only the invalid contribution version and lets the user manually recheck wrappers', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    mock.getTargets = () => Promise.reject(new ApiError('disabled', 409, 'PLUGIN_DISABLED'))
+    const wrapper = await mount('ChannelConnectivityPanel', { channel })
+    await waitFor(() => wrapper.container.textContent.includes('诊断入口已失效'))
+    assert.equal(diagnosticHostSetups, 1)
+    assert.equal(calls.contributions.length, 1)
+    setState(fixture.manifest.id, { activeUi: fixture.ui })
+    mock.getTargets = undefined
+    button(wrapper.container, '重新检查').click()
+    await waitFor(() => diagnosticHostSetups === 2 && !captures.get('PluginDiagnosticHost').loading.value)
+    assert.equal(calls.contributions.length, 2)
+    wrapper.unmount(); mounted.splice(mounted.indexOf(wrapper), 1)
+  })
+
+  it('aborts host resource reads and ignores plugin events while a KeepAlive tab is inactive', async () => {
+    const fixture = makePluginFixture()
+    const firstState = deferred()
+    const firstTargets = deferred()
+    let stateReads = 0
+    let targetReads = 0
+    mock.getState = (_id, options) => {
+      stateReads++
+      return stateReads === 1 ? (mock.firstStateOptions = options, firstState.promise) : stateFor(fixture.manifest.id)
+    }
+    mock.getTargets = (_id, _context, options) => {
+      targetReads++
+      return targetReads === 1 ? (mock.firstTargetOptions = options, firstTargets.promise) : clonePluginData(mock.targets)
+    }
+    setFixtures(fixture)
+    const container = document.createElement('div')
+    document.body.append(container)
+    const visible = ref(true)
+    const context = ref({ kind: 'channel', id: channel.id })
+    const initialModel = ref(undefined)
+    const app = createApp({ render: () => h('div', [h('button', { onClick: () => { visible.value = !visible.value } }, 'toggle'), h(runtime.KeepAlive, null, {
+      default: () => visible.value ? h(components.get('PluginDiagnosticHost'), { contribution: fixture.contribution, context: context.value, initialModel: initialModel.value, onUnavailable: () => { mock.unavailable = (mock.unavailable ?? 0) + 1 } }) : null,
+    })]) })
+    app.provide(ssrContextKey, { modules: new Set() })
+    app.mount(container)
+    const entry = { app, container, state: captures.get('PluginDiagnosticHost'), unmount() { app.unmount(); container.remove() } }
+    mounted.push(entry)
+    await waitFor(() => stateReads === 1 && targetReads === 1)
+    button(container, 'toggle').click(); await settle()
+    assert.equal(mock.firstStateOptions.signal.aborted, true)
+    assert.equal(mock.firstTargetOptions.signal.aborted, true)
+    button(container, 'toggle').click(); await waitFor(() => stateReads === 2 && targetReads === 2)
+    assert.equal(entry.state.loading.value, false)
+    assert.equal(entry.state.form.model, 'test-model')
+    entry.state.form.prompt = 'custom prompt from the old activation context'
+    const pendingInvocation = deferred()
+    let invocationCall
+    mock.invoke = call => { invocationCall = call; return pendingInvocation.promise }
+    const invocationsBeforeRun = calls.invocations.length
+    const pendingRun = entry.state.run()
+    await waitFor(() => calls.invocations.length === invocationsBeforeRun + 1)
+    assert.equal(invocationCall.payload.values.prompt, 'custom prompt from the old activation context')
+    const readsAtActivation = stateReads
+    visible.value = false; await settle()
+    assert.equal(calls.invocations.at(-1).options.signal.aborted, true, 'deactivation aborts the pending invocation')
+    pendingInvocation.resolve(responseFor(invocationCall))
+    await pendingRun; await settle()
+    assert.equal(entry.state.rows.value[0]?.execution, null, 'late execution callbacks are ignored while inactive')
+    context.value = { kind: 'channel', id: 'channel-2' }
+    initialModel.value = 'recovered-model'
+    mock.targets = [makeTarget({ channelId: 'channel-2', model: 'recovered-model' })]
+    mock.states.set(fixture.manifest.id, clonePluginData(fixture.state))
+    await settle()
+    window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED)); await settle()
+    assert.equal(stateReads, readsAtActivation, 'state events while inactive do not reload resources')
+    firstState.resolve(fixture.state)
+    firstTargets.resolve([makeTarget()])
+    await settle()
+    assert.equal(entry.state.loadError.value, '')
+    assert.equal(mock.unavailable ?? 0, 0)
+    button(container, 'toggle').click(); await waitFor(() => stateReads === readsAtActivation + 1 && targetReads === 3 && !entry.state.loading.value)
+    assert.equal(entry.state.form.model, 'recovered-model')
+    assert.equal(entry.state.form.prompt, '请只回复 OK', 'activation with changed context resets the prompt from the latest active default')
+    assert.equal(entry.state.selectedTargetKey.value, modelTestTargetKey('channel-2', 'recovered-model'))
+    entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+  })
+
+  it('renders real no-credential targets as empty and retains the usable-credential comparison', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [makeTarget({ protocols: ['responses'], credentials: [] })]
+    const empty = await hostFor(fixture)
+    assert.equal(empty.state.state.value.admissionEnabled, true)
+    assert.equal(empty.state.targets.value.length, 0)
+    assert.match(text(empty.container), /没有可测试的模型/)
+    assert.equal(empty.container.querySelector('.test-workbench-actions'), null)
+    empty.unmount(); mounted.splice(mounted.indexOf(empty), 1)
+    mock.targets = [makeTarget({ protocols: ['responses'], credentials: [{ id: 'usable', name: '可用凭据', priority: 1 }] })]
+    const usable = await hostFor(fixture)
+    assert.equal(usable.state.targets.value.length, 1)
+    assert.ok(usable.container.querySelector('.test-workbench-actions .button.primary'))
+  })
+
+  it('removes confirmed stale entries across actual mounted surfaces, excludes only that version, and allows same-version recheck', async () => {
+    const fixture = makeOfficialPluginFixture()
+    for (const surface of ['ChannelConnectivityPanel', 'OAuthModelTestModal', 'PluginMarketplaceView', 'ChannelTestDrawer']) {
+      const entry = await mountDiagnosticSurface(surface, fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value, `${surface} host resources`)
+      const host = captures.get('PluginDiagnosticHost')
+      const staleVersion = fixture.contribution.activeVersion
+      const initialSetups = diagnosticHostSetups
+      const staleHost = host
+      mock.getTargets = () => Promise.reject(new ApiError('entry no longer available', 409, 'PLUGIN_ACTION_NOT_AVAILABLE'))
+      await staleHost.load()
+      await settle()
+      assert.equal(diagnosticHostSetups, initialSetups)
+      if (surface === 'ChannelTestDrawer') {
+        assert.equal(entry.state.activeTab.value, 'iq')
+        assert.equal(entry.state.tabs.value.some(tab => tab.id === 'plugin:prism.connectivity:connectivity-channel'), false)
+        mock.getTargets = undefined
+        button(entry.container, '重新检查').click()
+        await waitFor(() => entry.state.tabs.value.some(tab => tab.id === 'plugin:prism.connectivity:connectivity-channel'))
+        button(entry.container, '连通性').click()
+        await waitFor(() => diagnosticHostSetups === initialSetups + 1)
+        await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      } else {
+        await waitFor(() => surface === 'OAuthModelTestModal'
+          ? entry.container.textContent.includes('诊断入口已失效')
+          : surface === 'ChannelConnectivityPanel'
+            ? entry.container.textContent.includes('诊断入口已失效')
+            : entry.container.textContent.includes('入口已不可用'))
+        if (surface === 'PluginMarketplaceView') {
+          mock.getTargets = undefined
+          setState(fixture.manifest.id, { activeUi: clonePluginData(fixture.ui) })
+          button(entry.container, '重新检查').click()
+          await waitFor(() => diagnosticHostSetups === initialSetups + 1)
+        } else {
+          mock.getTargets = undefined
+          button(entry.container, '重新检查').click()
+          await waitFor(() => diagnosticHostSetups === initialSetups + 1)
+        }
+        await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+        assert.equal(captures.get('PluginDiagnosticHost').props.contribution.activeVersion, staleVersion)
+      }
+      assert.ok(calls.contributions.length > 0)
+      entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+    }
+  })
+
+  it('keeps ordinary list failures mounted with host-level manual retry', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    const failedTargets = deferred()
+    mock.getTargets = () => failedTargets.promise
+    const entry = await mount('ChannelConnectivityPanel', { channel })
+    await waitFor(() => calls.targets.length === 1)
+    failedTargets.reject(new Error('temporary model-resource failure'))
+    await waitFor(() => entry.container.querySelector('.plugin-diagnostic-load-error'))
+    assert.equal(diagnosticHostSetups, 1)
+    assert.equal(calls.contributions.length, 1)
+    button(entry.container, '重新读取').click()
+    await waitFor(() => calls.targets.length === 2 && !captures.get('PluginDiagnosticHost').loading.value)
+    assert.equal(diagnosticHostSetups, 1)
+  })
+
+  it('recovers probe capacity after PLUGIN_BUSY and can start two fresh workers', async () => {
+    const fixture = makePluginFixture()
+    mock.targets = [0, 1].map(index => makeTarget({ model: `capacity-${index}` }))
+    const entry = await hostFor(fixture)
+    let callsMade = 0
+    mock.invoke = () => {
+      callsMade++
+      if (callsMade === 1) return Promise.reject(new ApiError('capacity busy', 503, 'PLUGIN_BUSY'))
+      return Promise.resolve(responseFor(calls.invocations.at(-1)))
+    }
+    entry.state.form.scope = 'single'
+    await entry.state.run(); await settle()
+    assert.equal(entry.state.rows.value[0].error, 'capacity busy')
+    assert.equal(calls.invocations.length, 1)
+    entry.state.form.scope = 'all'
+    const pending = []
+    mock.invoke = call => { const item = deferred(); pending.push({ ...item, call }); return item.promise }
+    const retry = entry.state.run()
+    await waitFor(() => pending.length === 2)
+    assert.equal(calls.invocations.length, 3)
+    pending.forEach(item => item.resolve(responseFor(item.call)))
+    await retry; await settle()
+    assert.equal(entry.state.rows.value.filter(row => row.execution).length, 2)
+    assert.equal(entry.state.rows.value.filter(row => row.error).length, 0)
+  })
+
+  for (const code of ['PLUGIN_DISABLED', 'PLUGIN_ACTIVE_VERSION_CONFLICT']) {
+    it(`stops queued batch targets and aborts in-flight work on ${code}`, async () => {
+      mock.targets = [0, 1, 2, 3].map(index => makeTarget({ model: `unavailable-batch-${index}` }))
+      const pending = []
+      const abortedAtNotification = []
+      const entry = await hostFor(makePluginFixture(), {
+        onUnavailable: () => abortedAtNotification.push(pending[1]?.call.options.signal.aborted),
+      })
+      await change(field(entry.container, '检测范围'), 'all')
+      mock.invoke = call => {
+        const result = deferred()
+        pending.push({ ...result, call })
+        return result.promise
+      }
+      const invocationStart = calls.invocations.length
+      const run = entry.state.run()
+      await waitFor(() => pending.length === 2)
+      assert.equal(calls.invocations.length - invocationStart, 2)
+      const [first, second] = pending
+      assert.equal(second.call.options.signal.aborted, false)
+      const failure = `admission rejected: ${code}`
+      first.reject(new ApiError(failure, 409, code))
+      await waitFor(() => abortedAtNotification.length > 0, 'unavailable notification')
+      assert.deepEqual(abortedAtNotification, [true], 'in-flight work is aborted before the parent is notified')
+      assert.equal(calls.invocations.length - invocationStart, 2, 'the first worker cannot claim another queued target')
+      const [failed, inFlight, ...queued] = entry.state.rows.value
+      assert.equal(failed.error, failure)
+      assert.equal(failed.waitingStopped, false, 'the original failure remains visible')
+      assert.equal(failed.running, false)
+      assert.equal(inFlight.waitingStopped, true)
+      assert.match(inFlight.error, /已发给上游的请求可能继续执行/)
+      assert.equal(queued.length, 2)
+      assert.ok(queued.every(row => row.waitingStopped && /此项尚未发送/.test(row.error)))
+      assert.equal(entry.state.running.value, false)
+
+      second.resolve(responseFor(second.call))
+      await run; await settle()
+      assert.equal(calls.invocations.length - invocationStart, 2, 'second worker completion does not dispatch another target')
+      assert.equal(inFlight.execution, null, 'the late success is ignored')
+      assert.equal(toasts.length, 0, 'an interrupted batch does not publish a summary')
+    })
+  }
+
+  it('keeps a user-selected records tab when the first contribution load resolves', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    const pending = deferred()
+    mock.listContributions = () => pending.promise
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => calls.contributions.length === 1)
+    entry.state.selectTab('records')
+    pending.resolve(clonePluginData(fixture.contributions))
+    await waitFor(() => entry.state.initialized)
+    assert.equal(entry.state.activeTab.value, 'records')
+    assert.equal(entry.container.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), '记录')
   })
 
   it('renders missing resources and permits manual diagnostics on a disabled channel', async () => {
@@ -749,6 +1104,18 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
+  it('shows channel credential guidance for channel 401 and OAuth guidance for account 401', async () => {
+    for (const [kind, title, hint] of [
+      ['channel', '渠道凭据认证失败', '替换该凭据'],
+      ['oauth-account', '账号凭据已失效', '重新授权'],
+    ]) {
+      const execution = makeExecution({ context: { kind, id: kind === 'channel' ? channel.id : 'account-1' }, outcome: { success: false, statusCode: 401, errorMessage: 'unauthorized' } })
+      const entry = await mount('PluginDiagnosticResult', { execution })
+      assert.equal(text(entry.container.querySelector('.plugin-result-error strong')), title)
+      assert.match(text(entry.container.querySelector('.plugin-result-error p')), new RegExp(hint))
+    }
+  })
+
   it('escapes report response metrics and upstream-401 details as literal text', async () => {
     const payload = '<img src=x onerror="globalThis.injected=true"><script>globalThis.injected=true</script>'
     const execution = makeExecution({ outcome: { success: false, statusCode: 401, responseText: payload, errorMessage: payload, upstreamReportedModel: payload },
@@ -865,6 +1232,74 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(entry.state.selectedState.value.installedVersion, '1.0.0')
     assert.match(text(entry.container), /已卸载，保留历史选择/)
     assert.deepEqual(entry.state.selectedState.value.configuration, fixture.state.configuration)
+  })
+
+  it('keeps configuration prompt fields on their own keys and treats a clean empty snapshot as unchanged', async () => {
+    const fixture = makePluginFixture({
+      configurationFields: [
+        makeField('prompt', '配置 prompt', 'text', { defaultValue: 'config default' }),
+        makeField('defaultPrompt', '诊断默认提示词', 'text', { defaultValue: 'action alias source' }),
+      ],
+      state: {
+        configuration: { prompt: 'saved config value', defaultPrompt: 'saved action alias value' },
+        activeConfiguration: { prompt: 'saved config value', defaultPrompt: 'saved action alias value' },
+      },
+    })
+    setFixtures(fixture)
+    const marketplace = await mount('PluginMarketplaceView')
+    await waitFor(() => !marketplace.state.loading.value)
+    assert.equal(marketplace.state.dirty.value, false)
+    assert.equal(marketplace.state.originalConfiguration.value, JSON.stringify({ prompt: 'saved config value', defaultPrompt: 'saved action alias value' }))
+    assert.equal(field(marketplace.container, '配置 prompt').value, 'saved config value')
+    assert.equal(marketplace.state.canLeave(), true)
+    assert.equal(confirmCalls.length, 0)
+
+    const diagnostic = await hostFor(fixture)
+    assert.equal(diagnostic.state.defaultValues.value.prompt, 'saved action alias value')
+  })
+
+  it('treats initial config as clean if the initial list request fails', async () => {
+    mock.listCatalog = () => Promise.reject(new Error('initial list unavailable'))
+    mock.listPlugins = () => Promise.reject(new Error('initial list unavailable'))
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    assert.equal(entry.state.originalConfiguration.value, '{}')
+    assert.equal(entry.state.dirty.value, false)
+    assert.equal(entry.state.canLeave(), true)
+    assert.equal(confirmCalls.length, 0)
+  })
+
+  it('cancels and invalidates list requests during mutations and blocks retry while busy', async () => {
+    const first = makePluginFixture()
+    const second = makePluginFixture({ id: 'acme.second', displayName: 'Second plugin' })
+    setFixtures(first, second)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    const lateCatalog = deferred()
+    const latePlugins = deferred()
+    mock.listCatalog = () => lateCatalog.promise
+    mock.listPlugins = () => latePlugins.promise
+    const refresh = entry.state.load()
+    await waitFor(() => calls.catalog.length === 2 && calls.plugins.length === 2)
+    const staleCatalogOptions = calls.catalog.at(-1)
+    const stalePluginsOptions = calls.plugins.at(-1)
+    const operation = deferred()
+    api.setPluginEnabled = () => operation.promise
+    entry.state.toggleEnabled()
+    assert.equal(staleCatalogOptions.signal.aborted, true)
+    assert.equal(stalePluginsOptions.signal.aborted, true)
+    assert.equal(entry.state.busy.value, true)
+    const requestCount = calls.catalog.length
+    await entry.state.load()
+    assert.equal(calls.catalog.length, requestCount, 'retry does not start a list request while a mutation is pending')
+    lateCatalog.resolve([])
+    latePlugins.resolve([])
+    await refresh
+    assert.equal(entry.state.selectedState.value.id, first.manifest.id)
+    operation.resolve(setState(first.manifest.id, { desiredEnabled: false, admissionEnabled: false, status: 'disabled', activeUi: null }))
+    await waitFor(() => !entry.state.busy.value)
+    assert.equal(entry.state.selectedState.value.desiredEnabled, false)
+    assert.equal(entry.state.items.value.some(item => item.id === second.manifest.id), true)
   })
 
   it('saves configuration without a discard prompt and protects unsaved drafts across selection and canLeave', async () => {

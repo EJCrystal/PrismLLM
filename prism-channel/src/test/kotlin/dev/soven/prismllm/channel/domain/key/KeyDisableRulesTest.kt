@@ -134,6 +134,96 @@ class KeyDisableRulesTest {
     }
 
     @Test
+    fun `upstream code participates in text matching`() {
+        val policy = KeyDisablePolicy(
+            rules = listOf(rule(statusCodes = listOf(403), bodyPatterns = listOf("billing[\\s_-]*error"), threshold = 1)),
+        )
+        val hit = assertNotNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "billing_error"), now).decision,
+        )
+        assertEquals("r1", hit.ruleId)
+        assertNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "rate_limit"), now).decision,
+        )
+    }
+
+    @Test
+    fun `default rules permanently disable billing errors on first hit`() {
+        val decision = assertNotNull(
+            KeyDisablePolicy().record(
+                KeyHealthState(),
+                KeyAttemptSignal.UpstreamResponse(403, "", "billing_error"),
+                now,
+            ).decision,
+        )
+        assertEquals("insufficient_balance", decision.ruleId)
+        assertEquals(KeyDisableAction.PERMANENT, decision.action)
+        assertEquals(1, decision.count)
+    }
+
+    @Test
+    fun `anchored patterns match body and upstream code independently`() {
+        val policy = KeyDisablePolicy(
+            rules = listOf(rule(statusCodes = listOf(403), bodyPatterns = listOf("^ACTIVITY_DISABLED$"), threshold = 1)),
+        )
+        assertNotNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "ACTIVITY_DISABLED"), now).decision,
+        )
+        assertNotNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "ACTIVITY_DISABLED"), now).decision,
+        )
+        assertNotNull(
+            policy.record(
+                KeyHealthState(),
+                KeyAttemptSignal.UpstreamResponse(403, "ACTIVITY_DISABLED", "ACTIVITY_DISABLED"),
+                now,
+            ).decision,
+        )
+    }
+
+    @Test
+    fun `default billing rule accepts space hyphen and underscore separators`() {
+        val policy = KeyDisablePolicy()
+        for (body in listOf(
+            "billing error",
+            "billing-error",
+            "billing_error",
+            "insufficient balance",
+            "insufficient-credit",
+            "payment required",
+        )) {
+            val decision = assertNotNull(
+                policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(402, body), now).decision,
+                "expected $body to disable the key",
+            )
+            assertEquals("insufficient_balance", decision.ruleId, body)
+            assertEquals(KeyDisableAction.PERMANENT, decision.action, body)
+        }
+    }
+
+    @Test
+    fun `billing words inside model names stay recoverable`() {
+        val update = KeyDisablePolicy().record(
+            KeyHealthState(),
+            KeyAttemptSignal.UpstreamResponse(403, "model billing-error-classifier is not enabled"),
+            now,
+        )
+        assertNull(update.decision)
+        assertEquals(1, update.state.counters.getValue("auth_rejected").timestamps.size)
+    }
+
+    @Test
+    fun `unscoped quota insufficiency stays recoverable`() {
+        val update = KeyDisablePolicy().record(
+            KeyHealthState(),
+            KeyAttemptSignal.UpstreamResponse(403, "insufficient quota for this request"),
+            now,
+        )
+        assertNull(update.decision)
+        assertEquals(1, update.state.counters.getValue("auth_rejected").timestamps.size)
+    }
+
+    @Test
     fun `patterns are case insensitive`() {
         val policy = KeyDisablePolicy(
             rules = listOf(rule(bodyPatterns = listOf("Incorrect API Key"), threshold = 1)),

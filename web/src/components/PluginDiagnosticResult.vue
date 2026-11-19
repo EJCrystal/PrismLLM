@@ -7,7 +7,13 @@ import { pluginExecutionToModelTestResult } from '../utils/plugin'
 
 const props = defineProps<{ execution: PluginExecution }>()
 const result = computed(() => pluginExecutionToModelTestResult(props.execution))
-const error = computed(() => modelTestErrorView(result.value))
+const error = computed(() => {
+  const view = modelTestErrorView(result.value)
+  if (view && props.execution.target.kind === 'channel' && props.execution.outcome.statusCode === 401) {
+    return { ...view, title: '渠道凭据认证失败', hint: '请检查当前选中的渠道凭据是否有效；必要时替换该凭据后重试。' }
+  }
+  return view
+})
 const usage = computed(() => formatModelTestUsage(result.value.usage))
 </script>
 

@@ -18,6 +18,7 @@ function update(event: Event) {
   const input = event.target as HTMLInputElement
   if (props.field.kind === 'boolean') emit('update:modelValue', input.checked)
   else if (props.field.kind === 'number') emit('update:modelValue', input.value === '' ? null : Number(input.value))
+  else if (props.field.kind === 'select' && !props.field.required && input.value === '') emit('update:modelValue', null)
   else emit('update:modelValue', input.value)
 }
 </script>
@@ -30,6 +31,7 @@ function update(event: Event) {
     <select v-else-if="isChoice" :id="inputId" :value="inputValue" :disabled="disabled || !choices.length"
       :required="field.required" :aria-describedby="field.help ? inputId + '-help' : undefined" @change="update">
       <option v-if="!choices.length" value="">没有可用选项</option>
+      <option v-else-if="field.kind === 'select' && !field.required" value="">未设置</option>
       <option v-for="choice in choices" :key="choice.value" :value="choice.value">{{ choice.label }}</option>
     </select>
     <textarea v-else-if="field.kind === 'textarea'" :id="inputId" :value="inputValue" rows="4"

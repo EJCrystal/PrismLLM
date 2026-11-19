@@ -525,7 +525,13 @@ describe('bounded authorized model-test-target resources', () => {
     assert.throws(() => parsePluginTargets([target()], { kind: 'channel', id: 'other/channel' }), invalidResponse)
     assert.throws(() => parsePluginTargets([target()], { kind: 'oauth-account', id: 'channel/one' }), invalidResponse)
     assert.throws(() => parsePluginTargets({ targets: [] }), invalidResponse)
-    assert.throws(() => parsePluginTargets(new Array(10001)), invalidResponse)
+    assert.throws(() => parsePluginTargets(new Array(1)), invalidResponse)
+  })
+
+  it('accepts 10000 dense unique valid targets and rejects the same list at 10001', () => {
+    const targets = Array.from({ length: 10001 }, (_, index) => target({ channelId: `channel-${index}`, model: `model-${index}` }))
+    assert.equal(parsePluginTargets(targets.slice(0, 10000)).length, 10000)
+    assert.throws(() => parsePluginTargets(targets), invalidResponse)
   })
 })
 

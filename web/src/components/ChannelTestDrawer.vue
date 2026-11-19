@@ -17,15 +17,21 @@ const legacyTabs = [
   { id: 'records', label: '记录', icon: 'logs' },
 ]
 const contributions = ref<PluginUiContribution[]>([])
+const invalidContributions = ref(new Set<string>())
+const diagnosticGeneration = ref(0)
 const loadError = ref('')
 const guard = createLatestRequestGuard()
 let disposed = false
 let initialized = false
+let userSelectedTab = false
 let controller: AbortController | null = null
 
 function contributionKey(item: PluginUiContribution) { return `plugin:${item.pluginId}:${item.entry.id}` }
+function contributionVersionKey(item: PluginUiContribution) { return `${item.pluginId}:${item.activeVersion}:${item.entry.id}` }
+const availableContributions = computed(() => contributions.value.filter((item) =>
+  item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel') && !invalidContributions.value.has(contributionVersionKey(item))))
 const tabs = computed(() => [
-  ...contributions.value.map((item) => ({ id: contributionKey(item), label: item.entry.label, icon: item.entry.icon })),
+  ...availableContributions.value.map((item) => ({ id: contributionKey(item), label: item.entry.label, icon: item.entry.icon })),
   ...legacyTabs,
 ])
 const components: Record<string, Component> = {
@@ -35,7 +41,7 @@ const components: Record<string, Component> = {
 const activeTab = ref('iq')
 const tabId = useId()
 const tabList = ref<HTMLElement | null>(null)
-const activeContribution = computed(() => contributions.value.find((item) => contributionKey(item) === activeTab.value))
+const activeContribution = computed(() => availableContributions.value.find((item) => contributionKey(item) === activeTab.value))
 const activeComponent = computed(() => activeContribution.value ? PluginDiagnosticHost : components[activeTab.value] ?? null)
 const activeProps = computed(() => activeContribution.value ? {
   contribution: activeContribution.value,
@@ -43,12 +49,13 @@ const activeProps = computed(() => activeContribution.value ? {
   initialModel: props.initialModel,
   channelEnabled: props.channel.enabled,
 } : { channel: props.channel, initialModel: props.initialModel })
-const activeKey = computed(() => `${activeTab.value}:${props.channel.id}:${activeContribution.value?.activeVersion ?? 'legacy'}`)
+const activeKey = computed(() => `${activeTab.value}:${props.channel.id}:${activeContribution.value?.activeVersion ?? 'legacy'}:${activeContribution.value ? diagnosticGeneration.value : ''}`)
 
 /** 记录页每次重新进入都重读，保证刚跑完的检测立刻出现。 */
 const recordsKey = ref(0)
 const recordTarget = ref<{ type: 'iq' | 'fingerprint'; id: number } | null>(null)
 function selectTab(id: string) {
+  userSelectedTab = true
   if (id === activeTab.value) return
   if (id === 'records') recordsKey.value += 1
   activeTab.value = id
@@ -76,10 +83,11 @@ function openRecord(id: number) {
   if (type !== 'iq' && type !== 'fingerprint') return
   recordTarget.value = { type, id }
   recordsKey.value += 1
+  userSelectedTab = true
   activeTab.value = 'records'
 }
 
-async function load() {
+async function load(recheck = false) {
   controller?.abort()
   const current = new AbortController()
   controller = current
@@ -87,8 +95,13 @@ async function load() {
   try {
     const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
     if (!result.isLatest || disposed) return
-    contributions.value = result.value.filter((item) => item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel'))
-    if (!initialized || !tabs.value.some((tab) => tab.id === activeTab.value)) activeTab.value = tabs.value[0]?.id ?? 'iq'
+    if (recheck) {
+      invalidContributions.value = new Set()
+      diagnosticGeneration.value++
+    }
+    contributions.value = result.value
+    if (!tabs.value.some((tab) => tab.id === activeTab.value)) activeTab.value = tabs.value[0]?.id ?? 'iq'
+    else if (!initialized && !userSelectedTab) activeTab.value = tabs.value[0]?.id ?? 'iq'
     initialized = true
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
@@ -96,7 +109,15 @@ async function load() {
     }
   } finally { if (controller === current) controller = null }
 }
-function refresh() { void load() }
+function refresh() { void load(true) }
+function markUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
+  const versionKey = `${value.pluginId}:${value.activeVersion}:${value.entryId}`
+  invalidContributions.value = new Set([...invalidContributions.value, versionKey])
+  if (activeTab.value === `plugin:${value.pluginId}:${value.entryId}`) {
+    userSelectedTab = true
+    activeTab.value = 'iq'
+  }
+}
 onMounted(() => { void load(); window.addEventListener(PLUGIN_STATE_CHANGED, refresh) })
 onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort(); window.removeEventListener(PLUGIN_STATE_CHANGED, refresh) })
 </script>
@@ -110,12 +131,13 @@ onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort()
           :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`${tabId}-panel`"
           :tabindex="activeTab === tab.id ? 0 : -1" @click="selectTab(tab.id)" @keydown="navigateTabs($event, index)"><Icon :name="tab.icon" :size="17" /><span>{{ tab.label }}</span></button>
       </div>
-      <p v-if="loadError" class="channel-test-plugin-note" role="alert">诊断插件入口读取失败：{{ loadError }} <button type="button" class="link-button" @click="load">重试</button></p>
-      <p v-else-if="initialized && !contributions.length" class="channel-test-plugin-note">没有已生效的渠道诊断插件，可在「插件」页检查。智商、指纹与记录仍可使用。</p>
+      <p v-if="loadError" class="channel-test-plugin-note" role="alert">诊断插件入口读取失败：{{ loadError }} <button type="button" class="link-button" @click="refresh">重试</button></p>
+      <p v-else-if="invalidContributions.size" class="channel-test-plugin-note" role="status">此生效版本的诊断入口已不可用。可手动重新检查入口状态。<button type="button" class="link-button" @click="refresh">重新检查</button></p>
+      <p v-else-if="initialized && !availableContributions.length" class="channel-test-plugin-note">没有已生效的渠道诊断插件，可在「插件」页检查。智商、指纹与记录仍可使用。</p>
     </template>
     <section :id="`${tabId}-panel`" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
       <TestRecordsView v-if="activeTab === 'records'" :key="'records-' + recordsKey" :channel-id="channel.id" :initial-record="recordTarget" @record-opened="recordTarget = null" />
-      <KeepAlive :max="8"><component v-if="activeComponent" :is="activeComponent" :key="activeKey" v-bind="activeProps" @open-record="openRecord" @unavailable="load" /></KeepAlive>
+      <KeepAlive :max="8"><component v-if="activeComponent" :is="activeComponent" :key="activeKey" v-bind="activeProps" @open-record="openRecord" @unavailable="markUnavailable" /></KeepAlive>
     </section>
   </Modal>
 </template>

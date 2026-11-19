@@ -74,9 +74,52 @@ suspend fun testChannelModelConnectivity(
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
     isolatedIqRequest: Boolean = false,
+): ModelConnectivityTestResult = testSavedChannelModelConnectivity(
+    channel, credentialRef, model, protocol, prompt, credentials, httpClient, timeoutMs,
+    maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles, isolatedIqRequest, null,
+)
+
+/** The detector sees a bounded original sample; all returned fields are display-safe. */
+internal suspend fun sampleFingerprintModelConnectivity(
+    channel: ChannelRecord,
+    credentialRef: UpstreamCredential,
+    model: String,
+    protocol: GatewayProtocol,
+    prompt: String,
+    credentials: KeyCredentialResolver,
+    httpClient: HttpClient,
+    timeoutMs: Long = 45_000,
+    maxOutputTokens: Int = 128,
+    maxResponseChars: Int = MAX_RESPONSE_CHARS,
+    globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
+    headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
+    consumeRawSample: (String?) -> Unit,
+): ModelConnectivityTestResult = testSavedChannelModelConnectivity(
+    channel, credentialRef, model, protocol, prompt, credentials, httpClient, timeoutMs,
+    maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles,
+    isolatedIqRequest = true, consumeRawSample = consumeRawSample,
+)
+
+private suspend fun testSavedChannelModelConnectivity(
+    channel: ChannelRecord,
+    credentialRef: UpstreamCredential,
+    model: String,
+    protocol: GatewayProtocol,
+    prompt: String,
+    credentials: KeyCredentialResolver,
+    httpClient: HttpClient,
+    timeoutMs: Long,
+    maxOutputTokens: Int,
+    maxResponseChars: Int,
+    globalOverrides: UpstreamRequestOverrides,
+    headerProfiles: List<UpstreamHeaderProfile>,
+    isolatedIqRequest: Boolean,
+    consumeRawSample: ((String?) -> Unit)?,
 ): ModelConnectivityTestResult {
     val credential = resolveSavedCredential(credentials, credentialRef)
-    return runModelConnectivityTest(credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars) {
+    return runModelConnectivityTest(
+        credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars, consumeRawSample,
+    ) {
         buildModelTestRequest(
             channel, credential, model, protocol, prompt, UpstreamEnvelope.NONE, null,
             DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT, maxOutputTokens, globalOverrides, headerProfiles, isolatedIqRequest,
@@ -169,6 +212,7 @@ private suspend fun runModelConnectivityTest(
     envelope: UpstreamEnvelope,
     timeoutMs: Long,
     maxResponseChars: Int,
+    consumeRawSample: ((String?) -> Unit)? = null,
     request: () -> HttpRequestBuilder,
 ): ModelConnectivityTestResult {
     val startedAt = System.currentTimeMillis()
@@ -188,18 +232,15 @@ private suspend fun runModelConnectivityTest(
             val json = if (ok && envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) CodeAssistEnvelope.unwrap(parsed) else parsed
             // Parse status and usage on the original JSON. Redact only the decoded display values.
             val streamError = ok && protocol == GatewayProtocol.RESPONSES && json?.get("error") is JsonObject
+            val displayText = if (ok) extractModelTestResponseText(protocol, json) else null
+            if (ok) consumeRawSample?.invoke(displayText?.take(maxResponseChars))
             ModelConnectivityTestResult(
                 success = ok && !streamError,
                 statusCode = status,
                 latencyMs = latencyMs,
-                responseText = if (ok) extractModelTestResponseText(protocol, json)
-                    ?.let { redactModelTestCredential(it, credential).take(maxResponseChars) } else null,
+                responseText = displayText?.let { redactModelTestCredential(it, credential).take(maxResponseChars) },
                 errorMessage = if (!ok || streamError) extractModelTestError(json, status, credential) {
-                    if (parsedBody == null && parsed != null) {
-                        redactModelTestJsonPreview(parsed, credential).toString()
-                    } else {
-                        redactModelTestErrorPreview(body, parsedBody, credential)
-                    }
+                    redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
                 } else null,
                 usage = if (ok) extractModelTestUsage(protocol, json) else null,
                 upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
@@ -367,22 +408,24 @@ private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential
 private fun redactModelTestCredential(text: String, credential: String): String =
     if (credential.isEmpty()) text else text.replace(credential, "[REDACTED]")
 
-private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String): String {
-    if (credential.isEmpty()) return body
-    if (json == null || (json is JsonPrimitive && !json.isString)) return redactModelTestCredential(body, credential)
-    val safe = redactModelTestJsonPreview(json, credential)
-    return if (safe == json) body else safe.toString()
-}
+private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String): String =
+    if (json == null) redactModelTestCredential(body, credential) else redactModelTestJsonPreview(json, credential).toString()
 
 /** Display-only copy: keys can also contain JSON-escaped echoes. Never use this copy for parsing. */
 private fun redactModelTestJsonPreview(element: JsonElement, credential: String): JsonElement {
-    if (credential.isEmpty()) return element
     return when (element) {
         is JsonObject -> JsonObject(element.entries.associate { (key, value) ->
             redactModelTestCredential(key, credential) to redactModelTestJsonPreview(value, credential)
         })
         is JsonArray -> JsonArray(element.map { redactModelTestJsonPreview(it, credential) })
-        is JsonPrimitive -> if (element.isString) JsonPrimitive(redactModelTestCredential(element.content, credential)) else element
+        is JsonPrimitive -> {
+            val value = element.content
+            if (credential.isNotEmpty() && value.contains(credential)) {
+                JsonPrimitive(redactModelTestCredential(value, credential))
+            } else {
+                element
+            }
+        }
     }
 }
 

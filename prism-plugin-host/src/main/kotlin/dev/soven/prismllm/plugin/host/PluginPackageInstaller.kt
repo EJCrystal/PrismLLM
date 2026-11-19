@@ -1,6 +1,7 @@
 package dev.soven.prismllm.plugin.host
 
 import java.io.IOException
+import java.io.UncheckedIOException
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.AtomicMoveNotSupportedException
@@ -32,8 +33,8 @@ class PluginPackageInstaller(managedDirectory: Path) {
         if (Files.exists(destination, NOFOLLOW_LINKS)) return@io existing(validated, destination)
         val temporary = pluginRoot.resolve(".${manifest.version}-${UUID.randomUUID()}.staging")
         Files.createDirectory(temporary)
-        permissions(temporary, "rwx------")
         try {
+            permissions(temporary, "rwx------")
             write(temporary.resolve("package.prismplugin"), validated.archive)
             write(temporary.resolve("plugin.jar"), validated.jar)
             permissions(temporary, "r-xr-xr-x")
@@ -117,6 +118,13 @@ class PluginPackageInstaller(managedDirectory: Path) {
     }
 
     private fun discardTemporary(path: Path) {
+        // An empty staging directory can be removed even when the initial chmod was denied.
+        try {
+            Files.delete(path)
+            return
+        } catch (_: DirectoryNotEmptyException) {
+            // Published-mode permissions must be restored before removing staged files.
+        }
         permissions(path, "rwx------")
         Files.list(path).use { files -> files.forEach { Files.delete(it) } }
         Files.delete(path)
@@ -125,6 +133,8 @@ class PluginPackageInstaller(managedDirectory: Path) {
     private inline fun <T> io(block: () -> T): T = try {
         block()
     } catch (_: IOException) {
+        throw PluginHostException("PLUGIN_STORAGE_UNREADABLE", "Managed plugin storage could not be read or staged", 503)
+    } catch (_: UncheckedIOException) {
         throw PluginHostException("PLUGIN_STORAGE_UNREADABLE", "Managed plugin storage could not be read or staged", 503)
     }
 }

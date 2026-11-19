@@ -34,6 +34,37 @@ class ModelPriceReferenceServiceTest {
     private val httpClient = HttpClient(Java)
 
     @Test
+    fun `disabled catalog never fetches during startup or lazy lookups and retains baseline prices`() = runBlocking {
+        val requests = AtomicInteger()
+        val mockClient = HttpClient(io.ktor.client.engine.mock.MockEngine) {
+            engine {
+                addHandler {
+                    requests.incrementAndGet()
+                    error("Disabled catalog must not perform HTTP")
+                }
+            }
+        }
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        try {
+            val service = ModelPriceReferenceService(mockClient, dynamicCatalogEnabled = false)
+            withTimeout(1_000) { service.start(scope).join() }
+            repeat(2) {
+                val snapshot = service.catalogSnapshot()
+                assertFalse(snapshot.loaded)
+                assertNull(snapshot.error)
+                assertTrue(snapshot.models.isEmpty())
+                assertTrue(service.findCatalogMatches("synthetic-unknown-model").isEmpty())
+                assertNull(service.lookup("synthetic-unknown-model"))
+            }
+            assertEquals(BigDecimal("2.50"), service.lookup("gpt-4o")?.inputPricePerMillion)
+            assertEquals(0, requests.get())
+        } finally {
+            scope.cancel()
+            mockClient.close()
+        }
+    }
+
+    @Test
     fun `rejects refresh lead that would poll the catalog continuously`() {
         assertThrows(IllegalArgumentException::class.java) {
             ModelPriceReferenceService(

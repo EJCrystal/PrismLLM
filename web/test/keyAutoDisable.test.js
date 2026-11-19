@@ -35,8 +35,22 @@ describe('密钥自动禁用规则', () => {
     assert.equal(normalized.rules.length, 5)
     assert.equal(normalized.rules[0].id, 'insufficient_balance')
     assert.equal(normalized.rules[0].action, 'PERMANENT')
-    assert.deepEqual(normalized.rules[0].bodyPatterns, ['INSUFFICIENT_BALANCE'])
+    assert.deepEqual(normalized.rules[0].bodyPatterns, [
+      '(?:^|[^\\w-])INSUFFICIENT_BALANCE(?:$|[^\\w-])',
+      '(?:^|[^\\w-])billing[\\s_-]*error(?:$|[^\\w-])',
+      '(?:^|[^\\w-])insufficient[\\s_-]*(balance|credit|funds)(?:$|[^\\w-])',
+      '(?:^|[^\\w-])payment[\\s_-]*required(?:$|[^\\w-])',
+      '余额不足',
+      '欠费',
+      '请充值',
+      '额度(不足|用尽)',
+    ])
     assert.equal(normalized.rules[1].id, 'credential_invalid')
+    assert.deepEqual(normalized.rules[2].bodyPatterns, [
+      'account[^\\n]{0,40}(disabled|suspended|deactivated)',
+      '(?:^|[^\\w-])billing(?:$|[^\\w-])',
+      '(?:^|[^\\w-])payment(?:$|[^\\w-])',
+    ])
     assert.equal(normalized.rules[3].action, 'TEMPORARY')
   })
 
@@ -116,7 +130,7 @@ describe('密钥自动禁用规则', () => {
   it('生成人类可读的规则摘要', () => {
     assert.equal(
       keyAutoDisableRuleLabel(DEFAULT_KEY_AUTO_DISABLE_SETTINGS),
-      '账户余额不足、凭据失效、上游账号被停、鉴权被拒、上游不稳定',
+      '账户余额或计费异常、凭据失效、上游账号被停、鉴权被拒、上游不稳定',
     )
     assert.equal(
       keyAutoDisableRuleLabel({ enabled: false, rules: [customRule({ name: '仅冷却' })] }),

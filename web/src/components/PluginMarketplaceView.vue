@@ -21,8 +21,10 @@ const loadError = ref('')
 const busy = ref(false)
 const approvedPermissions = ref<string[]>([])
 const configuration = reactive<PluginValues>({})
-const originalConfiguration = ref('')
+const originalConfiguration = ref('{}')
 const diagnosticEntryId = ref('')
+const invalidDiagnosticKey = ref('')
+const diagnosticGeneration = ref(0)
 const guard = createLatestRequestGuard()
 let controller: AbortController | null = null
 let disposed = false
@@ -48,14 +50,15 @@ const pageEntries = computed(() => selectedState.value?.admissionEnabled ? selec
 const diagnosticContribution = computed<PluginUiContribution | null>(() => {
   const entry = pageEntries.value.find((item) => item.id === diagnosticEntryId.value)
   const state = selectedState.value
-  return entry && state?.activeVersion ? { pluginId: state.id, activeVersion: state.activeVersion, entry } : null
+  const key = entry && state?.activeVersion ? `${state.id}:${state.activeVersion}:${entry.id}` : ''
+  return entry && state?.activeVersion && key !== invalidDiagnosticKey.value ? { pluginId: state.id, activeVersion: state.activeVersion, entry } : null
 })
 
 function errorMessage(cause: unknown) { return cause instanceof Error ? cause.message : String(cause) }
 
 function resetConfiguration() {
   for (const key of Object.keys(configuration)) delete configuration[key]
-  Object.assign(configuration, pluginFieldDefaults(configurationFields.value, selectedState.value?.configuration ?? {}))
+  Object.assign(configuration, pluginFieldDefaults(configurationFields.value, selectedState.value?.configuration ?? {}, false))
   originalConfiguration.value = JSON.stringify(configuration)
 }
 
@@ -73,7 +76,18 @@ function selectPlugin(id: string) {
 
 function openDiagnostic(entryId: string, event: MouseEvent) {
   diagnosticTrigger = event.currentTarget as HTMLButtonElement
+  invalidDiagnosticKey.value = ''
+  diagnosticGeneration.value++
   diagnosticEntryId.value = entryId
+}
+
+function markDiagnosticUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
+  invalidDiagnosticKey.value = `${value.pluginId}:${value.activeVersion}:${value.entryId}`
+}
+
+function recheckDiagnostic() {
+  invalidDiagnosticKey.value = ''
+  diagnosticGeneration.value++
 }
 
 async function closeDiagnostic() {
@@ -91,7 +105,15 @@ function syncVersion() {
   resetConfiguration()
 }
 
+function cancelListRequest() {
+  guard.invalidate()
+  controller?.abort()
+  controller = null
+  loading.value = false
+}
+
 async function load(preserveDraft = true) {
+  if (busy.value || disposed) return
   controller?.abort()
   const current = new AbortController()
   controller = current
@@ -124,6 +146,7 @@ async function mutate(operation: () => Promise<PluginRuntimeState>, message: str
   if (busy.value || (confirmDiscard && dirty.value && !canLeave())) return
   const id = selectedId.value
   busy.value = true
+  cancelListRequest()
   try {
     const state = await operation()
     if (disposed) return
@@ -182,7 +205,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
       <button type="button" class="button ghost" :disabled="loading || busy" @click="load()"><Icon name="refresh" :size="16" />刷新</button>
     </div>
     <p class="callout plugin-market-policy">仅安装受信任目录中的 JVM 插件。安装、升级和启用需人工重启；禁用立即阻止新调用，已发出的请求可能继续执行。</p>
-    <div v-if="loadError" class="callout danger" role="alert">{{ loadError }} <button class="link-button" type="button" @click="load()">重新读取</button></div>
+    <div v-if="loadError" class="callout danger" role="alert">{{ loadError }} <button class="link-button" type="button" :disabled="busy" @click="load()">重新读取</button></div>
     <p v-if="loading && !catalog.length && !states.length" class="muted plugin-market-loading"><span class="spinner"></span>正在读取插件目录…</p>
     <div v-else class="plugin-market-layout">
       <aside class="panel plugin-market-list" aria-label="插件清单">
@@ -233,7 +256,8 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
       </article>
       <TestEmptyState v-else icon="layers" title="选择一个插件" description="从清单查看版本、能力授权和配置。安装不代表当前进程已经加载。" />
     </div>
-    <Modal v-if="diagnosticContribution" :title="diagnosticContribution.entry.label" full :body-scrollable="false" @close="closeDiagnostic"><PluginDiagnosticHost :contribution="diagnosticContribution" @unavailable="load()" /></Modal>
+    <Modal v-if="diagnosticContribution" :key="diagnosticGeneration" :title="diagnosticContribution.entry.label" full :body-scrollable="false" @close="closeDiagnostic"><PluginDiagnosticHost :contribution="diagnosticContribution" @unavailable="markDiagnosticUnavailable" /></Modal>
+    <p v-else-if="diagnosticEntryId && invalidDiagnosticKey" class="callout danger" role="alert">此生效版本的诊断入口已不可用。<button type="button" class="button ghost" @click="recheckDiagnostic">重新检查</button>或关闭弹窗后重试。</p>
   </section>
 </template>
 

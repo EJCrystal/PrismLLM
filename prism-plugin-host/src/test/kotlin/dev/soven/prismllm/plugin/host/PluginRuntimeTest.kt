@@ -43,13 +43,39 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     private fun eraseManagedStorage() {
         if (!Files.exists(managedDirectory)) return
         Files.walk(managedDirectory).use { paths -> paths.filter { Files.isDirectory(it) }.forEach {
-            Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwx------"))
+            try {
+                Files.setPosixFilePermissions(it, PosixFilePermissions.fromString("rwx------"))
+            } catch (_: UnsupportedOperationException) {
+                // Deletion and all non-permission assertions remain active on non-POSIX systems.
+            }
         } }
         Files.walk(managedDirectory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach { Files.delete(it) } }
     }
 
     private suspend fun invoke(host: PluginRuntime, id: String = "example.probe", version: String = "1.0.0", values: JsonObject = JsonObject(emptyMap())) =
         host.execute(id, version, DiagnosticInput("probe", values), target) { ok }
+
+    private suspend fun assertBothProbeSlotsRecover(host: PluginRuntime) = coroutineScope {
+        val entered = AtomicInteger()
+        val bothEntered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val callbacks = List(2) {
+            async(Dispatchers.Default) {
+                host.execute("example.probe", "1.0.0", input, target) {
+                    if (entered.incrementAndGet() == 2) bothEntered.complete(Unit)
+                    withTimeout(1_500) { release.await() }
+                    ok
+                }
+            }
+        }
+        try {
+            withTimeout(1_500) { bothEntered.await() }
+        } finally {
+            release.complete(Unit)
+        }
+        withTimeout(4_000) { callbacks.forEach { it.await() } }
+        assertEquals(2, entered.get(), "Both probe slots must be available concurrently")
+    }
 
     private suspend fun installedStore(vararg packages: PackageFixture): MemoryInstallationStore {
         publish(*packages)
@@ -64,7 +90,11 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         return store
     }
 
-    private fun ownedFixture(id: String = "example.probe", delayed: Boolean = false): PackageFixture = fixture(
+    private fun ownedFixture(
+        id: String = "example.probe",
+        delayed: Boolean = false,
+        delayedClose: Boolean = false,
+    ): PackageFixture = fixture(
         id = id,
         constructorPrefix = { property -> """
             System.getProperties().put("$property.loader", getClass().getClassLoader());
@@ -81,9 +111,16 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                 mark("load-returned");
             """.trimIndent() else ""}
         """.trimIndent() },
-        closePrefix = { """
+        closePrefix = { property -> """
             if (Thread.currentThread().getContextClassLoader() != getClass().getClassLoader()) throw new IllegalStateException("wrong close loader");
             mark("closed-with-loader");
+            ${if (delayedClose) """
+                mark("close-ready");
+                while (!"true".equals(System.getProperty("$property.close-release"))) {
+                    try { Thread.sleep(5); } catch (InterruptedException ignored) { }
+                }
+                mark("close-returned");
+            """.trimIndent() else ""}
         """.trimIndent() },
         jarEntries = listOf(ZipFixtureEntry("fixture/owned-resource.txt", "owned".toByteArray())),
     )
@@ -93,8 +130,10 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     private suspend fun assertDisposed(packaged: PackageFixture) {
         awaitProperty("${packaged.property}.closed", "1")
         awaitProperty("${packaged.property}.closed-with-loader", "1")
+        withTimeout(1_500) {
+            while (loader(packaged).findResource("fixture/owned-resource.txt") != null) delay(5)
+        }
         assertEquals(1, packaged.count("closed"))
-        assertNull(loader(packaged).findResource("fixture/owned-resource.txt"))
     }
 
     private fun assertNoActive(host: PluginRuntime) {
@@ -134,13 +173,86 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `initial install configuration is lazy and insert race preserves the winning tombstone`() : Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize()
+        val initialCalls = AtomicInteger()
+        val inserted = host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions) {
+            initialCalls.incrementAndGet()
+            config("initial only")
+        }
+        assertEquals(1, initialCalls.get())
+        assertEquals(config("initial only"), inserted.configuration)
+
+        val tombstoneCalls = AtomicInteger()
+        val replay = host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions) {
+            tombstoneCalls.incrementAndGet()
+            error("Existing installation must not read legacy configuration")
+        }
+        assertEquals(0, tombstoneCalls.get())
+        assertEquals(inserted, replay)
+
+        val racedStore = MemoryInstallationStore()
+        racedStore.beforeInsert = { proposed ->
+            racedStore.seed(proposed.copy(installed = false, desiredEnabled = false, configuration = config("concurrent tombstone")))
+        }
+        val raced = runtime(racedStore)
+        raced.initialize()
+        val racedCalls = AtomicInteger()
+        val winner = raced.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions) {
+            racedCalls.incrementAndGet()
+            config("must not overwrite winner")
+        }
+        assertEquals(1, racedCalls.get())
+        assertFalse(winner.installed)
+        assertEquals(config("concurrent tombstone"), winner.configuration)
+        assertEquals(config("concurrent tombstone"), racedStore.find(packaged.manifest.id)?.configuration)
+    }
+
+    @Test
+    fun `initial configuration read failures do not create partial installation state`() : Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        host.initialize()
+        val error = failure("PLUGIN_INITIAL_CONFIGURATION_UNAVAILABLE") {
+            host.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions) { throw IllegalStateException("private settings failure") }
+        }
+        assertEquals(503, error.statusCode)
+        assertNull(store.find(packaged.manifest.id))
+        assertEquals(0, store.writes)
+    }
+
+    @Test
+    fun `failed optional bootstrap configuration does not block other managed plugins or persist a partial record`(): Unit = runBlocking {
+        val healthy = fixture(id = "healthy.probe")
+        val healthyStore = installedStore(healthy)
+        val optional = fixture(id = "prism.connectivity")
+        publish(healthy, optional)
+        val writes = healthyStore.writes
+        val host = runtime(healthyStore)
+        host.initialize(optional.manifest.id) { throw IllegalStateException("legacy configuration unavailable") }
+        assertTrue(host.state(healthy.manifest.id).admissionEnabled)
+        val failed = host.state(optional.manifest.id)
+        assertEquals("error", failed.status)
+        assertTrue(failed.loadError.orEmpty().contains("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE"))
+        assertNull(healthyStore.find(optional.manifest.id))
+        assertEquals(writes, healthyStore.writes)
+        assertTrue(invoke(host, healthy.manifest.id).outcome.success)
+    }
+
+    @Test
     fun `legacy bootstrap is one-time full-grant and does not reset administrator configuration`(): Unit = runBlocking {
         val packaged = fixture()
         publish(packaged)
         val store = MemoryInstallationStore()
         val host = runtime(store)
-        host.initialize(packaged.manifest.id, config("legacy prompt"))
-        host.initialize(packaged.manifest.id, config("must not overwrite"))
+        host.initialize(packaged.manifest.id) { config("legacy prompt") }
+        host.initialize(packaged.manifest.id) { error("A second initialization must not reload legacy settings") }
         val state = host.state(packaged.manifest.id)
         assertTrue(state.desiredEnabled && state.admissionEnabled)
         assertEquals(packaged.manifest.permissions, state.approvedPermissions)
@@ -162,7 +274,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         Files.write(catalogDirectory.resolve(broken.fileName), broken.archive + 0)
         assertNull(store.find(official.manifest.id))
         val host = runtime(store)
-        host.initialize(official.manifest.id, config("legacy bootstrap"))
+        host.initialize(official.manifest.id) { config("legacy bootstrap") }
         assertTrue(host.state(healthy.manifest.id).admissionEnabled)
         assertEquals(recorded, store.find(healthy.manifest.id))
         assertTrue(host.state(official.manifest.id).admissionEnabled)
@@ -301,7 +413,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         publish(packaged)
         val store = MemoryInstallationStore()
         val host = runtime(store)
-        host.initialize(packaged.manifest.id, config("retain me"))
+        host.initialize(packaged.manifest.id) { config("retain me") }
         val tombstone = host.uninstall(packaged.manifest.id)
         assertFalse(tombstone.installed || tombstone.desiredEnabled || tombstone.admissionEnabled)
         assertEquals("uninstalled", tombstone.status)
@@ -311,7 +423,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         failure("PLUGIN_DISABLED") { invoke(host) }
         host.close()
         val restarted = runtime(store)
-        restarted.initialize(packaged.manifest.id, config("must not restore"))
+        restarted.initialize(packaged.manifest.id) { error("A tombstone must not load legacy settings") }
         assertFalse(restarted.state(packaged.manifest.id).installed)
         assertEquals(1, packaged.count("constructed"))
         val restored = restarted.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
@@ -340,7 +452,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         publish(previous)
         val store = MemoryInstallationStore()
         val host = runtime(store)
-        host.initialize(previous.manifest.id, config("old config"))
+        host.initialize(previous.manifest.id) { config("old config") }
         val replacement = fixture(version = "2.0.0", configKey = "futurePrompt", configuration = listOf(
             PluginField("futurePrompt", "Future prompt", "textarea", required = true, defaultValue = JsonPrimitive("new default"), maxLength = 4_000),
         ))
@@ -376,14 +488,17 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         """.trimIndent() })
         publish(packaged)
         val host = runtime()
-        host.initialize(packaged.manifest.id, config("old snapshot"))
+        host.initialize(packaged.manifest.id) { config("old snapshot") }
         coroutineScope {
             val invocation = async(Dispatchers.Default) { invoke(host) }
-            awaitProperty("${packaged.property}.ready")
-            val changed = host.configure(packaged.manifest.id, config("new snapshot"))
-            assertEquals(config("new snapshot"), changed.activeConfiguration)
-            System.setProperty("${packaged.property}.release", "true")
-            val execution = invocation.await()
+            try {
+                awaitProperty("${packaged.property}.ready")
+                val changed = host.configure(packaged.manifest.id, config("new snapshot"))
+                assertEquals(config("new snapshot"), changed.activeConfiguration)
+            } finally {
+                System.setProperty("${packaged.property}.release", "true")
+            }
+            val execution = withTimeout(4_000) { invocation.await() }
             assertEquals("old snapshot", execution.plan.prompt)
             assertEquals("old snapshot", execution.report.text)
         }
@@ -404,10 +519,13 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val probes = AtomicInteger()
         coroutineScope {
             val invocation = async(Dispatchers.Default) { runCatching { host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok } } }
-            awaitProperty("${packaged.property}.ready")
-            host.setEnabled(packaged.manifest.id, false)
-            System.setProperty("${packaged.property}.release", "true")
-            val error = invocation.await().exceptionOrNull() as PluginHostException
+            try {
+                awaitProperty("${packaged.property}.ready")
+                host.setEnabled(packaged.manifest.id, false)
+            } finally {
+                System.setProperty("${packaged.property}.release", "true")
+            }
+            val error = withTimeout(4_000) { invocation.await() }.exceptionOrNull() as PluginHostException
             assertEquals("PLUGIN_DISABLED", error.code)
         }
         assertEquals(0, probes.get())
@@ -420,7 +538,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         publish(packaged)
         val store = MemoryInstallationStore()
         val host = runtime(store)
-        host.initialize(packaged.manifest.id, config("committed"))
+        host.initialize(packaged.manifest.id) { config("committed") }
         store.failNextSave.set(true)
         failure("PLUGIN_REVISION_CONFLICT") { host.configure(packaged.manifest.id, config("uncommitted")) }
         assertEquals(config("committed"), host.state(packaged.manifest.id).activeConfiguration)
@@ -477,6 +595,49 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertEquals(0, probes.get())
         val account = target.copy(kind = "oauth-account", id = "account-1", credentialId = null)
         assertEquals(account, execute(selected = account).target)
+    }
+
+    @Test
+    fun `configured required field falling outside new schema falls back to valid default or remains incomplete`() : Unit = runBlocking {
+        val oldVersion = fixture(configuration = listOf(
+            PluginField("defaultPrompt", "Default prompt", "textarea", required = true, defaultValue = JsonPrimitive("old default"), maxLength = 4_000),
+            PluginField("newRequired", "New required", "text"),
+        ))
+        publish(oldVersion)
+        val store = MemoryInstallationStore()
+        val original = runtime(store)
+        original.initialize()
+        original.install(oldVersion.manifest.id, "1.0.0", oldVersion.manifest.permissions)
+        original.configure(oldVersion.manifest.id, buildJsonObject { put("defaultPrompt", "valid old value"); put("newRequired", "  ") })
+        val nextVersion = fixture(version = "2.0.0", configuration = listOf(
+            PluginField("defaultPrompt", "Default prompt", "textarea", required = true, defaultValue = JsonPrimitive("new"), maxLength = 3),
+            PluginField("newRequired", "New required", "text", required = true),
+        ))
+        publish(oldVersion, nextVersion)
+        val installed = original.install(oldVersion.manifest.id, "2.0.0", nextVersion.manifest.permissions) {
+            error("An upgrade must not reload legacy settings")
+        }
+        assertEquals(JsonPrimitive("new"), installed.configuration["defaultPrompt"])
+        assertNull(installed.configuration["newRequired"])
+        assertFalse(installed.desiredEnabled)
+        failure("PLUGIN_INVALID_CONFIGURATION") { original.setEnabled(oldVersion.manifest.id, true) }
+        val incomplete = assertNotNull(store.find(oldVersion.manifest.id))
+        store.seed(incomplete.copy(desiredEnabled = true))
+        original.close()
+        val incompleteHost = runtime(store)
+        incompleteHost.initialize()
+        assertFalse(incompleteHost.state(oldVersion.manifest.id).admissionEnabled)
+        assertNull(incompleteHost.state(oldVersion.manifest.id).activeVersion)
+        assertEquals(0, nextVersion.count("constructed"))
+        incompleteHost.setEnabled(oldVersion.manifest.id, false)
+        incompleteHost.configure(oldVersion.manifest.id, buildJsonObject { put("defaultPrompt", "new"); put("newRequired", "repaired") })
+        incompleteHost.setEnabled(oldVersion.manifest.id, true)
+        incompleteHost.close()
+        val repaired = runtime(store)
+        repaired.initialize()
+        assertTrue(repaired.state(oldVersion.manifest.id).admissionEnabled)
+        assertEquals("new", invoke(repaired, version = "2.0.0").plan.prompt)
+        assertEquals(1, nextVersion.count("constructed"))
     }
 
     @Test
@@ -555,7 +716,10 @@ internal class PluginRuntimeTest : PluginTestSupport() {
 
     @Test
     fun `host trims a boundary prompt and clamps token and timeout limits while keeping upstream 401 in outcome`(): Unit = runBlocking {
-        val packaged = fixture(planPrefix = { "if (prompt.length() != 4000) throw new IllegalStateException(\"Input prompt must be trimmed before planning\");" })
+        val packaged = fixture(
+            planPrefix = { "if (prompt.length() != 4000) throw new IllegalStateException(\"Input prompt must be trimmed before planning\");" },
+            reportPrefix = "if (outcome.getResponseText() == null || outcome.getResponseText().length() != 16000 || !outcome.getResponseText().endsWith(\"Z\")) throw new IllegalStateException(\"NUL cleanup must precede response truncation\");",
+        )
         publish(packaged)
         val host = runtime()
         host.initialize(packaged.manifest.id)
@@ -566,8 +730,11 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val execution = host.execute(packaged.manifest.id, "1.0.0", DiagnosticInput("probe", values), target, ProbeLimits(20_000, 2_048, 90_000)) {
             actualPlan = it
             probes.incrementAndGet()
-            ProbeOutcome(false, 401, 10, errorMessage = "upstream authentication failed")
+            ProbeOutcome(false, 401, 10, responseText = "x".repeat(15_999) + "\u0000Z", errorMessage = "upstream authentication failed")
         }
+        assertEquals(16_000, execution.outcome.responseText?.length)
+        assertEquals('Z', execution.outcome.responseText?.last())
+        assertFalse(execution.outcome.responseText.orEmpty().contains('\u0000'))
         assertEquals(prompt, execution.plan.prompt)
         assertEquals(128, execution.plan.maxOutputTokens)
         assertEquals(45_000L, execution.plan.timeoutMs)
@@ -713,7 +880,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         }
         assertEquals(2, probes.get())
         assertEquals(2, packaged.count("planned"))
-        assertTrue(invoke(host).outcome.success) // Failure must release both invocation/probe permits.
+        assertBothProbeSlotsRecover(host)
     }
 
     @Test
@@ -737,14 +904,14 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                     ok
                 }
             }
-            entered.await()
+            withTimeout(1_500) { entered.await() }
             invocation.cancel(CancellationException("caller cancelled"))
-            invocation.join()
+            withTimeout(1_500) { invocation.join() }
             assertTrue(invocation.isCancelled)
         }
         assertEquals(2, probes.get())
         assertEquals(0, packaged.count("reported"))
-        assertTrue(invoke(host).outcome.success)
+        assertBothProbeSlotsRecover(host)
     }
 
     @Test
@@ -779,6 +946,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertTrue(execution.outcome.errorMessage.orEmpty().contains("timed out"))
         assertEquals(1, probes.get())
         assertEquals(1, packaged.count("reported"))
+        assertBothProbeSlotsRecover(host)
     }
 
     @Test
@@ -820,12 +988,12 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             val running = List(2) { async(Dispatchers.Default) {
                 host.execute(packaged.manifest.id, "1.0.0", input, target) {
                     if (probes.incrementAndGet() == 2) occupied.complete(Unit)
-                    release.await()
+                    withTimeout(4_000) { release.await() }
                     ok
                 }
             } }
             try {
-                occupied.await()
+                withTimeout(1_500) { occupied.await() }
                 val error = failure("PLUGIN_BUSY") {
                     host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 150)) { probes.incrementAndGet(); ok }
                 }
@@ -834,9 +1002,9 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             } finally {
                 release.complete(Unit)
             }
-            running.forEach { assertEquals(10L, it.await().outcome.latencyMs) }
+            withTimeout(4_000) { running.forEach { assertEquals(10L, it.await().outcome.latencyMs) } }
         }
-        assertTrue(invoke(host).outcome.success) // Timed-out waiters must not leak semaphore permits.
+        assertBothProbeSlotsRecover(host)
     }
 
     @Test
@@ -1025,7 +1193,11 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertTrue(independent.state(packaged.manifest.id).admissionEnabled)
         independent.close()
         val jar = managedDirectory.resolve(packaged.manifest.id).resolve("1.0.0/plugin.jar")
-        Files.setPosixFilePermissions(jar, PosixFilePermissions.fromString("rw-------"))
+        try {
+            Files.setPosixFilePermissions(jar, PosixFilePermissions.fromString("rw-------"))
+        } catch (_: UnsupportedOperationException) {
+            // The tampering and fail-closed startup checks do not depend on POSIX permissions.
+        }
         Files.write(jar, byteArrayOf(1, 2, 3))
         val tampered = runtime(store)
         tampered.initialize()
@@ -1041,12 +1213,12 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         publish(packaged)
         val store = MemoryInstallationStore()
         val original = runtime(store)
-        original.initialize(packaged.manifest.id, config("preserved across storage loss"))
+        original.initialize(packaged.manifest.id) { config("preserved across storage loss") }
         original.close()
         eraseManagedStorage()
         val writes = store.writes
         val restarted = runtime(store)
-        restarted.initialize(packaged.manifest.id, config("bootstrap must not overwrite"))
+        restarted.initialize(packaged.manifest.id) { error("An existing installation must not reload legacy settings") }
         val state = restarted.state(packaged.manifest.id)
         assertTrue(state.admissionEnabled)
         assertEquals(config("preserved across storage loss"), state.activeConfiguration)
@@ -1067,7 +1239,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         original.close()
         eraseManagedStorage()
         val restarted = runtime(store)
-        restarted.initialize(packaged.manifest.id, config("must never bootstrap"))
+        restarted.initialize(packaged.manifest.id) { error("A tombstone must not load legacy settings") }
         val tombstone = restarted.state(packaged.manifest.id)
         assertFalse(tombstone.installed)
         assertEquals(packaged.manifest.configuration, tombstone.configurationFields)
@@ -1090,7 +1262,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         publish(packaged)
         val store = MemoryInstallationStore()
         val original = runtime(store)
-        original.initialize(packaged.manifest.id, config("pinned config"))
+        original.initialize(packaged.manifest.id) { config("pinned config") }
         original.close()
         eraseManagedStorage()
         val replacement = fixture()
@@ -1115,6 +1287,33 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val host = runtime()
         host.initialize(packaged.manifest.id)
         assertTrue(invoke(host).report.success)
+    }
+
+    @Test
+    fun `queued provider cleanup survives host close deadline and retains loaders until close returns`(): Unit = runBlocking {
+        val packages = List(3) { ownedFixture(id = "cleanup.provider$it", delayedClose = true) }
+        val store = installedStore(*packages.toTypedArray())
+        val host = runtime(store)
+        host.initialize()
+        packages.forEach { assertNotNull(loader(it).findResource("fixture/owned-resource.txt")) }
+        try {
+            host.close() // Two close workers block; the third cleanup must remain queued after shutdown.
+            withTimeout(1_500) {
+                while (packages.sumOf { it.count("close-ready") } < 2) delay(5)
+            }
+            assertEquals(2, packages.sumOf { it.count("closed") })
+            packages.forEach {
+                assertEquals(0, it.count("close-returned"))
+                assertNotNull(loader(it).findResource("fixture/owned-resource.txt"))
+            }
+        } finally {
+            packages.forEach { System.setProperty("${it.property}.close-release", "true") }
+        }
+        packages.forEach {
+            awaitProperty("${it.property}.close-returned", "1")
+            assertDisposed(it)
+        }
+        assertNoActive(host)
     }
 
     @Test

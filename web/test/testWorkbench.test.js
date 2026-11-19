@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { clonePluginData, makeOfficialPluginFixture, makePluginFixture, makeTarget } from './fixtures/plugin.js'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp, h, nextTick } from 'vue'
+import { createSSRApp, h, nextTick, onServerPrefetch } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import { JSDOM } from 'jsdom'
 
@@ -225,20 +225,47 @@ describe('channel test workspace', () => {
     })
   }
 
-  it('uses the same empty canvas when no model has a usable credential', async () => {
+  it('uses the empty canvas only when the eligible model has no usable credential', async () => {
     const component = panels.get('PluginDiagnosticHost')
-    const wrapped = {
-      ...component,
-      setup(props, context) {
-        const state = component.setup(props, context)
-        state.loading.value = false
-        return state
-      },
+    const { api } = await server.ssrLoadModule('/src/api.ts')
+    const originals = { getPlugin: api.getPlugin, listPluginTargets: api.listPluginTargets }
+    try {
+      api.getPlugin = async () => clonePluginData(officialPlugin.state)
+      for (const credentials of [[], target.credentials]) {
+        let targetReads = 0
+        api.listPluginTargets = async () => {
+          targetReads++
+          return [clonePluginData({ ...target, credentials })]
+        }
+        let state
+        const wrapped = {
+          ...component,
+          setup(props, context) {
+            state = component.setup(props, context)
+            onServerPrefetch(() => state.load())
+            return state
+          },
+        }
+        const app = createSSRApp(wrapped, panelProps('PluginDiagnosticHost'))
+        const document = new JSDOM(await renderToString(app)).window.document
+        assert.equal(targetReads, 1)
+        assert.equal(state.state.value?.admissionEnabled, true)
+        assert.equal(state.loadError.value, '')
+        if (credentials.length === 0) {
+          assert.equal(state.targets.value.length, 0)
+          assert.equal(document.querySelector('.test-empty-state h3').textContent, '没有可测试的模型')
+          assert.equal(document.querySelector('.test-workbench-actions'), null)
+        } else {
+          assert.equal(state.targets.value.length, 1)
+          assert.equal(document.querySelector('.test-empty-state h3').textContent, '尚未运行测试')
+          const run = document.querySelector('.test-workbench-actions .button.primary')
+          assert.ok(run)
+          assert.equal(run.disabled, false)
+        }
+      }
+    } finally {
+      Object.assign(api, originals)
     }
-    const app = createSSRApp(wrapped, panelProps('PluginDiagnosticHost'))
-    const document = new JSDOM(await renderToString(app)).window.document
-    assert.equal(document.querySelector('.test-empty-state h3').textContent, '没有可测试的模型')
-    assert.equal(document.querySelector('.test-workbench-actions'), null)
   })
 
   it('keeps connectivity timing and reset visible while collapsing request details', async () => {
@@ -253,7 +280,7 @@ describe('channel test workspace', () => {
     assert.equal(help.open, false)
     assert.equal(help.querySelector('summary').textContent, '请求限制与记录说明')
     assert.match(help.textContent, /128 个输出 token.*不写生产请求日志/)
-    const visibleLimits = [...document.querySelectorAll('.test-form-note')].find(note => note.textContent.includes('请求最长'))
+    const visibleLimits = [...document.querySelectorAll('.test-form-note')].find(note => note.textContent.includes('模型探测最长'))
     assert.match(visibleLimits.textContent, /45 秒.*128 输出 token.*1\.0\.0/)
     assert.equal(visibleLimits.closest('details'), null)
   })

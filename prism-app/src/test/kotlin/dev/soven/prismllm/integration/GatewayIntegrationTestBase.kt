@@ -382,6 +382,7 @@ abstract class GatewayIntegrationTestBase {
         health = HealthPolicy(slowFirstTokenMs = 600_000, slowP50FirstTokenMs = 300_000),
         keyAutoRecoveryIntervalMs = keyAutoRecoveryIntervalMs,
         upstreamHeaderRefreshEnabled = false,
+        modelPriceCatalogEnabled = false,
         upstreamHeaderRefreshIntervalMs = 3_600_000,
         // 订阅账号的 token 刷新与额度查询都指向假上游，测试不访问真实 OAuth 端点。
         oauth = OAuthConfig(

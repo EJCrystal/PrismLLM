@@ -1,18 +1,22 @@
 package dev.soven.prismllm.integration
 
+import dev.soven.prismllm.admin.domain.PluginInstallationRecord
 import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.api.IqTestTargetResponse
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.ProviderEndpoints
+import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
+import dev.soven.prismllm.channel.domain.key.ChannelKeyState
+import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
+import dev.soven.prismllm.oauth.domain.OAuthAuthState
 import dev.soven.prismllm.oauth.infra.OAuthTokenResponse
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.plugin.host.PluginCatalogItem
 import dev.soven.prismllm.plugin.host.PluginExecution
-import dev.soven.prismllm.plugin.host.PluginInstallation
 import dev.soven.prismllm.plugin.host.PluginRuntimeState
 import dev.soven.prismllm.plugin.host.PluginUiContribution
 import dev.soven.prismllm.plugin.sdk.PluginApi
@@ -22,10 +26,12 @@ import dev.soven.prismllm.proxy.analyzePelicanStructure
 import dev.soven.prismllm.proxy.fingerprint.FingerprintOutput
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.OAuthProvider
+import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.spi.iq.IqJudge
 import dev.soven.prismllm.spi.iq.IqJudgeRequest
 import dev.soven.prismllm.spi.iq.IqJudgeVerdict
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
 import io.ktor.client.HttpClient
@@ -54,6 +60,8 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -275,6 +283,37 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `manual first install migrates legacy prompt only when no prior plugin record exists`() = runBlocking {
+        val emptyCatalog = Files.createDirectory(auxiliaryDirectory.resolve("manual-install-catalog"))
+        restartApplication(app.config.copy(pluginCatalogDir = emptyCatalog))
+        app.modelTestSettingsRepository.save("legacy manual-install prompt")
+        testApplication {
+            application {
+                app.install(this)
+                Files.copy(connectivityPluginCatalogDirectory.resolve("catalog.json"), emptyCatalog.resolve("catalog.json"))
+                Files.copy(connectivityPluginCatalogDirectory.resolve("prism-connectivity-1.0.0.prismplugin"), emptyCatalog.resolve("prism-connectivity-1.0.0.prismplugin"))
+            }
+            val session = client.adminSession()
+            assertNull(app.pluginInstallationRepository.find(PLUGIN_ID))
+            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugin-catalog", session).decoded<List<PluginCatalogItem>>().any { it.manifest.id == PLUGIN_ID })
+            val first = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, installationPayload())
+                .decoded<PluginRuntimeState>()
+            assertTrue(first.installed)
+            assertFalse(first.desiredEnabled, "Manual install remains disabled until explicitly enabled")
+            assertEquals(JsonPrimitive("legacy manual-install prompt"), first.configuration["defaultPrompt"])
+            val record = assertNotNull(app.pluginInstallationRepository.find(PLUGIN_ID))
+            assertEquals(first.configuration, record.configuration)
+
+            app.modelTestSettingsRepository.save("changed legacy prompt must not replace plugin state")
+            val replay = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, installationPayload())
+                .decoded<PluginRuntimeState>()
+            assertEquals(first, replay)
+            assertEquals(record, app.pluginInstallationRepository.find(PLUGIN_ID), "A later install cannot overwrite the winning record")
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `legacy default prompt settings bridge plugin configuration immediately and invocation overrides never persist`() = runBlocking {
         app.modelTestSettingsRepository.save("legacy startup prompt")
         testApplication {
@@ -314,6 +353,10 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("legacy configured prompt", blank.plan.prompt)
             assertEquals("legacy configured prompt", client.legacyProbe(session, "/channels/${channel.id}/model-test", MODEL,
                 GatewayProtocol.CHAT_COMPLETIONS).objectPayload()["prompt"]!!.jsonPrimitive.content)
+            val paddedLegacy = client.legacyProbe(session, "/channels/${channel.id}/model-test", MODEL,
+                GatewayProtocol.CHAT_COMPLETIONS, prompt = "  padded legacy prompt${" ".repeat(270_000)}  ").objectPayload()
+            assertEquals("padded legacy prompt", paddedLegacy["prompt"]!!.jsonPrimitive.content)
+            assertProbeBody(probes.last(), GatewayProtocol.CHAT_COMPLETIONS, "padded legacy prompt")
 
             val invalidConfigurations = listOf(
                 buildJsonObject { put("defaultPrompt", 7) },
@@ -330,7 +373,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 client.api(HttpMethod.Put, "/admin/api/model-test-settings", session,
                     buildJsonObject { put("defaultPrompt", prompt) }.toString()).assertError(HttpStatusCode.BadRequest, "invalid_model_test_settings")
             }
-            assertEquals(5, probes.size)
+            assertEquals(6, probes.size)
         }
         assertNoDiagnosticSettlement()
     }
@@ -584,6 +627,8 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 assertEquals("oauth-account", native.target.kind)
                 assertEquals(account.id, native.target.id)
                 assertEquals(account.id, native.target.credentialId)
+                assertEquals(account.name, native.target.displayName)
+                assertEquals(account.name, native.target.credentialName)
                 assertNativeRequest(probes.last(), provider, model, "native account probe")
                 // The compatibility body may still contain keyId, but account mode never selects it.
                 val nativeLegacy = client.legacyProbe(session, "/oauth-accounts/${account.id}/model-test", model, protocol,
@@ -600,9 +645,237 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `native OAuth rechecks credentials model entitlement and endpoint settings after project discovery`() = runBlocking {
+        val pendingDiscovery = AtomicReference<Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>?>()
+        val base = app.config
+        app.close()
+        app = mockedApplication(base, projectDelayMs = {
+            val (entered, release) = checkNotNull(pendingDiscovery.get())
+            entered.complete(Unit)
+            release.await()
+            0
+        })
+        val provider = OAuthProvider.ANTIGRAVITY
+        val model = "gemini-plugin-native"
+        val protocol = GatewayProtocol.GEMINI
+        val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            for (mutation in listOf("access-token", "proxy", "models", "endpoint")) {
+                val account = oauthAccount("snapshot-$mutation", provider, listOf(model), listOf(channelId))
+                assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+                val entered = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                pendingDiscovery.set(entered to release)
+                val before = preparations.size
+                coroutineScope {
+                    val response = async { client.invokePlugin(session, "oauth-account", account.id, values(model, protocol)) }
+                    val expectedError = try {
+                        withTimeout(5_000) { entered.await() }
+                        assertEquals("Bearer ${accessToken(provider)}", preparations.last().authorization)
+                        when (mutation) {
+                            "access-token" -> {
+                                val saved = assertNotNull(app.oauthAccountRepository.saveRefreshed(
+                                    accountId = account.id,
+                                    accessToken = app.credentialCipher.encrypt("rotated-during-diagnostic"),
+                                    expiresAt = System.currentTimeMillis() + 86_400_000,
+                                    tokenType = "Bearer", scope = null,
+                                    expectedRefreshCiphertext = account.refreshTokenCiphertext,
+                                ))
+                                assertEquals(account.authorizedAt, saved.authorizedAt)
+                                "oauth_account_changed"
+                            }
+                            "proxy" -> {
+                                assertNotNull(app.oauthAccountRepository.updateSettings(account.id, proxyUrl = "http://127.0.0.1:9"))
+                                "oauth_account_changed"
+                            }
+                            "models" -> {
+                                assertNotNull(app.oauthAccountRepository.setModels(account.id, listOf("other-authorized-model")))
+                                "model_not_authorized"
+                            }
+                            else -> {
+                                val channel = assertNotNull(app.channelRepository.find(channelId))
+                                assertNotNull(app.channelRepository.update(
+                                    id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+                                    authType = channel.authType, enabled = channel.enabled,
+                                    requestOverrides = UpstreamRequestOverrides(userAgent = "changed-during-diagnostic"),
+                                ))
+                                "oauth_provider_channel_changed"
+                            }
+                        }
+                    } finally {
+                        release.complete(Unit)
+                    }
+                    withTimeout(5_000) { response.await() }.assertError(HttpStatusCode.BadRequest, expectedError)
+                }
+                assertEquals(before + 1, preparations.size, mutation)
+                assertTrue(probes.isEmpty(), "$mutation must reject before model HTTP")
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `disabled ACTIVE account remains manually testable but REAUTH_REQUIRED legacy probe cannot prepare`() = runBlocking {
+        val provider = OAuthProvider.ANTIGRAVITY
+        val model = "gemini-plugin-native"
+        val protocol = GatewayProtocol.GEMINI
+        val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+        val account = oauthAccount("manual-disabled-account", provider, listOf(model), listOf(channelId))
+        assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+        assertFalse(assertNotNull(app.oauthAccountRepository.updateSettings(account.id, enabled = false)).enabled)
+
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val execution = client.invokePlugin(session, "oauth-account", account.id, values(model, protocol)).decoded<PluginExecution>()
+            assertTrue(execution.outcome.success)
+            val path = "/oauth-accounts/${account.id}/model-test"
+            val prompt = "disabled account manual probe"
+            val legacy = client.legacyProbe(session, path, model, protocol, prompt = prompt).objectPayload()
+            assertLegacySuccess(legacy, model, protocol, account.id, prompt)
+            assertEquals(2, probes.size)
+            assertEquals(1, preparations.size)
+
+            assertEquals(OAuthAuthState.REAUTH_REQUIRED,
+                assertNotNull(app.oauthAccountRepository.recordFailure(account.id, "invalid_grant", terminal = true)).authState)
+            client.legacyProbe(session, path, model, protocol).assertError(HttpStatusCode.BadGateway, "oauth_credential_unavailable")
+            assertEquals(2, probes.size, "An account requiring reauthorization must not send a model request")
+            assertEquals(1, preparations.size, "An account requiring reauthorization must not discover a project")
+            assertTrue(fake.tokenRequests.isEmpty())
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `native OAuth probe uses one header catalogue snapshot when a new version is published during preparation`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val provider = OAuthProvider.ANTIGRAVITY
+            val model = "gemini-plugin-native"
+            val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+            val account = oauthAccount("header-snapshot", provider, listOf(model), listOf(channelId))
+            assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+            app.upstreamRequestSettingsRepository.save(UpstreamRequestOverrides(headerProfile = "antigravity"))
+            val catalogue = app.upstreamHeaderCatalogService
+            val defaults = catalogue.profiles()
+            fun profiles(version: String): List<UpstreamHeaderProfile> = defaults.map { profile ->
+                if (profile.id != "antigravity") profile else profile.copy(
+                    version = version,
+                    headers = mapOf(
+                        HttpHeaders.UserAgent to "antigravity/hub/$version (snapshot-fixture)",
+                        "X-Profile-Version" to version,
+                    ),
+                )
+            }
+            val oldProfiles = profiles("99.0.1")
+            val newProfiles = profiles("99.0.2")
+            val now = System.currentTimeMillis()
+            val repository = app.upstreamHeaderCatalogRepository
+            repository.saveRefresh(oldProfiles, checkedAt = now, successAt = now, lastError = null)
+            catalogue.initialize()
+            // Warm project discovery separately so the captured profiles belong only to the model request.
+            app.codeAssistProjectResolver.context(account, accessToken(provider))
+            preparations.clear()
+            var captures = 0
+            mockkObject(catalogue)
+            try {
+                every { catalogue.profiles() } answers {
+                    captures += 1
+                    // A refresh publishes a new immutable list immediately after this request reads the old one.
+                    if (captures == 1) {
+                        runBlocking {
+                            repository.saveRefresh(newProfiles, checkedAt = now + 1, successAt = now + 1, lastError = null)
+                            catalogue.initialize()
+                        }
+                        oldProfiles
+                    } else newProfiles
+                }
+                val first = client.invokePlugin(session, "oauth-account", account.id,
+                    values(model, GatewayProtocol.GEMINI, prompt = "old snapshot")).decoded<PluginExecution>()
+                assertTrue(first.outcome.success)
+                assertEquals(1, captures, "Identity headers and request policy must share the same catalogue read")
+                assertEquals(listOf("antigravity/hub/99.0.1 (snapshot-fixture)"), probes.single().headers.getAll(HttpHeaders.UserAgent))
+                assertEquals("99.0.1", probes.single().headers["X-Profile-Version"])
+                assertNull(probes.single().headers["X-Goog-Api-Client"])
+            } finally {
+                unmockkObject(catalogue)
+            }
+            assertEquals("antigravity/hub/99.0.2 (snapshot-fixture)", app.currentAntigravityUserAgent())
+            val next = client.invokePlugin(session, "oauth-account", account.id,
+                values(model, GatewayProtocol.GEMINI, prompt = "new snapshot")).decoded<PluginExecution>()
+            assertTrue(next.outcome.success)
+            assertEquals(2, probes.size)
+            assertEquals(listOf("antigravity/hub/99.0.2 (snapshot-fixture)"), probes.last().headers.getAll(HttpHeaders.UserAgent))
+            assertEquals("99.0.2", probes.last().headers["X-Profile-Version"])
+            assertTrue(preparations.isEmpty(), "The warmed project must not add unrelated catalogue reads")
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `initial OAuth account lookup preserves missing account and bounds a blocked query for both routes`() = runBlocking {
+        val base = app.config
+        app.close()
+        app = mockedApplication(base, preparationTimeoutMs = 1_500)
+        val provider = OAuthProvider.CHATGPT
+        val model = "gpt-6-initial-lookup"
+        val protocol = GatewayProtocol.RESPONSES
+
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            suspend fun invoke(accountId: String, legacy: Boolean): HttpResponse = if (legacy) {
+                client.legacyProbe(session, "/oauth-accounts/$accountId/model-test", model, protocol)
+            } else {
+                client.invokePlugin(session, "oauth-account", accountId, values(model, protocol))
+            }
+            for (legacy in listOf(false, true)) {
+                invoke("missing-initial-account", legacy).assertError(HttpStatusCode.NotFound, "oauth_account_not_found")
+            }
+            val account = oauthAccount("initial-lookup-blocked", provider, listOf(model), emptyList())
+            for (legacy in listOf(false, true)) {
+                DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
+                    lock.autoCommit = false
+                    val blocker = lock.createStatement().use { statement ->
+                        statement.executeQuery("select pg_backend_pid()").use { rows ->
+                            check(rows.next())
+                            rows.getInt(1)
+                        }
+                    }
+                    lock.createStatement().use { it.execute("lock table oauth_accounts in access exclusive mode") }
+                    try {
+                        coroutineScope {
+                            val pending = async(Dispatchers.Default) { invoke(account.id, legacy) }
+                            awaitCondition("initial account query is blocked by the table lock", timeoutMs = 5_000) {
+                                lock.createStatement().use { statement ->
+                                    statement.executeQuery("select exists (select 1 from pg_stat_activity where $blocker = any(pg_blocking_pids(pid)))").use { rows ->
+                                        check(rows.next())
+                                        rows.getBoolean(1)
+                                    }
+                                }
+                            }
+                            assertPreparationTimeout(withTimeout(5_000) { pending.await() }, provider)
+                        }
+                    } finally {
+                        lock.rollback()
+                    }
+                }
+            }
+            assertNoPreparation()
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `OAuth native preparation shares one budget across token and project while HTTP keeps its plan timeout`() = runBlocking {
         assertEquals(20_000L, app.oauthDiagnosticPreparationTimeoutMs)
-        val prepareBudgetMs = 1_200L
+        val prepareBudgetMs = 20_000L
+        val clock = AtomicLong()
+        fun advance(milliseconds: Long) { clock.addAndGet(TimeUnit.MILLISECONDS.toNanos(milliseconds)) }
         val scheduledTimeouts = ConcurrentLinkedQueue<Long>()
         val executor = object : ScheduledThreadPoolExecutor(2) {
             override fun schedule(command: Runnable, delay: Long, unit: TimeUnit): ScheduledFuture<*> {
@@ -611,29 +884,27 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             }
         }
         executor.asCoroutineDispatcher().use { prepareDispatcher ->
-            val tokenDelayMs = AtomicLong()
-            val projectDelayMs = AtomicLong()
+            val tokenElapsedMs = AtomicLong()
+            val projectElapsedMs = AtomicLong()
             val tokenRefreshes = AtomicInteger()
-            val cancelledRefreshes = AtomicInteger()
             val base = app.config
             app.close()
-            app = mockedApplication(base, projectDelayMs = projectDelayMs::get, beforeProbe = {
+            app = mockedApplication(base, projectDelayMs = {
+                advance(projectElapsedMs.get())
+                0
+            }, beforeProbe = {
                 assertTrue(45_000L in scheduledTimeouts, "HTTP must receive the unmodified plan timeout")
-                delay(prepareBudgetMs + 100) // A timely preparation must not shorten the subsequent HTTP phase.
-            }, preparationTimeoutMs = prepareBudgetMs)
+                // HTTP may outlive the entire preparation allowance after that scope has ended.
+                advance(prepareBudgetMs + 1)
+            }, preparationTimeoutMs = prepareBudgetMs, preparationNanoTime = clock::get)
             val provider = OAuthProvider.ANTIGRAVITY
             val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
             mockkObject(tokens)
             try {
-                coEvery { tokens.refresh("refresh-${provider.value}", null) } coAnswers {
+                coEvery { tokens.refresh(any(), any()) } coAnswers {
                     tokenRefreshes.incrementAndGet()
-                    try {
-                        delay(tokenDelayMs.get())
-                        OAuthTokenResponse(accessToken(provider))
-                    } catch (cause: kotlinx.coroutines.CancellationException) {
-                        cancelledRefreshes.incrementAndGet()
-                        throw cause
-                    }
+                    advance(tokenElapsedMs.get())
+                    OAuthTokenResponse(accessToken(provider), refreshToken = "rotated-${provider.value}")
                 }
                 testApplication {
                     engine { dispatcher = prepareDispatcher }
@@ -655,21 +926,25 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                         values(model, GatewayProtocol.GEMINI, prompt = "independent HTTP budget")).decoded<PluginExecution>()
                     assertTrue(success.outcome.success)
                     assertEquals(45_000L, success.plan.timeoutMs)
-                    assertTrue(prepareBudgetMs in scheduledTimeouts, "Exercise the adapter's preparation deadline")
                     assertEquals(1, probes.size)
                     assertNativeRequest(probes.remove(), provider, model, "independent HTTP budget")
                     preparations.clear()
 
-                    tokenDelayMs.set(prepareBudgetMs + 250)
+                    tokenElapsedMs.set(prepareBudgetMs + 1)
                     assertPreparationTimeout(
                         client.invokePlugin(session, "oauth-account", slowToken.id, values(model, GatewayProtocol.GEMINI)), provider,
                     )
-                    assertEquals(1, cancelledRefreshes.get(), "A slow token refresh must be cancelled")
+                    withTimeout(5_000) {
+                        while (app.oauthAccountRepository.findDetailed(slowToken.id)?.hasAccessToken != true) delay(10)
+                    }
+                    val saved = assertNotNull(app.oauthAccountRepository.findDetailed(slowToken.id))
+                    assertTrue(saved.hasAccessToken,
+                        "A provider response that may rotate refresh credentials must finish its CAS save after the caller times out")
                     assertTrue(preparations.isEmpty(), "A timed-out token cannot proceed to project discovery")
 
-                    // Each phase would fit on its own, but the cumulative wait exceeds the preparation budget.
-                    tokenDelayMs.set(prepareBudgetMs * 2 / 3)
-                    projectDelayMs.set(prepareBudgetMs * 2 / 3)
+                    // Each phase fits alone. Advancing the same monotonic clock makes their sum decisive.
+                    tokenElapsedMs.set(14_000)
+                    projectElapsedMs.set(7_000)
                     assertPreparationTimeout(
                         client.invokePlugin(session, "oauth-account", cumulative.id, values(model, GatewayProtocol.GEMINI)), provider,
                     )
@@ -684,18 +959,22 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `OAuth native preparation cancels a blocked token write before starting a model probe`() = runBlocking {
+    fun `OAuth refresh save survives diagnostic timeout while the token row is locked`() = runBlocking {
         val base = app.config
         app.close()
         app = mockedApplication(base, preparationTimeoutMs = 1_500)
         val provider = OAuthProvider.CHATGPT
         val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
         val refreshes = AtomicInteger()
+        val exchangeStarted = CompletableDeferred<Unit>()
+        val finishExchange = CompletableDeferred<Unit>()
         mockkObject(tokens)
         try {
-            coEvery { tokens.refresh("refresh-${provider.value}", null) } coAnswers {
+            coEvery { tokens.refresh(any(), any()) } coAnswers {
                 refreshes.incrementAndGet()
-                OAuthTokenResponse(accessToken(provider))
+                exchangeStarted.complete(Unit)
+                finishExchange.await()
+                OAuthTokenResponse(accessToken(provider), refreshToken = "rotated-refresh-${provider.value}")
             }
             testApplication {
                 application { app.install(this) }
@@ -708,30 +987,40 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
 
                 DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { lock ->
                     lock.autoCommit = false
-                    lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
-                        statement.setString(1, account.id)
-                        statement.executeQuery().use { assertTrue(it.next()) }
-                    }
                     coroutineScope {
                         val pending = async(Dispatchers.Default) { client.invokePlugin(session, "oauth-account", account.id, input) }
+                        withTimeout(5_000) { exchangeStarted.await() }
+                        lock.prepareStatement("select id from oauth_accounts where id = ? for update nowait").use { statement ->
+                            statement.setString(1, account.id)
+                            statement.executeQuery().use { assertTrue(it.next()) }
+                        }
+                        finishExchange.complete(Unit)
                         val response = try {
-                            // The request must finish while the lock is still held. Always release the lock on a regression.
                             withTimeoutOrNull(5_000) { pending.await() }
                         } finally {
                             lock.rollback()
                         }
-                        assertPreparationTimeout(assertNotNull(response, "JDBC must stop waiting before the lock is released"), provider)
+                        assertPreparationTimeout(assertNotNull(response, "the caller must stop waiting while CAS is blocked"), provider)
                     }
                 }
-                assertEquals(1, refreshes.get(), "The lock must block saving a refreshed token, not the initial read")
-                assertFalse(assertNotNull(app.oauthAccountRepository.findDetailed(account.id)).hasAccessToken)
+                withTimeout(5_000) {
+                    while (app.oauthAccountRepository.findDetailed(account.id)?.hasAccessToken != true) delay(10)
+                }
+                val saved = assertNotNull(app.oauthAccountRepository.findDetailed(account.id))
+                assertTrue(saved.hasAccessToken, "The service-owned task must finish saving the exchanged access token")
+                val refreshContext = assertNotNull(app.oauthAccountRepository.loadRefreshContext(account.id))
+                assertEquals("rotated-refresh-${provider.value}",
+                    app.credentialCipher.decrypt(refreshContext.refreshTokenCiphertext, refreshContext.refreshTokenNonce))
+                assertTrue(preparations.isEmpty(), "A timed-out diagnostic cannot continue native project discovery")
+                assertTrue(probes.isEmpty(), "A timed-out diagnostic cannot send the model request")
 
                 val success = client.invokePlugin(session, "oauth-account", account.id, input).decoded<PluginExecution>()
-                assertTrue(success.outcome.success, "A failed transaction must not affect the next probe")
-                assertEquals(2, refreshes.get())
+                assertTrue(success.outcome.success)
+                assertEquals(1, refreshes.get(), "The next diagnostic must reuse the access token saved by the first exchange")
                 assertNativeRequest(probes.single(), provider, model, "probe after lock release")
             }
         } finally {
+            finishExchange.complete(Unit)
             unmockkObject(tokens)
         }
         assertNoDiagnosticSettlement()
@@ -802,6 +1091,121 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertActive(client.pluginState(session))
             assertEquals(original, app.oauthAccountRepository.findDetailed(account.id), "Rejected probes cannot refresh or mutate the account")
             assertNoPreparation()
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `queued channel probe rejects its disabled bound key even with a valid spare`() = runBlocking {
+        val release = CompletableDeferred<Unit>()
+        probeHold.set(release)
+        try {
+            testApplication {
+                application { app.install(this) }
+                val session = client.adminSession()
+                val protocol = GatewayProtocol.CHAT_COMPLETIONS
+                val channel = app.channelRepository.create(
+                    name = "queued-key-revocation", baseUrl = "${fake.baseUrl}/ok/v1",
+                    keys = listOf(
+                        NewChannelKey("selected", app.credentialCipher.encrypt(STATIC_TOKEN), models = listOf(MODEL)),
+                        NewChannelKey("spare", app.credentialCipher.encrypt("unselected-static-token"), priority = 2, models = listOf(MODEL)),
+                    ),
+                    authType = "bearer", protocols = listOf(protocol), enabled = true, modelMappings = mappingsOf(MODEL),
+                )
+                val original = channel.keys.single { it.name == "selected" }
+                // An execution permit is acquired only after the adapter binds the target, before waiting for a probe slot.
+                val executions = app.pluginRuntime.javaClass.getDeclaredField("executions").let { field ->
+                    field.isAccessible = true
+                    field.get(app.pluginRuntime) as Semaphore
+                }
+                val idlePermits = executions.availablePermits
+                coroutineScope {
+                    val running = (1..2).map { index ->
+                        async { client.invokePlugin(session, "channel", channel.id, values(MODEL, protocol, original.id, "occupied $index")) }
+                    }
+                    val queued = try {
+                        awaitCondition("both upstream workers occupied", timeoutMs = 5_000) { runningProbes.get() == 2 }
+                        val invocation = async { client.invokePlugin(session, "channel", channel.id, values(MODEL, protocol)) }
+                        awaitCondition("queued invocation bound its target", timeoutMs = 5_000) { executions.availablePermits == idlePermits - 3 }
+                        val changed = assertNotNull(app.channelRepository.update(
+                            id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+                            authType = channel.authType, enabled = channel.enabled,
+                            keys = channel.keys.map { key ->
+                                ChannelKeyUpdate(
+                                    id = key.id, name = key.name, priority = key.priority, models = key.models,
+                                    state = if (key.id == original.id) ChannelKeyState.MANUAL_DISABLED else key.state,
+                                    stateVersion = key.stateVersion,
+                                )
+                            },
+                        ))
+                        assertEquals(ChannelKeyState.MANUAL_DISABLED, changed.keys.single { it.id == original.id }.state)
+                        assertEquals(ChannelKeyState.ACTIVE, changed.keys.single { it.name == "spare" }.state)
+                        invocation
+                    } finally {
+                        release.complete(Unit)
+                    }
+                    withTimeout(5_000) {
+                        running.awaitAll().forEach { assertTrue(it.decoded<PluginExecution>().outcome.success) }
+                        queued.await().assertError(HttpStatusCode.BadRequest, "channel_key_disabled")
+                    }
+                }
+                assertEquals(2, probes.size, "The queued probe may neither use the original key nor switch to the spare")
+                assertTrue(probes.all { it.authorization == "Bearer $STATIC_TOKEN" })
+            }
+        } finally {
+            release.complete(Unit)
+            probeHold.set(null)
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `queued native OAuth probe rechecks revoked model authorization before preparation`() = runBlocking {
+        val release = CompletableDeferred<Unit>()
+        probeHold.set(release)
+        try {
+            testApplication {
+                application { app.install(this) }
+                val session = client.adminSession()
+                val occupied = directChannel("queued-oauth-occupants", GatewayProtocol.CHAT_COMPLETIONS)
+                val model = "gpt-6-queued-native"
+                val provider = OAuthProvider.CHATGPT
+                val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+                val account = oauthAccount("queued-model-revocation", provider, listOf(model), listOf(channelId))
+                assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+                val executions = app.pluginRuntime.javaClass.getDeclaredField("executions").let { field ->
+                    field.isAccessible = true
+                    field.get(app.pluginRuntime) as Semaphore
+                }
+                val idlePermits = executions.availablePermits
+                coroutineScope {
+                    val running = (1..2).map { index ->
+                        async { client.invokePlugin(session, "channel", occupied.id,
+                            values(MODEL, GatewayProtocol.CHAT_COMPLETIONS, prompt = "occupied $index")) }
+                    }
+                    val queued = try {
+                        awaitCondition("both workers occupied before native admission", timeoutMs = 5_000) { runningProbes.get() == 2 }
+                        val invocation = async { client.invokePlugin(session, "oauth-account", account.id,
+                            values(model, GatewayProtocol.RESPONSES)) }
+                        awaitCondition("native target bound before probe admission", timeoutMs = 5_000) {
+                            executions.availablePermits == idlePermits - 3
+                        }
+                        assertNotNull(app.oauthAccountRepository.setModels(account.id, listOf("other-authorized-model")))
+                        invocation
+                    } finally {
+                        release.complete(Unit)
+                    }
+                    withTimeout(5_000) {
+                        running.awaitAll().forEach { assertTrue(it.decoded<PluginExecution>().outcome.success) }
+                        queued.await().assertError(HttpStatusCode.BadRequest, "model_not_authorized")
+                    }
+                }
+                assertEquals(2, probes.size, "Revoked native authorization must not send model HTTP")
+                assertTrue(preparations.isEmpty(), "Queued revocation must reject before project discovery")
+            }
+        } finally {
+            release.complete(Unit)
+            probeHold.set(null)
         }
         assertNoDiagnosticSettlement()
     }
@@ -883,7 +1287,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
 
     @Test
     fun `uninstall tombstone survives reinitialization and restart and idempotent reinstall loads only on the next enabled restart`() = runBlocking {
-        lateinit var tombstone: PluginInstallation
+        lateinit var tombstone: PluginInstallationRecord
         lateinit var channel: ChannelRecord
         testApplication {
             application { app.install(this) }
@@ -1029,10 +1433,11 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
 
     private fun mockedApplication(
         config: GatewayConfig,
-        projectDelayMs: () -> Long = { 0 },
+        projectDelayMs: suspend () -> Long = { 0 },
         beforeProbe: suspend () -> Unit = {},
         probeResponse: ((HttpRequestData) -> Pair<HttpStatusCode, String>)? = null,
         preparationTimeoutMs: Long? = null,
+        preparationNanoTime: () -> Long = System::nanoTime,
     ): GatewayApplication {
         val mock = HttpClient(MockEngine) {
             engine {
@@ -1086,7 +1491,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             GatewayApplication(config, httpClientOverride = mock)
         } else {
             GatewayApplication(config, notificationTransport = null, httpClientOverride = mock,
-                oauthDiagnosticPreparationTimeoutMs = preparationTimeoutMs)
+                oauthDiagnosticPreparationTimeoutMs = preparationTimeoutMs, oauthDiagnosticNanoTime = preparationNanoTime)
         }
     }
 

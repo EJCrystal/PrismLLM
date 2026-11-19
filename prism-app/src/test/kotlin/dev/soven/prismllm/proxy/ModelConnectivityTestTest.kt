@@ -829,6 +829,209 @@ class ModelConnectivityTestTest {
         }
     }
 
+    @Test
+    fun fingerprint_sample_callback_receives_bounded_original_response_without_leaking_it_in_result() = runBlocking {
+        val credential = "fingerprint-synthetic-secret"
+        val originalText = "sample $credential remains unchanged"
+        val body = """{"choices":[{"message":{"content":"$originalText"}}],"model":"model-$credential"}"""
+
+        val (result, rawSample) = fingerprintDiagnosticTransport(credential, body, maxResponseChars = 24)
+
+        assertEquals(originalText.take(24), rawSample)
+        assertFalse(result.responseText.orEmpty().contains(credential))
+        assertFalse(result.upstreamReportedModel.orEmpty().contains(credential))
+        assertEquals("sample [REDACTED] remain", result.responseText)
+        assertEquals("model-[REDACTED]", result.upstreamReportedModel)
+    }
+
+    @Test
+    fun fingerprint_sample_callback_captures_partial_text_from_failed_responses_stream_without_exposing_it() = runBlocking {
+        val credential = "fingerprint-failed-stream-secret"
+        val body = listOf(
+            "event: response.output_text.delta",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial $credential\"}",
+            "event: response.failed",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}",
+        ).joinToString("\n")
+
+        val (result, rawSample) = fingerprintDiagnosticTransport(
+            credential,
+            body,
+            maxResponseChars = 100,
+            protocol = GatewayProtocol.RESPONSES,
+            responseContentType = ContentType.Text.EventStream,
+        )
+
+        assertFalse(result.success)
+        assertEquals("partial $credential", rawSample)
+        assertEquals("partial [REDACTED]", result.responseText)
+        assertFalse(result.errorMessage.orEmpty().contains(credential))
+    }
+
+    @Test
+    fun fingerprint_sample_callback_captures_partial_text_before_an_error_responses_event() = runBlocking {
+        assertFailedResponsesPartialTextIsCaptured(
+            suffix = "error",
+            terminalEvent = "error",
+            terminalPayload = """{"type":"error","error":{"message":"denied fingerprint-error-secret"}}""",
+        )
+    }
+
+    @Test
+    fun fingerprint_sample_callback_captures_partial_text_before_incomplete_responses_event() = runBlocking {
+        assertFailedResponsesPartialTextIsCaptured(
+            suffix = "incomplete",
+            terminalEvent = "response.incomplete",
+            terminalPayload = """{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}""",
+        )
+    }
+
+    @Test
+    fun fingerprint_sample_callback_captures_partial_text_when_responses_terminal_event_is_missing() = runBlocking {
+        assertFailedResponsesPartialTextIsCaptured(
+            suffix = "missing-terminal",
+            terminalEvent = null,
+            terminalPayload = null,
+        )
+    }
+
+    private suspend fun assertFailedResponsesPartialTextIsCaptured(
+        suffix: String,
+        terminalEvent: String?,
+        terminalPayload: String?,
+    ) {
+        val credential = "fingerprint-$suffix-secret"
+        val body = buildList {
+            add("event: response.output_text.delta")
+            add("data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial $credential\"}")
+            if (terminalEvent != null && terminalPayload != null) {
+                add("event: $terminalEvent")
+                add("data: $terminalPayload")
+            }
+        }.joinToString("\n")
+
+        val (result, rawSample) = fingerprintDiagnosticTransport(
+            credential,
+            body,
+            maxResponseChars = 100,
+            protocol = GatewayProtocol.RESPONSES,
+            responseContentType = ContentType.Text.EventStream,
+        )
+
+        assertFalse(result.success)
+        assertEquals("partial $credential", rawSample)
+        assertEquals("partial [REDACTED]", result.responseText)
+        assertFalse(result.errorMessage.orEmpty().contains(credential))
+    }
+
+    @Test
+    fun nested_non_string_json_error_scalars_are_redacted_in_display_previews() = runBlocking {
+        val cases = listOf(
+            Triple("7", """{"detail":{"count":7,"enabled":false,"note":null}}""", """{"detail":{"count":"[REDACTED]","enabled":false,"note":null}}"""),
+            Triple("true", """{"detail":{"enabled":true,"count":7,"note":null}}""", """{"detail":{"enabled":"[REDACTED]","count":7,"note":null}}"""),
+            Triple("null", """{"detail":{"note":null,"count":7,"enabled":false}}""", """{"detail":{"note":"[REDACTED]","count":7,"enabled":false}}"""),
+        )
+
+        for ((credential, body, expected) in cases) {
+            for (oauth in listOf(false, true)) {
+                val result = diagnosticTransport(
+                    credential,
+                    oauth = oauth,
+                    responseBody = body,
+                    status = HttpStatusCode.BadGateway,
+                )
+
+                assertFailedDiagnostic(result, 502, expected)
+                assertFalse(result.errorMessage.orEmpty().contains(credential), "credential=$credential")
+            }
+        }
+    }
+
+    @Test
+    fun fingerprint_sample_callback_does_not_capture_partial_text_from_non_2xx_responses() = runBlocking {
+        val credential = "fingerprint-non-2xx-secret"
+        val body = listOf(
+            "event: response.output_text.delta",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial $credential\"}",
+            "event: response.failed",
+            "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"denied $credential\"}}}",
+        ).joinToString("\n")
+
+        val (result, rawSample) = fingerprintDiagnosticTransport(
+            credential,
+            body,
+            maxResponseChars = 100,
+            protocol = GatewayProtocol.RESPONSES,
+            responseContentType = ContentType.Text.EventStream,
+            status = HttpStatusCode.BadGateway,
+        )
+
+        assertFalse(result.success)
+        assertNull(result.responseText)
+        assertNull(rawSample)
+        assertFalse(result.errorMessage.orEmpty().contains(credential))
+    }
+
+    @Test
+    fun duplicate_json_error_fields_never_fall_back_to_the_unsanitized_response() = runBlocking {
+        val credential = "synthetic-duplicate-secret"
+        // The JSON parser keeps only the last duplicate key, while the earlier value remains in the raw body.
+        val body = """{"detail":"$credential","detail":"ordinary"}"""
+
+        val result = diagnosticTransport(
+            credential,
+            responseBody = body,
+            status = HttpStatusCode.BadGateway,
+        )
+
+        assertFailedDiagnostic(result, 502, """{"detail":"ordinary"}""")
+        assertFalse(result.errorMessage.orEmpty().contains(credential))
+    }
+
+    private suspend fun fingerprintDiagnosticTransport(
+        credential: String,
+        responseBody: String,
+        maxResponseChars: Int,
+        protocol: GatewayProtocol = GatewayProtocol.CHAT_COMPLETIONS,
+        responseContentType: ContentType = ContentType.Application.Json,
+        status: HttpStatusCode = HttpStatusCode.OK,
+    ): Pair<ModelConnectivityTestResult, String?> {
+        val channel = ChannelRecord(
+            id = "fingerprint-channel", name = "fingerprint-channel",
+            baseUrl = "https://diagnostic.example.test", authType = "bearer",
+            protocols = listOf(protocol), enabled = true,
+            createdAt = 0, updatedAt = 0,
+        )
+        val savedKey = ChannelKeyRecord(
+            id = "fingerprint-key", channelId = channel.id, name = "synthetic-key",
+            credentialCiphertext = "synthetic-ciphertext", credentialNonce = "synthetic-nonce",
+            credentialKeyVersion = 1, state = ChannelKeyState.ACTIVE, priority = 0,
+            createdAt = 0, updatedAt = 0,
+        )
+        var rawSample: String? = null
+        val client = HttpClient(MockEngine) {
+            engine {
+                addHandler { request ->
+                    assertEquals("Bearer $credential", request.headers[HttpHeaders.Authorization])
+                    respond(responseBody, status, headersOf(HttpHeaders.ContentType, responseContentType.toString()))
+                }
+            }
+        }
+        return client.use {
+            sampleFingerprintModelConnectivity(
+                channel = channel,
+                credentialRef = savedKey,
+                model = "diagnostic-model",
+                protocol = protocol,
+                prompt = "say ok",
+                credentials = KeyCredentialResolver { credential },
+                httpClient = it,
+                maxResponseChars = maxResponseChars,
+                consumeRawSample = { rawSample = it },
+            ) to rawSample
+        }
+    }
+
     private suspend fun diagnosticTransport(
         credential: String,
         protocol: GatewayProtocol = GatewayProtocol.CHAT_COMPLETIONS,

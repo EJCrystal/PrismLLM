@@ -9,6 +9,7 @@ import dev.soven.prismllm.plugin.sdk.PluginApi
 import dev.soven.prismllm.plugin.sdk.ProbeLimits
 import dev.soven.prismllm.plugin.sdk.ProbeOutcome
 import dev.soven.prismllm.plugin.sdk.ProbePlan
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -76,7 +77,10 @@ class PluginRuntime(
         PluginValidation.requireData(!installer.directory.startsWith(catalog.directory) && !catalog.directory.startsWith(installer.directory), "Catalogue and managed plugin directories must be separate")
     }
 
-    suspend fun initialize(bootstrapId: String? = null, initialConfiguration: JsonObject = JsonObject(emptyMap())) {
+    suspend fun initialize(
+        bootstrapId: String? = null,
+        initialConfiguration: suspend () -> JsonObject = { JsonObject(emptyMap()) },
+    ) {
         mutex.withLock {
             checkOpen()
             if (initialized) return
@@ -86,9 +90,17 @@ class PluginRuntime(
                 if (bootstrapId != null && store.find(bootstrapId) == null) {
                     try {
                         val bundled = withContext(Dispatchers.IO) { catalog.bootstrapPackage(bootstrapId) }
-                        if (bundled != null) {
+                        if (bundled != null && store.find(bootstrapId) == null) {
+                            checkOpen()
+                            val values = try {
+                                initialConfiguration()
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (_: Exception) {
+                                throw PluginHostException("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
+                            }
+                            val configuration = PluginValidation.installationConfiguration(bundled.item.manifest.configuration, values)
                             val staged = withContext(Dispatchers.IO) { installer.stage(bundled) }
-                            val configuration = configuration(staged, initialConfiguration)
                             val installation = PluginInstallation(
                                 id = bootstrapId, version = staged.item.manifest.version, sha256 = staged.item.sha256,
                                 source = staged.item.source, installed = true, desiredEnabled = true,
@@ -128,7 +140,7 @@ class PluginRuntime(
                 }
             } finally {
                 // Until atomic publication, initialization owns every returned provider/loader.
-                if (!published) pending.forEach { dispose(it); closeLoader(it.loader) }
+                if (!published) pending.forEach(::dispose)
             }
         }
     }
@@ -164,7 +176,13 @@ class PluginRuntime(
         }
     }
 
-    suspend fun install(id: String, version: String, approvedPermissions: List<String>): PluginRuntimeState = mutex.withLock {
+    /** Initial values seed only a new record; a lost insert renders the concurrent winner unchanged. */
+    suspend fun install(
+        id: String,
+        version: String,
+        approvedPermissions: List<String>,
+        initialConfiguration: suspend () -> JsonObject = { JsonObject(emptyMap()) },
+    ): PluginRuntimeState = mutex.withLock {
         checkReady()
         val validated = withContext(Dispatchers.IO) { catalog.select(id, version) }
         val grants = PluginValidation.grants(validated.item.manifest, approvedPermissions)
@@ -178,14 +196,31 @@ class PluginRuntime(
             // Do not erase configuration, toggle enablement or increment the revision on replay.
             return@withLock render(previous)
         }
+        val configurationValues = previous?.configuration ?: try {
+            initialConfiguration()
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            throw PluginHostException("PLUGIN_INITIAL_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
+        }
         val next = PluginInstallation(
             id = id, version = version, sha256 = staged.item.sha256, source = staged.item.source,
             installed = true, desiredEnabled = previous?.let { it.installed && it.desiredEnabled } ?: false,
             approvedPermissions = grants,
-            configuration = PluginValidation.installationConfiguration(staged.item.manifest.configuration, previous?.configuration),
+            configuration = PluginValidation.installationConfiguration(staged.item.manifest.configuration, configurationValues),
             updatedAt = now(previous), revision = nextRevision(previous),
         )
-        persist(next, previous)
+        checkOpen()
+        if (previous == null) {
+            if (!store.insertIfAbsent(next)) {
+                // A concurrent installation or tombstone owns the identity; never overwrite it.
+                val winner = store.find(id)
+                    ?: throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
+                return@withLock render(winner)
+            }
+        } else if (!store.save(next, previous.revision)) {
+            throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
+        }
         bootstrapErrors.remove(id)
         render(next)
     }
@@ -316,25 +351,35 @@ class PluginRuntime(
     private suspend fun load(staged: StagedPluginPackage, grants: Set<String>, configuration: JsonObject): LoadedPlugin {
         val configurationSnapshot = PluginValidation.snapshot(configuration)
         val loader = PackageClassLoader(staged.jarPath.toUri().toURL(), parentClassLoader)
+        val loaderClaimed = AtomicBoolean(false)
         try {
             return runCode("load", CODE_TIMEOUT_MS, loader, onDiscard = { dispose(it) }) {
-                val providers = ServiceLoader.load(DiagnosticPlugin::class.java, loader).stream().toList()
-                if (providers.size != 1 || providers.single().type().name != staged.providerClass || providers.single().type().classLoader !== loader) {
-                    throw PluginHostException("PLUGIN_INVALID_PROVIDER", "DiagnosticPlugin must have exactly one package-local provider")
-                }
-                val instance = providers.single().get()
+                // If timeout wins before the task starts, the caller claims and closes the unused loader.
+                if (!loaderClaimed.compareAndSet(false, true)) throw PluginHostException("PLUGIN_CODE_TIMEOUT", "Plugin load no longer has an owner", 503)
                 try {
-                    if (instance.id != staged.item.manifest.id || instance.version != staged.item.manifest.version || instance.apiVersion != PluginApi.VERSION) {
-                        throw PluginHostException("PLUGIN_INVALID_PROVIDER", "DiagnosticPlugin identity/API does not match its package")
+                    val providers = ServiceLoader.load(DiagnosticPlugin::class.java, loader).stream().toList()
+                    if (providers.size != 1 || providers.single().type().name != staged.providerClass || providers.single().type().classLoader !== loader) {
+                        throw PluginHostException("PLUGIN_INVALID_PROVIDER", "DiagnosticPlugin must have exactly one package-local provider")
                     }
+                    val instance = providers.single().get()
+                    try {
+                        if (instance.id != staged.item.manifest.id || instance.version != staged.item.manifest.version || instance.apiVersion != PluginApi.VERSION) {
+                            throw PluginHostException("PLUGIN_INVALID_PROVIDER", "DiagnosticPlugin identity/API does not match its package")
+                        }
+                    } catch (error: Throwable) {
+                        try { instance.close() } catch (_: Exception) { /* Keep the original admission failure. */ }
+                        throw error
+                    }
+                    LoadedPlugin(staged, instance, loader, grants.toSet(), configurationSnapshot)
                 } catch (error: Throwable) {
-                    try { instance.close() } catch (_: Exception) { /* Keep the original admission failure. */ }
+                    closeLoader(loader)
                     throw error
                 }
-                LoadedPlugin(staged, instance, loader, grants.toSet(), configurationSnapshot)
             }
         } catch (error: Throwable) {
-            try { loader.close() } catch (closeError: Exception) { error.addSuppressed(closeError) }
+            // A timed-out running constructor still owns its loader. Its eventual result/error closes
+            // it on the worker; only a task that never started is safe to close here.
+            if (loaderClaimed.compareAndSet(false, true)) closeLoader(loader)
             throw error
         }
     }
@@ -466,7 +511,7 @@ class PluginRuntime(
     }
 
     private fun outcome(outcome: ProbeOutcome): ProbeOutcome = outcome.copy(
-        latencyMs = outcome.latencyMs.coerceAtLeast(0), responseText = outcome.responseText?.take(16_000),
+        latencyMs = outcome.latencyMs.coerceAtLeast(0), responseText = outcome.responseText?.filterNot { it == '\u0000' }?.take(16_000),
         errorMessage = outcome.errorMessage?.take(4_000), upstreamReportedModel = outcome.upstreamReportedModel?.take(256),
         usage = outcome.usage?.takeIf { it.toString().length <= 16_000 }?.let(PluginValidation::snapshot),
     )
@@ -584,7 +629,6 @@ class PluginRuntime(
                 // bounded caller wait, even if another provider is slow or failed.
             }
         }
-        loaded.forEach { closeLoader(it.loader) }
         codeWorkers.shutdownNow()
     }
 

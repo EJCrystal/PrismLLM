@@ -54,8 +54,8 @@ PROTOCOL_CHANNEL_CASES = (
 )
 PLUGIN_CASES = (
     (("extensions",), "prism-plugin-host", "channel"),
-    (("pluginhost",), "prism-plugin-host,prism-admin", "channel"),
-    (("pluginsdk",), "prism-plugin-sdk,prism-plugin-host,prism-admin", "channel"),
+    (("pluginhost",), "prism-plugin-host", "channel"),
+    (("pluginsdk",), "prism-plugin-sdk,prism-plugin-host", "channel"),
 )
 CI_BUILD_PATHS = (
     ".github/workflows/ci.yml",
@@ -322,7 +322,7 @@ class ModuleSelectionTests(unittest.TestCase):
     def test_plugin_sdk_host_and_standalone_extension_keep_dependency_boundaries(self):
         self.assertEqual(module_dependency_scopes("prism-plugin-sdk"), {})
         self.assertEqual(module_dependency_scopes("prism-plugin-host"), {"prism-plugin-sdk": "compile"})
-        self.assertEqual(module_dependency_scopes("prism-admin").get("prism-plugin-host"), "compile")
+        self.assertIsNone(module_dependency_scopes("prism-admin").get("prism-plugin-host"))
         self.assertEqual(module_dependency_scopes("prism-app").get("prism-plugin-host"), "compile")
         extension = "extensions/connectivity-diagnostic"
         self.assertEqual(module_dependency_scopes(extension), {"prism-plugin-sdk": "provided"})
@@ -513,6 +513,20 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertNotIn(".prismplugin", reports)
         self.assertNotIn("catalog.json", reports)
 
+    def test_official_plugin_package_is_exercised_by_the_host_component_test(self):
+        package = yaml_block(self.backend, "      - name: Verify official connectivity package and app fixture")
+        host_test = yaml_block(self.backend, "      - name: Test official plugin package in host")
+        app = yaml_block(self.backend, "      - name: Test app module")
+        self.assertIn("        if: steps.modules.outputs.app_tests == 'true'", host_test)
+        self.assertIn("-pl prism-plugin-host surefire:test", host_test)
+        self.assertIn("-Dtest=OfficialPluginPackageComponentTest", host_test)
+        self.assertIn('"$GITHUB_WORKSPACE/extensions/connectivity-diagnostic/target"', host_test)
+        self.assertIn("-DfailIfNoTests=true", host_test)
+        self.assertIn("OfficialPluginPackageComponentTest.xml", host_test)
+        self.assertIn("tests > 0 and skipped == 0", host_test)
+        self.assertLess(self.backend.index(package), self.backend.index(host_test))
+        self.assertLess(self.backend.index(host_test), self.backend.index(app))
+
     def test_extensions_keep_verify_and_main_full_baseline(self):
         step = yaml_block(self.backend, "      - name: Test optional quota providers")
         self.assertIn("steps.modules.outputs.full_regression == 'true'", step)
@@ -553,8 +567,8 @@ class WorkflowWiringTests(unittest.TestCase):
             (("shared",), ALL_UPSTREAM, "", False),
             (("protocol", "channel"), "prism-protocol,prism-channel,prism-routing,prism-request-log", "channel|protocol", False),
             (("extensions",), "prism-plugin-host", "channel", False),
-            (("pluginhost",), "prism-plugin-host,prism-admin", "channel", False),
-            (("pluginsdk", "protocol"), "prism-plugin-sdk,prism-plugin-host,prism-protocol,prism-routing,prism-request-log,prism-admin", "channel|protocol", False),
+            (("pluginhost",), "prism-plugin-host", "channel", False),
+            (("pluginsdk", "protocol"), "prism-plugin-sdk,prism-plugin-host,prism-protocol,prism-routing,prism-request-log", "channel|protocol", False),
             (("channel",), ALL_UPSTREAM, "", True),
             ((), ALL_UPSTREAM, "", True),
         )

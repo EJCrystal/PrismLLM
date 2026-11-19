@@ -270,6 +270,29 @@ jobs:
           python3 .github/scripts/ci_test_report.py run extensions --
           mvn --batch-mode --no-transfer-progress -f extensions/connectivity-diagnostic/pom.xml verify
 
+      - name: Test official plugin package in host
+        if: steps.modules.outputs.app_tests == 'true'
+        run: |
+          mvn --batch-mode --no-transfer-progress -pl prism-plugin-host surefire:test \
+            -Dtest=OfficialPluginPackageComponentTest \
+            -Dprism.plugin.fixtureDirectory="$GITHUB_WORKSPACE/extensions/connectivity-diagnostic/target" \
+            -DfailIfNoTests=true
+          python3 - <<'PY'
+          from pathlib import Path
+          import xml.etree.ElementTree as ET
+
+          paths = list(Path("prism-plugin-host/target/surefire-reports").glob("TEST-*OfficialPluginPackageComponentTest.xml"))
+          if len(paths) != 1:
+              raise SystemExit(f"Expected one official package host report, found {len(paths)}")
+          cases = list(ET.parse(paths[0]).getroot().iter("testcase"))
+          tests = len(cases)
+          skipped = sum(case.find("skipped") is not None for case in cases)
+          failures = sum(case.find("failure") is not None or case.find("error") is not None for case in cases)
+          if not (tests > 0 and skipped == 0 and failures == 0):
+              raise SystemExit(f"Official package host test did not pass: tests={tests}, skipped={skipped}, failures={failures}")
+          print(f"Official package host tests: {tests} passed, none skipped")
+          PY
+
       - name: Test app module
         if: steps.modules.outputs.app_tests == 'true'
         env:

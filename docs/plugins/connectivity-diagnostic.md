@@ -24,6 +24,8 @@ cp extensions/connectivity-diagnostic/target/catalog.json \
 
 构建输出是 `extensions/connectivity-diagnostic/target/prism-connectivity-1.0.0.prismplugin` 与同目录的 `catalog.json`。ZIP **恰好**包含 `manifest.json`、`ui.json`、`plugin.jar` 三个普通文件，没有安装/卸载脚本、SQL、DDL 或前端资源。JAR 只包含插件实现、SPI 服务声明与构建元数据；SDK、Kotlin 标准库及 JSON 库由宿主提供，不重复打包。构建工具使用固定 JAR/ZIP 时间戳与稳定 ZIP 条目顺序，`catalog.json` 的小写 SHA-256 对应最终 ZIP 字节，不是内部 JAR 的散列。同一源码和固定工具链可重复构建；已发布安装的同版本包不可原地替换成另一个摘要。
 
+外层 ZIP 与内部 JAR 只接受使用 Store 或 Deflate 的经典单卷 ZIP。宿主在调用 Commons Compress 前校验中央目录的范围和实际条目数（目录最多 8 MiB、外层最多 3 条、JAR 最多 10,000 条），拒绝 ZIP64、多卷、加密和其他不支持的格式。JAR 中若有 manifest，路径必须精确写作 `META-INF/MANIFEST.MF`，不得声明外部 `Class-Path`。宿主也会校验条目路径、展开大小、压缩率、CRC、中央与本地头的一致性、条目重叠和包 SHA-256。
+
 | 配置 | 本地默认目录 | Docker / Compose |
 |---|---|---|
 | `PLUGIN_CATALOG_DIR` | `bundled-plugins` | `/app/bundled-plugins`，镜像提供可信索引与包 |
@@ -49,7 +51,7 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 
 「插件」页使用通用管理 API，不通过插件 ID 分支调用旧测试 helper。只有本地可信索引列出的兼容包可安装；安装操作只校验、暂存文件并保存期望状态，**不会执行插件代码**。当前进程只在启动时加载期望启用的包。
 
-第一次启动且数据库从未存在该官方插件记录时，宿主可从本地可信索引一次性引导安装、授予已知诊断权限并启用，维持原有连通性入口。此引导不覆盖管理员已保存的禁用状态或卸载 tombstone。若索引不存在、包不兼容或加载失败，连通性入口不可执行，但不会改用 app 内置的另一份实现。
+第一次启动且数据库从未存在该官方插件记录时，宿主可从本地可信索引一次性引导安装、授予已知诊断权限并启用，维持原有连通性入口。仅在没有记录且存在兼容引导包时才读取旧默认提示词；读取失败只影响可选引导，不阻断其他托管插件加载。首次手动安装也在创建记录的同一 CAS 流程中迁移旧提示词，默认仍禁用；已有安装、升级和卸载 tombstone 不会重新读取或覆盖旧配置，并发写入的记录优先。若索引不存在、包不兼容或加载失败，连通性入口不可执行，但不会改用 app 内置的另一份实现。
 
 手动操作顺序：
 
@@ -112,7 +114,7 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 
 ## 开发接口与测试
 
-实现公开无参构造的 `dev.soven.prismllm.plugin.sdk.DiagnosticPlugin`，提供 `id`、`version`、`plan(input,context)` 与 `report(plan,outcome)`。注册文件为：
+实现公开无参构造的 `dev.soven.prismllm.plugin.sdk.DiagnosticPlugin`，提供 `id`、`version`、`plan(input,context)` 与 `report(plan,outcome)`。同一个实例的 `plan` / `report` 可能并发执行，宿主也可能在尚有调用运行时触发 `close`；实现应保证线程安全，并允许关闭与待完成的工作重叠。宿主对每次插件代码调用都有界等待，但不能强制停止不合作的 JVM 代码，超时后调用仍可能在后台运行。注册文件为：
 
 ```text
 META-INF/services/dev.soven.prismllm.plugin.sdk.DiagnosticPlugin
@@ -132,7 +134,18 @@ META-INF/services/dev.soven.prismllm.plugin.sdk.DiagnosticPlugin
 
 官方独立 POM 见 `extensions/connectivity-diagnostic/pom.xml`。manifest 的 `defaultPrompt` 为 required textarea、默认 `请只回复 OK`、maxLength 4000；运行 UI 使用 SDK 字段种类白名单。包中的 manifest / UI 与 SPI 实现版本必须一致，包版本独立升级；不要通过修改已安装同版本文件绕过摘要验证。构建源码 `src/build/java/PackagePlugin.java` 仅在 Maven 构建中运行，不进入安装包。
 
-扩展的 `unit` 测试仅使用假的纯 SDK 上下文与 outcome，覆盖提示词优先级、限制、声明式元数据、服务注册和安全报告，不访问真实上游。CI 先安装当前 checkout 的 SDK / host，再独立 `verify` 产生真实包，随后通过 `PRISM_TEST_PLUGIN_CATALOG_DIR` 将其路径交给 app 的包加载/连通性集成测试；不把实现加入 app 测试 classpath。扩展单独变更选择 host 边界测试及 channel 相关 app 集成；非 integration 用例仍按原规则运行，不把扩展变更无条件升级成全部慢速集成测试。SDK / host 源码变更沿实际 POM 依赖传播到 admin / app，main 的完整回归仍覆盖所有模块与旧额度扩展。
+扩展的 `unit` 测试仅使用假的纯 SDK 上下文与 outcome，覆盖提示词优先级、限制、声明式元数据、服务注册和安全报告，不访问真实上游。依赖按实际 POM 传播：SDK → host → app，host → app；host 不再传播到 `prism-admin`。从仓库根目录可按以下顺序独立构建真实官方包，并在 host 中对该产物运行组件测试：
+
+```bash
+mvn --batch-mode --no-transfer-progress -pl prism-plugin-sdk,prism-plugin-host -am -Dgroups=unit clean install
+mvn --batch-mode --no-transfer-progress -f extensions/connectivity-diagnostic/pom.xml verify
+mvn --batch-mode --no-transfer-progress -f prism-plugin-host/pom.xml \
+  -Dtest=OfficialPluginPackageComponentTest \
+  -Dprism.plugin.fixtureDirectory="$PWD/extensions/connectivity-diagnostic/target" \
+  -DfailIfNoTests=true test
+```
+
+必须检查 `prism-plugin-host/target/surefire-reports/TEST-*OfficialPluginPackageComponentTest.xml`，确认组件测试 `tests > 0`、`skipped = 0` 且无失败；只看到 Maven 命令成功而测试被跳过不算验证通过。之后 app 的包加载/连通性集成测试通过 `PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target"` 使用同一真实包，不把扩展实现加入 app 测试 classpath。扩展单独变更选择 host 边界测试及 channel 相关 app 集成；非 integration 用例仍按原规则运行，不把扩展变更无条件升级成全部慢速集成测试。main 的完整回归仍覆盖所有模块与旧额度扩展。
 
 CI 选择回归可单独运行：
 

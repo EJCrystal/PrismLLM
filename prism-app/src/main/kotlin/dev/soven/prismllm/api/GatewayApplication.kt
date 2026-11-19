@@ -38,6 +38,7 @@ import dev.soven.prismllm.repo.PricingChannelNames
 import dev.soven.prismllm.repo.RequestLogCurrentNames
 import dev.soven.prismllm.repo.ModelCredentialRouteRepository
 import dev.soven.prismllm.repo.RoutingConfigurationSnapshotRepository
+import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.quota.persistence.ClientKeyRepository
 import dev.soven.prismllm.quota.persistence.ClientKeyQuotaRepository
@@ -291,6 +292,7 @@ class GatewayApplication internal constructor(
     notificationTransport: NotificationTransport?,
     httpClientOverride: HttpClient?,
     internal val oauthDiagnosticPreparationTimeoutMs: Long,
+    internal val oauthDiagnosticNanoTime: () -> Long = System::nanoTime,
 ) : AutoCloseable {
     constructor(
         config: GatewayConfig,
@@ -363,10 +365,11 @@ class GatewayApplication internal constructor(
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val pluginInstallationRepository = dev.soven.prismllm.admin.persistence.PluginInstallationRepository(databaseFactory.database)
+    private val pluginInstallationStore = PluginInstallationStoreAdapter(pluginInstallationRepository)
     val pluginRuntime = dev.soven.prismllm.plugin.host.PluginRuntime(
         catalog = dev.soven.prismllm.plugin.host.PluginCatalog(config.pluginCatalogDir),
         managedDirectory = config.pluginInstallDir,
-        store = pluginInstallationRepository,
+        store = pluginInstallationStore,
     )
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
@@ -495,7 +498,7 @@ class GatewayApplication internal constructor(
         timeoutMs = config.iqJudgeTimeoutMs,
     )
 
-    val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
+    val modelPriceReferenceService = ModelPriceReferenceService(httpClient, dynamicCatalogEnabled = config.modelPriceCatalogEnabled)
     val upstreamHeaderCatalogService = UpstreamHeaderCatalogService(
         httpClient = httpClient,
         repository = upstreamHeaderCatalogRepository,
@@ -523,15 +526,14 @@ class GatewayApplication internal constructor(
      * Code Assist 的管理请求也必须像 Antigravity 客户端一样带上 UA；
      * 版本由全局请求头目录统一刷新，目录不可用时退回内置值。
      */
-    private val antigravityUserAgent: () -> String = {
-        upstreamHeaderCatalogService.profiles()
-            .firstOrNull { it.id == "antigravity" }
-            ?.headers?.get("User-Agent")
-            ?.takeIf(String::isNotBlank)
-            ?: dev.soven.prismllm.proxy.codeassist.DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT
-    }
-    /** 当前 Antigravity 客户端 UA；管理面的连通性测试与数据面使用同一份目录版本。 */
-    fun currentAntigravityUserAgent(): String = antigravityUserAgent()
+    private val antigravityUserAgent: () -> String = { currentAntigravityUserAgent() }
+    /** 允许请求复用已捕获的目录快照，避免准备期间刷新后混用两个版本。 */
+    fun currentAntigravityUserAgent(
+        profiles: List<UpstreamHeaderProfile> = upstreamHeaderCatalogService.profiles(),
+    ): String = profiles.firstOrNull { it.id == "antigravity" }
+        ?.headers?.get("User-Agent")
+        ?.takeIf(String::isNotBlank)
+        ?: dev.soven.prismllm.proxy.codeassist.DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT
 
     /** Antigravity 的 Code Assist project/tier 发现与缓存。 */
     val codeAssistProjectResolver = CodeAssistProjectResolver(
@@ -606,10 +608,14 @@ class GatewayApplication internal constructor(
             try {
                 pluginRuntime.initialize(
                     bootstrapId = CONNECTIVITY_PLUGIN_ID,
-                    initialConfiguration = kotlinx.serialization.json.buildJsonObject {
-                        put("defaultPrompt", modelTestSettingsRepository.load().defaultPrompt)
+                    initialConfiguration = {
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("defaultPrompt", modelTestSettingsRepository.load().defaultPrompt)
+                        }
                     },
                 )
+            } catch (cause: CancellationException) {
+                throw cause
             } catch (cause: Exception) {
                 logger.warn("诊断插件初始化失败，核心转发仍可使用；请检查插件页面和安装目录", cause)
             }
@@ -906,6 +912,7 @@ class GatewayApplication internal constructor(
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
         pluginRuntime.close()
         oauthQuotaService.close()
+        runBlocking { oauthTokenService.drainRefreshes() }
         oauthTokenService.close()
         scope.cancel()
         iqJudgeService.close()

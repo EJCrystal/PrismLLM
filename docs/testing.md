@@ -13,12 +13,13 @@ mvn --batch-mode --no-transfer-progress -DskipTests \
 mvn --batch-mode --no-transfer-progress \
   -f extensions/connectivity-diagnostic/pom.xml verify
 PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
-  mvn --batch-mode --no-transfer-progress test
+  mvn --batch-mode --no-transfer-progress test \
+  -Dprism.plugin.fixtureDirectory="$PWD/extensions/connectivity-diagnostic/target"
 ```
 
-官方连通性扩展不在根 reactor 中，也不进入 app 测试 classpath。`verify` 生成同目录的 `catalog.json` 与 `prism-connectivity-1.0.0.prismplugin`，app 通过 `PRISM_TEST_PLUGIN_CATALOG_DIR` 加载这个真实包夹具；该变量不是运行时的 `PLUGIN_CATALOG_DIR`。已有有效夹具且插件源码未变时，可只执行上面的最后一条测试命令。不要在 app 测试读取夹具期间清理或重新构建同一个扩展 `target` 目录；独立构建和冷加载边界见 [官方诊断插件指南](plugins/connectivity-diagnostic.md)。
+官方连通性扩展不在根 reactor 中，也不进入 app 测试 classpath。`verify` 生成同目录的 `catalog.json` 与 `prism-connectivity-1.0.0.prismplugin`。宿主组件测试通过 `prism.plugin.fixtureDirectory` 读取真实包；app 通过 `PRISM_TEST_PLUGIN_CATALOG_DIR` 读取同一目录，该变量不是运行时的 `PLUGIN_CATALOG_DIR`。已有有效夹具且插件源码未变时，可只执行上面的最后一条测试命令。不要在测试读取夹具期间清理或重新构建同一个扩展 `target` 目录；独立构建和冷加载边界见 [官方诊断插件指南](plugins/connectivity-diagnostic.md)。
 
-CI 在同一个 job 中先编译、测试编译、安装当前 checkout 的模块与插件 SPI，再运行已编译测试；app 执行前独立验证官方诊断包并传入夹具目录：
+CI 在同一个 job 中先编译、测试编译、安装当前 checkout 的模块与插件 SPI，再运行已编译测试；app 执行前独立构建官方诊断包，并在宿主中验证实际产物：
 
 ```bash
 mvn --batch-mode --no-transfer-progress -DskipTests install
@@ -27,11 +28,17 @@ mvn --batch-mode --no-transfer-progress \
   surefire:test -DfailIfNoTests=true
 mvn --batch-mode --no-transfer-progress \
   -f extensions/connectivity-diagnostic/pom.xml verify
+mvn --batch-mode --no-transfer-progress -pl prism-plugin-host surefire:test \
+  -Dtest=OfficialPluginPackageComponentTest -DfailIfNoTests=true \
+  -Dprism.plugin.fixtureDirectory="$PWD/extensions/connectivity-diagnostic/target"
+# CI 验证该类的 Surefire XML 有用例且零跳过、失败或错误。
 PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
   mvn --batch-mode --no-transfer-progress -pl prism-app surefire:test -DfailIfNoTests=true
 ```
 
 `-DskipTests` 只跳过执行，不跳过测试编译。直接调用 `surefire:test` 不会编译；**源码或测试发生变更后必须重新编译，不能复用其他提交或其他 job 的 target 目录**。CI 只缓存 Maven 依赖，不缓存测试编译产物。扩展仍通过独立 POM 的 `verify` 验证。
+
+共享网关集成夹具与停机测试的子 JVM 显式关闭 `MODEL_PRICE_CATALOG_ENABLED`，避免后台预热或管理页惰性查询访问真实 models.dev；需要目录行为的用例使用 MockEngine 或本机 HTTP 夹具。运行时该项默认开启，关闭不影响内置官方基准价。OAuth、模型与其他上游同样仅使用合成凭据和模拟端点。
 
 ## 迁移资源与测试归属
 
@@ -72,10 +79,10 @@ PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
 
 ## CI 选择与兜底
 
-- PR 根据模块变更选择本模块及实际依赖受影响的下游测试；`protocol/channel → routing`、`protocol/pricing → request-log`，以及 `SDK → host → admin/app`、`host → admin/app`。选择脚本回归测试将全部 reactor 模块（含迁移与支持基础设施、SDK / host）和可执行测试分区分别对照实际 POM，依赖图包括 test scope；新增依赖须同时更新传播规则。
+- PR 根据模块变更选择本模块及实际依赖受影响的下游测试；`protocol/channel → routing`、`protocol/pricing → request-log`，以及 `SDK → host → app`、`host → app`。宿主不传播到 admin；安装记录仓储留在 admin，跨模块适配由 app 组装。选择脚本回归测试将全部 reactor 模块（含迁移与支持基础设施、SDK / host）和可执行测试分区分别对照实际 POM，依赖图包括 test scope；新增依赖须同时更新传播规则。
 - 迁移后的组件用例随所属模块及上述实际依赖关系选择，不因 `app_tests=true` 无条件加入四个目的模块。仅 app 变更仍执行 app 全量，但不会运行已移走的无关仓储组件测试；pure channel 不选择这些仓储模块，protocol 因真实测试依赖选择 request-log。
 - 未混入要求 app 全量的变更时，protocol/channel 仍按原标签裁剪无关 `integration`；SDK / host 或扩展变更加入 channel 回归范围，与 protocol 混合时为 `channel|protocol`。app 中保留的 `unit/component/browser` 仍全量执行。其他领域模块、app、shared、根构建或本轮 CI 执行脚本变更执行 app 全量。
-- `prism-plugin-sdk/**`、`prism-plugin-host/**`、`extensions/**` 分别通过 `CHANGED_PLUGINSDK`、`CHANGED_PLUGINHOST`、`CHANGED_EXTENSIONS` 进入选择。独立扩展变更在 POM 图之外显式选择 host 包边界测试及 channel 相关 app 集成，不因此加入 admin / support 或无关 upstream；每次选中 app 都先独立 `verify` 官方诊断包，再通过真实目录夹具执行 app。可选额度扩展的独立 `verify` 保留，不把扩展单独变更无条件升级为全部慢速 app 集成。
+- `prism-plugin-sdk/**`、`prism-plugin-host/**`、`extensions/**` 分别通过 `CHANGED_PLUGINSDK`、`CHANGED_PLUGINHOST`、`CHANGED_EXTENSIONS` 进入选择。独立扩展变更在 POM 图之外显式选择 host 包边界测试及 channel 相关 app 集成，不因此加入 admin / support 或无关 upstream；每次选中 app 都先独立 `verify` 官方诊断包，再定向运行真实包宿主组件测试，最后使用同一目录夹具执行 app。可选额度扩展保留独立 `verify`，不把扩展单独变更无条件升级为全部慢速 app 集成。
 - `prism-db-migrations/**` 与 `prism-test-support/**` 直接属于 backend/build 范围，沿用 `CHANGED_BUILD`，不增加这两个模块的 flags/env。shared/build 变更执行全部可执行 upstream（含 support 契约、SDK / host）、app 与可选额度扩展，并验证官方诊断包夹具。
 - 涉及后端的 main push 完整回归行为不变：执行全部可执行 upstream（含 SDK / host）、官方诊断包 `verify` / 真实夹具 app 测试及可选额度扩展，不按协议/渠道裁剪，四个迁移类也全部执行。
 - 本轮 CI 执行规则自身变更属于 backend/build 范围，确保修改 workflow 的 PR 也经过后端回归。

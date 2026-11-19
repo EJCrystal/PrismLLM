@@ -31,6 +31,12 @@ internal class PluginCatalogTest : PluginTestSupport() {
         assertTrue(reason.contains(error.code))
     }
 
+    private fun little32ForTest(bytes: ByteArray, offset: Int): Long =
+        (bytes[offset].toInt() and 0xff).toLong() or
+            ((bytes[offset + 1].toInt() and 0xff).toLong() shl 8) or
+            ((bytes[offset + 2].toInt() and 0xff).toLong() shl 16) or
+            ((bytes[offset + 3].toInt() and 0xff).toLong() shl 24)
+
     @Test
     fun `missing deployment catalogue is an empty catalogue`() {
         assertEquals(emptyList(), PluginCatalog(catalogDirectory).items())
@@ -69,8 +75,22 @@ internal class PluginCatalogTest : PluginTestSupport() {
             assertEquals(writes, store.writes)
             assertEquals(0, packaged.count("initialized"))
         }
+        val invalidVersions = listOf("١.0.0", "1.0.0-01", "1.0.0-α", "1.0.0+build.")
+        for (version in invalidVersions) {
+            val invalid = fixture(version = version)
+            publish(invalid)
+            failure("PLUGIN_INVALID_PACKAGE") { PluginCatalog(catalogDirectory).items() }
+            failure("PLUGIN_INVALID_PACKAGE") { host.install(invalid.manifest.id, version, invalid.manifest.permissions) }
+            assertEquals(writes, store.writes)
+        }
         assertEquals(listOf(id), store.list().map { it.id })
         assertEquals(0, accepted.count("initialized"))
+    }
+
+    @Test
+    fun `semantic prerelease comparison treats signed-looking identifiers as ASCII alphanumeric`() {
+        assertTrue(PluginCatalog.compareVersions("1.0.0--1", "1.0.0--2") < 0)
+        assertTrue(PluginCatalog.compareVersions("1.0.0-9", "1.0.0--1") < 0)
     }
 
     @Test
@@ -78,7 +98,13 @@ internal class PluginCatalogTest : PluginTestSupport() {
         val packaged = fixture()
         val entry = packaged.ui.entries.first()
         val identifier = "a".repeat(64)
-        val bounded = entry.copy(id = identifier, action = entry.action.copy(id = identifier, fields = listOf(PluginField(identifier, "Field", "text"))))
+        val bounded = entry.copy(
+            id = identifier,
+            action = entry.action.copy(
+                id = identifier,
+                fields = entry.action.fields + PluginField(identifier, "Field", "text"),
+            ),
+        )
         assertEquals(null, PluginValidation.descriptors(packaged.manifest, packaged.ui.copy(entries = listOf(bounded))))
         val invalid = listOf(
             bounded.copy(id = identifier + "a"),
@@ -162,12 +188,53 @@ internal class PluginCatalogTest : PluginTestSupport() {
     }
 
     @Test
-    fun `archive bounds prefixes trailers and metadata expansion are checked`(): Unit = runBlocking {
+    fun `archive bounds prefixes trailers metadata and central directory are checked before ZIP parsing`() : Unit = runBlocking {
         val packaged = fixture()
+        val oversizedCentralSize = packaged.archive.copyOf().also { archive ->
+            val end = archive.size - 22
+            archive[end + 12] = 0xff.toByte()
+            archive[end + 13] = 0xff.toByte()
+            archive[end + 14] = 0xff.toByte()
+            archive[end + 15] = 0x7f
+        }
+        val zip64SentinelCount = packaged.archive.copyOf().also { archive ->
+            val end = archive.size - 22
+            archive[end + 10] = 0xff.toByte()
+            archive[end + 11] = 0xff.toByte()
+        }
+        val centralEntrySentinel = packaged.archive.copyOf().also { archive ->
+            val central = little32ForTest(archive, archive.size - 6).toInt()
+            archive[central + 20] = 0xff.toByte()
+            archive[central + 21] = 0xff.toByte()
+            archive[central + 22] = 0xff.toByte()
+            archive[central + 23] = 0xff.toByte()
+        }
+        val mismatchedEntryCount = packaged.archive.copyOf().also { archive ->
+            val end = archive.size - 22
+            archive[end + 8] = 2
+            archive[end + 9] = 0
+            archive[end + 10] = 2
+            archive[end + 11] = 0
+        }
+        val splitEntry = packaged.archive.copyOf().also { archive ->
+            val central = little32ForTest(archive, archive.size - 6).toInt()
+            archive[central + 34] = 1
+        }
+        val unsupportedMethod = packaged.archive.copyOf().also { archive ->
+            val central = little32ForTest(archive, archive.size - 6).toInt()
+            archive[central + 10] = 99
+        }
         val archives = listOf(
             packaged.archive + "trailer".toByteArray(),
-            "#!/bin/sh\n".toByteArray() + packaged.archive,
+            "#!/bin/sh\\n".toByteArray() + packaged.archive,
             zipFixture(packaged.entries.map { if (it.name == "manifest.json") it.copy(bytes = ByteArray(PluginValidation.MAX_METADATA_BYTES + 1)) else it }),
+            zipFixture(packaged.entries + ZipFixtureEntry("extra", byteArrayOf(1))),
+            oversizedCentralSize,
+            zip64SentinelCount,
+            centralEntrySentinel,
+            mismatchedEntryCount,
+            splitEntry,
+            unsupportedMethod,
         )
         archives.forEach { archive ->
             publish(packaged.copy(archive = archive))
@@ -224,6 +291,12 @@ internal class PluginCatalogTest : PluginTestSupport() {
             entry.action.copy(fields = listOf(PluginField("model", "Model", "text"))),
             entry.action.copy(fields = listOf(PluginField("flag", "Flag", "boolean", defaultValue = JsonPrimitive("true")))),
             entry.action.copy(fields = listOf(PluginField("count", "Count", "number", min = 2.0, max = 1.0))),
+            entry.action.copy(fields = entry.action.fields.filterNot { it.key == "model" }),
+            entry.action.copy(fields = entry.action.fields.map { if (it.key == "model") it.copy(required = false) else it }),
+            entry.action.copy(fields = entry.action.fields.map { if (it.key == "model") it.copy(kind = "text") else it }),
+            entry.action.copy(fields = entry.action.fields.filterNot { it.key == "protocol" }),
+            entry.action.copy(fields = entry.action.fields.map { if (it.key == "protocol") it.copy(required = false) else it }),
+            entry.action.copy(fields = entry.action.fields.map { if (it.key == "protocol") it.copy(kind = "text") else it }),
             entry.action.copy(fields = List(33) { PluginField("field$it", "Field", "text") }),
         )
         actions.forEach { action ->
@@ -241,7 +314,9 @@ internal class PluginCatalogTest : PluginTestSupport() {
             zip.entries.asSequence().map { entry -> ZipFixtureEntry(entry.name, zip.getInputStream(entry).use { it.readBytes() }) }.toList()
         }
         val jars = listOf(
-            original.map { if (it.name == "META-INF/MANIFEST.MF") it.copy(bytes = "Manifest-Version: 1.0\r\nClass-Path: https://not-allowed.invalid/remote.jar\r\n\r\n".toByteArray()) else it },
+            original.map { if (it.name == "META-INF/MANIFEST.MF") it.copy(name = "meta-inf/manifest.mf") else it },
+            original.map { if (it.name == "META-INF/MANIFEST.MF") it.copy(bytes = "Manifest-Version: 1.0\r\nClass-Path: other.jar\r\n\r\n".toByteArray()) else it },
+            original + ZipFixtureEntry("meta-inf/manifest.mf", "Manifest-Version: 1.0\r\n\r\n".toByteArray()),
             original + ZipFixtureEntry("META-INF/INDEX.LIST", "JarIndex-Version: 1.0".toByteArray()),
             original + ZipFixtureEntry("dev/soven/prismllm/plugin/sdk/DiagnosticPlugin.class", byteArrayOf(1)),
             original + ZipFixtureEntry("META-INF/versions/21/dev/soven/prismllm/plugin/sdk/DiagnosticPlugin.class", byteArrayOf(1)),
@@ -270,7 +345,11 @@ internal class PluginCatalogTest : PluginTestSupport() {
         assertEquals(staged.jarPath, replay.jarPath)
         assertEquals(timestamp, Files.getLastModifiedTime(replay.jarPath))
         assertTrue(Files.readAllBytes(staged.jarPath).contentEquals(packaged.jar))
-        assertFalse(PosixFilePermission.OWNER_WRITE in Files.getPosixFilePermissions(staged.jarPath))
+        try {
+            assertFalse(PosixFilePermission.OWNER_WRITE in Files.getPosixFilePermissions(staged.jarPath))
+        } catch (_: UnsupportedOperationException) {
+            // Keep the archive, idempotence, and no-load checks on non-POSIX file systems.
+        }
         assertEquals(0, packaged.count("initialized"))
         assertEquals(listOf(packaged.manifest.version), Files.list(staged.jarPath.parent.parent).use { files -> files.map { it.fileName.toString() }.toList() })
     }

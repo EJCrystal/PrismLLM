@@ -64,6 +64,7 @@ import dev.soven.prismllm.proxy.probeUpstreamProtocols
 import dev.soven.prismllm.proxy.resolveSavedCredential
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
 import dev.soven.prismllm.proxy.resolveTimeoutMs
+import dev.soven.prismllm.proxy.sampleFingerprintModelConnectivity
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.NewChannelKey
@@ -807,10 +808,11 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val headerProfiles = app.upstreamHeaderCatalogService.profiles()
             val startedAt = System.currentTimeMillis()
             // 三个样本同时发出，与 lm-detector 的默认采样方式一致；任一请求失败只影响该样本。
+            val fingerprintSamples = java.util.concurrent.ConcurrentHashMap<Int, String>()
             val results = coroutineScope {
-                challenges.map { challenge ->
+                challenges.mapIndexed { index, challenge ->
                     async {
-                        testChannelModelConnectivity(
+                        sampleFingerprintModelConnectivity(
                             channel = channel,
                             credentialRef = credential,
                             model = model,
@@ -823,7 +825,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                             maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
                             globalOverrides = overrides,
                             headerProfiles = headerProfiles,
-                            isolatedIqRequest = true,
+                            consumeRawSample = { text -> if (text != null) fingerprintSamples[index] = text },
                         )
                     }
                 }.awaitAll()
@@ -832,7 +834,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val outputs = challenges.mapIndexed { index, challenge ->
                 FingerprintOutput(
                     expectedCount = challenge.expectedCount,
-                    text = results[index].responseText.orEmpty(),
+                    text = fingerprintSamples[index].orEmpty(),
                 )
             }
             val analysis = detector.analyze(outputs)

@@ -39,6 +39,8 @@ data class GatewayConfig(
     val upstreamHeaderRefreshIntervalMs: Long = 3_600_000,
     val upstreamHeaderCatalogUrl: String? = null,
     val upstreamHeaderRefreshEnabled: Boolean = true,
+    /** 是否联网加载 models.dev 参考目录；关闭时仍可查询内置官方基准价。 */
+    val modelPriceCatalogEnabled: Boolean = true,
     /** 可信额度插件 JAR 所在目录；不存在时视为空目录。 */
     val quotaPluginDir: Path = Path.of("plugins"),
     /** 智商检测的 HTML 作品是否交给满血AI 分类。关闭时 manxue 判分器不注册。 */
@@ -213,6 +215,9 @@ data class GatewayConfig(
                 upstreamHeaderRefreshEnabled = value("UPSTREAM_HEADER_REFRESH_ENABLED", "true")
                     .toBooleanStrictOrNull()
                     ?: error("UPSTREAM_HEADER_REFRESH_ENABLED 必须是 true 或 false"),
+                modelPriceCatalogEnabled = value("MODEL_PRICE_CATALOG_ENABLED", "true")
+                    .toBooleanStrictOrNull()
+                    ?: error("MODEL_PRICE_CATALOG_ENABLED 必须是 true 或 false"),
                 quotaPluginDir = Path.of(value("QUOTA_PLUGIN_DIR", "plugins")),
                 manxueEnabled = value("MANXUE_ENABLED", "true").toBooleanStrictOrNull()
                     ?: error("MANXUE_ENABLED 必须是 true 或 false"),

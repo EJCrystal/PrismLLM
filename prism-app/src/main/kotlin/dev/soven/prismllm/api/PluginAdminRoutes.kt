@@ -61,7 +61,11 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
         call.requireAdmin(app)
         val id = call.requiredParam("id", "缺少插件 id")
         val request = call.receive<PluginInstallationRequest>()
-        val state = app.pluginRuntime.install(id, request.version, request.approvedPermissions)
+        val state = app.pluginRuntime.install(id, request.version, request.approvedPermissions) {
+            if (id == CONNECTIVITY_PLUGIN_ID) {
+                buildJsonObject { put("defaultPrompt", app.modelTestSettingsRepository.load().defaultPrompt) }
+            } else JsonObject(emptyMap())
+        }
         call.markAdminAuditDetails(buildJsonObject {
             put("pluginId", id)
             put("version", request.version)

@@ -3,7 +3,16 @@ package dev.soven.prismllm.plugin.sdk
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
 
-/** 可信 JVM 插件只制定计划和报告；已授权目标、凭据准备及真实 HTTP 发送属于宿主。 */
+/**
+ * Trusted plugin implementations must be thread-safe: the host may call [plan] and [report]
+ * concurrently, including multiple calls on the same instance. The host may also call [close]
+ * while either method is still running. Keep mutable state synchronized and make [close] safe to
+ * overlap pending work. Each call has a bounded host wait, but uncooperative JVM code cannot be
+ * forcibly stopped; a call that outlives its deadline may continue in the background.
+ *
+ * Plugins only formulate plans and reports; the authorized target, credential preparation and
+ * actual HTTP request remain host-owned.
+ */
 interface DiagnosticPlugin : AutoCloseable {
     val id: String
     val version: String

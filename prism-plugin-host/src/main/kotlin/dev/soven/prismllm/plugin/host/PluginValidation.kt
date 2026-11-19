@@ -23,7 +23,7 @@ internal object PluginValidation {
     const val MAX_PACKAGES = 128
     const val MAX_PROMPT_CHARS = 4_000
     private val pluginId = Regex("[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*")
-    private val version = Regex("(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?")
+    private val version = Regex("(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?")
     private val identifier = Regex("[A-Za-z][A-Za-z0-9_.-]{0,63}")
     private val fieldKey = Regex("[A-Za-z][A-Za-z0-9_]{0,63}")
     private val kinds = setOf("text", "textarea", "select", "boolean", "number", "model", "credential", "protocol", "scope")
@@ -135,6 +135,8 @@ internal object PluginValidation {
             requireData(action.notes.size <= 16, "Too many action notes")
             action.notes.forEach { text(it, 2_000, "Action note") }
             fields(action.fields, configuration = false)
+            requireData(action.fields.any { it.key == "model" && it.kind == "model" && it.required }, "Actions require a mandatory host-bound model field")
+            requireData(action.fields.any { it.key == "protocol" && it.kind == "protocol" && it.required }, "Actions require a mandatory host-bound protocol field")
             requireData(!action.supportsBatch || "channel" in entry.contexts, "Batch actions require channel context")
         }
         // Reusing an action across placements is fine; ambiguous schemas for the same context are not.
@@ -230,7 +232,7 @@ internal object PluginValidation {
             val candidate = previous?.get(field.key)
             if (candidate != null) {
                 try {
-                    validateValue(field, candidate, enforceRequired = false)
+                    validateValue(field, candidate, enforceRequired = field.required)
                     retained[field.key] = candidate
                 } catch (_: PluginHostException) {
                     field.defaultValue?.let { retained[field.key] = it }

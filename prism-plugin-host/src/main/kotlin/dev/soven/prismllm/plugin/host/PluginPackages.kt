@@ -31,6 +31,7 @@ internal object PluginPackages {
     const val SERVICE_PATH = "META-INF/services/dev.soven.prismllm.plugin.sdk.DiagnosticPlugin"
     private const val MAX_JAR_EXPANDED_BYTES = 64L * 1024 * 1024
     private const val MAX_RATIO = 200L
+    private const val MAX_CENTRAL_DIRECTORY_BYTES = 8 * 1024 * 1024
     private val packageFiles = setOf("manifest.json", "ui.json", "plugin.jar")
 
     fun hash(bytes: ByteArray): String = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
@@ -61,13 +62,19 @@ internal object PluginPackages {
     private fun validateJar(bytes: ByteArray): String {
         val names = HashSet<String>()
         var service: ByteArray? = null
+        var manifestSeen = false
         readZip(bytes, 10_000, MAX_JAR_EXPANDED_BYTES) { zip, entry ->
             val name = entry.name
             names.add(name)
             val classPath = name.replaceFirst(Regex("^META-INF/versions/[0-9]+/"), "")
             PluginValidation.requireData(!classPath.startsWith("dev/soven/prismllm/plugin/sdk/") && !classPath.startsWith("dev/soven/prismllm/plugin/host/"), "Plugin JAR must not bundle SDK or host classes")
             PluginValidation.requireData(name != "META-INF/INDEX.LIST", "Plugin JAR indexes may not reference external JARs")
-            val value = entryBytes(zip, entry, if (name == SERVICE_PATH || name == "META-INF/MANIFEST.MF") PluginValidation.MAX_METADATA_BYTES else MAX_JAR_BYTES)
+            val isManifest = name.equals("META-INF/MANIFEST.MF", ignoreCase = true)
+            if (isManifest) {
+                PluginValidation.requireData(name == "META-INF/MANIFEST.MF" && !manifestSeen, "Plugin JAR manifest path must use one canonical spelling")
+                manifestSeen = true
+            }
+            val value = entryBytes(zip, entry, if (name == SERVICE_PATH || isManifest) PluginValidation.MAX_METADATA_BYTES else MAX_JAR_BYTES)
             when (name) {
                 SERVICE_PATH -> service = value
                 "META-INF/MANIFEST.MF" -> {
@@ -90,7 +97,7 @@ internal object PluginPackages {
     private fun readZip(bytes: ByteArray, maxEntries: Int, maxExpanded: Long, consume: (ZipFile, ZipArchiveEntry) -> Unit) {
         try {
             PluginValidation.requireData(bytes.size >= 22 && little32(bytes, 0) == 0x04034b50L, "Archive must be a ZIP without an executable prefix")
-            checkEndOfZip(bytes)
+            val centralDirectoryStart = checkEndOfZip(bytes, maxEntries, maxExpanded)
             ZipFile.builder().setSeekableByteChannel(SeekableInMemoryByteChannel(bytes)).setUseUnicodeExtraFields(false).get().use { zip ->
                 val names = HashSet<String>()
                 val ranges = ArrayList<Pair<Long, Long>>()
@@ -110,10 +117,18 @@ internal object PluginPackages {
                     PluginValidation.requireData(start >= 0 && start <= bytes.size - 30L && little32(bytes, start.toInt()) == 0x04034b50L, "Invalid ZIP local header")
                     val nameLength = little16(bytes, start.toInt() + 26)
                     val extraLength = little16(bytes, start.toInt() + 28)
-                    PluginValidation.requireData(data == start + 30 + nameLength + extraLength && data <= bytes.size && entry.compressedSize <= bytes.size - data, "Invalid ZIP entry extent")
+                    PluginValidation.requireData(data == start + 30 + nameLength + extraLength && data <= centralDirectoryStart && entry.compressedSize <= centralDirectoryStart - data, "Invalid ZIP entry extent")
+                    checkExtraFields(bytes, start.toInt() + 30 + nameLength, start.toInt() + 30 + nameLength + extraLength)
                     PluginValidation.requireData(nameLength == entry.rawName.size && bytes.copyOfRange(start.toInt() + 30, start.toInt() + 30 + nameLength).contentEquals(entry.rawName), "ZIP local and central names differ")
                     PluginValidation.requireData(little16(bytes, start.toInt() + 8) == entry.method, "ZIP local and central methods differ")
                     PluginValidation.requireData(little16(bytes, start.toInt() + 6) == entry.rawFlag, "ZIP local and central flags differ")
+                    val localCrc = little32(bytes, start.toInt() + 14)
+                    val localCompressed = little32(bytes, start.toInt() + 18)
+                    val localExpanded = little32(bytes, start.toInt() + 22)
+                    PluginValidation.requireData(localCompressed != 0xffffffffL && localExpanded != 0xffffffffL, "ZIP64 archives are not supported")
+                    if (entry.rawFlag and 0x08 == 0) {
+                        PluginValidation.requireData(localCrc == entry.crc && localCompressed == entry.compressedSize && localExpanded == entry.size, "ZIP local sizes or CRC do not match the central directory")
+                    }
                     ranges.add(start to data + entry.compressedSize)
                     consume(zip, entry)
                 }
@@ -138,12 +153,72 @@ internal object PluginPackages {
         return bytes
     }
 
-    private fun checkEndOfZip(bytes: ByteArray) {
+    private fun checkEndOfZip(bytes: ByteArray, maxEntries: Int, maxExpanded: Long): Long {
         val start = maxOf(0, bytes.size - 22 - 65_535)
+        // Use the last signature, as Commons Compress does, so it cannot parse a different end record.
         val offset = (bytes.size - 22 downTo start).firstOrNull {
-            little32(bytes, it) == 0x06054b50L && it + 22 + little16(bytes, it + 20) == bytes.size
-        } ?: PluginValidation.invalid("ZIP has no valid end record or contains trailing data")
-        PluginValidation.requireData(little16(bytes, offset + 4) == 0 && little16(bytes, offset + 6) == 0, "Split ZIP archives are not allowed")
+            little32(bytes, it) == 0x06054b50L
+        } ?: PluginValidation.invalid("ZIP has no valid end record")
+        PluginValidation.requireData(offset + 22 + little16(bytes, offset + 20) == bytes.size, "ZIP contains trailing data or an ambiguous end record")
+        val disk = little16(bytes, offset + 4)
+        val centralDisk = little16(bytes, offset + 6)
+        val diskEntries = little16(bytes, offset + 8)
+        val totalEntries = little16(bytes, offset + 10)
+        val centralSize = little32(bytes, offset + 12)
+        val centralOffset = little32(bytes, offset + 16)
+        PluginValidation.requireData(disk == 0 && centralDisk == 0 && diskEntries == totalEntries, "Split ZIP archives are not allowed")
+        // ZIP64 sentinel values and ZIP64 locator/end records are intentionally unsupported.
+        PluginValidation.requireData(diskEntries != 0xffff && totalEntries != 0xffff && centralSize != 0xffffffffL && centralOffset != 0xffffffffL, "ZIP64 archives are not supported")
+        PluginValidation.requireData(totalEntries in 1..maxEntries, "ZIP central directory has too many entries")
+        PluginValidation.requireData(centralSize <= MAX_CENTRAL_DIRECTORY_BYTES, "ZIP central directory is too large")
+        val centralEnd = centralOffset + centralSize
+        PluginValidation.requireData(centralOffset >= 0 && centralEnd <= offset.toLong() && centralEnd == offset.toLong(), "Invalid ZIP central directory extent")
+        if (offset >= 20 && little32(bytes, offset - 20) == 0x07064b50L) {
+            PluginValidation.invalid("ZIP64 archives are not supported")
+        }
+        var cursor = centralOffset.toInt()
+        var expandedTotal = 0L
+        repeat(totalEntries) {
+            PluginValidation.requireData(cursor <= centralEnd - 46 && little32(bytes, cursor) == 0x02014b50L, "Invalid ZIP central directory header")
+            val flags = little16(bytes, cursor + 8)
+            val method = little16(bytes, cursor + 10)
+            val compressedSize = little32(bytes, cursor + 20)
+            val expandedSize = little32(bytes, cursor + 24)
+            val nameLength = little16(bytes, cursor + 28)
+            val extraLength = little16(bytes, cursor + 30)
+            val commentLength = little16(bytes, cursor + 32)
+            val diskStart = little16(bytes, cursor + 34)
+            val localOffset = little32(bytes, cursor + 42)
+            PluginValidation.requireData(diskStart != 0xffff && compressedSize != 0xffffffffL && expandedSize != 0xffffffffL && localOffset != 0xffffffffL, "ZIP64 archives are not supported")
+            PluginValidation.requireData(diskStart == 0, "Multidisk ZIP archives are not supported")
+            // UTF-8 names, data descriptors, and (for deflate) compression option bits.
+            val allowedFlags = if (method == 8) 0x080e else 0x0808
+            PluginValidation.requireData(
+                (method == 0 || method == 8) && (flags and allowedFlags.inv()) == 0,
+                "Encrypted or unsupported ZIP entries are not allowed",
+            )
+            PluginValidation.requireData(expandedSize <= maxExpanded - expandedTotal, "ZIP expanded size exceeds the limit")
+            PluginValidation.requireData(expandedSize <= maxOf(1L, compressedSize) * MAX_RATIO, "ZIP compression ratio exceeds the limit")
+            expandedTotal += expandedSize
+            val recordEnd = cursor.toLong() + 46 + nameLength + extraLength + commentLength
+            PluginValidation.requireData(recordEnd <= centralEnd && localOffset < centralOffset, "Invalid ZIP central directory record extent")
+            checkExtraFields(bytes, cursor + 46 + nameLength, cursor + 46 + nameLength + extraLength)
+            cursor = recordEnd.toInt()
+        }
+        PluginValidation.requireData(cursor.toLong() == centralEnd, "ZIP central directory entry count does not match its extent")
+        return centralOffset
+    }
+
+    private fun checkExtraFields(bytes: ByteArray, start: Int, end: Int) {
+        var cursor = start
+        while (cursor < end) {
+            PluginValidation.requireData(cursor <= end - 4, "Invalid ZIP extra field")
+            val id = little16(bytes, cursor)
+            val size = little16(bytes, cursor + 2)
+            PluginValidation.requireData(cursor + 4L + size <= end.toLong(), "Invalid ZIP extra field extent")
+            PluginValidation.requireData(id != 0x0001, "ZIP64 archives are not supported")
+            cursor += 4 + size
+        }
     }
 
     private fun little16(bytes: ByteArray, offset: Int): Int = (bytes[offset].toInt() and 255) or ((bytes[offset + 1].toInt() and 255) shl 8)

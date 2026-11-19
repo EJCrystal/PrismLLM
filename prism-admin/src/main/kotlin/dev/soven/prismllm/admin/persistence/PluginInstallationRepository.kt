@@ -1,7 +1,6 @@
 package dev.soven.prismllm.admin.persistence
 
-import dev.soven.prismllm.plugin.host.PluginInstallation
-import dev.soven.prismllm.plugin.host.PluginInstallationStore
+import dev.soven.prismllm.admin.domain.PluginInstallationRecord
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -31,20 +30,20 @@ object PluginInstallations : Table("plugin_installations") {
 }
 
 /** 只保存期望状态和卸载决定，不把某个 JVM 的加载结果写成全局事实。 */
-class PluginInstallationRepository(private val database: Database) : PluginInstallationStore {
-    override suspend fun list(): List<PluginInstallation> = suspendTransaction(database) {
+class PluginInstallationRepository(private val database: Database) {
+    suspend fun list(): List<PluginInstallationRecord> = suspendTransaction(database) {
         PluginInstallations.selectAll().map(::toRecord)
     }
 
-    override suspend fun find(id: String): PluginInstallation? = suspendTransaction(database) {
+    suspend fun find(id: String): PluginInstallationRecord? = suspendTransaction(database) {
         PluginInstallations.selectAll().where { PluginInstallations.id eq id }.singleOrNull()?.let(::toRecord)
     }
 
-    override suspend fun insertIfAbsent(installation: PluginInstallation): Boolean = suspendTransaction(database) {
+    suspend fun insertIfAbsent(installation: PluginInstallationRecord): Boolean = suspendTransaction(database) {
         PluginInstallations.insertIgnore { write(it, installation) }.insertedCount == 1
     }
 
-    override suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean = suspendTransaction(database) {
+    suspend fun save(installation: PluginInstallationRecord, expectedRevision: Long): Boolean = suspendTransaction(database) {
         PluginInstallations.update({
             (PluginInstallations.id eq installation.id) and (PluginInstallations.revision eq expectedRevision)
         }) {
@@ -52,7 +51,7 @@ class PluginInstallationRepository(private val database: Database) : PluginInsta
         } == 1
     }
 
-    private fun write(statement: UpdateBuilder<*>, item: PluginInstallation) {
+    private fun write(statement: UpdateBuilder<*>, item: PluginInstallationRecord) {
         statement[PluginInstallations.id] = item.id
         statement[PluginInstallations.version] = item.version
         statement[PluginInstallations.sha256] = item.sha256
@@ -65,7 +64,7 @@ class PluginInstallationRepository(private val database: Database) : PluginInsta
         statement[PluginInstallations.updatedAt] = item.updatedAt
     }
 
-    private fun toRecord(row: ResultRow) = PluginInstallation(
+    private fun toRecord(row: ResultRow) = PluginInstallationRecord(
         id = row[PluginInstallations.id],
         version = row[PluginInstallations.version],
         sha256 = row[PluginInstallations.sha256],
