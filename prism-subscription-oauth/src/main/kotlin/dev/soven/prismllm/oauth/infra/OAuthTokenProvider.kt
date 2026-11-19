@@ -4,7 +4,6 @@ import dev.soven.prismllm.oauth.domain.OAuthProviderConfig
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -24,6 +23,9 @@ import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CompletionStage
 import java.util.concurrent.Flow
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -105,22 +107,23 @@ suspend fun postTokenRequest(
         .apply { proxy?.let { this.proxy(ProxySelector.of(it)) } }
         .build()
     try {
-        var completed: JsonObject? = null
-        withTimeoutOrNull(timeoutMs) {
-            val builder = HttpRequest.newBuilder(URI(endpoint))
-                .timeout(Duration.ofMillis(timeoutMs))
-                .header("Accept", "application/json")
-                .header("Content-Type", contentType)
-            for ((name, value) in headers) builder.header(name, value)
-            val request = builder
-                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-                .build()
-            val response = sendBounded(client, request)
-            val text = response.body().toString(StandardCharsets.UTF_8)
-            if (response.statusCode() !in 200..299) throw httpFailure(response.statusCode(), text)
-            completed = parseJsonObject(text)
-        }
-        return completed ?: throw OAuthRefreshException(false, "timeout", "OAuth 刷新超时")
+        val builder = HttpRequest.newBuilder(URI(endpoint))
+            .timeout(Duration.ofMillis(timeoutMs))
+            .header("Accept", "application/json")
+            .header("Content-Type", contentType)
+        for ((name, value) in headers) builder.header(name, value)
+        val request = builder
+            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+            .build()
+        val response = awaitTokenResponse(
+            client.sendAsync(request, HttpResponse.BodyHandler { BoundedBody(MAX_RESPONSE_BYTES) }),
+            timeoutMs,
+        )
+        // Once a complete response wins the handoff, decode without another suspension or
+        // cancellation checkpoint so its rotated credential can reach service-owned persistence.
+        val text = response.body().toString(StandardCharsets.UTF_8)
+        if (response.statusCode() !in 200..299) throw httpFailure(response.statusCode(), text)
+        return parseJsonObject(text)
     } catch (cause: OAuthRefreshException) {
         throw cause
     } catch (cause: CancellationException) {
@@ -223,6 +226,45 @@ private fun extractErrorCode(text: String): String? = runCatching {
     ?.filter { it.isLetterOrDigit() || it in "._-" }
     ?.take(80)
     ?.takeIf { it.isNotBlank() }
+
+private val tokenDeadlineExecutor = ScheduledThreadPoolExecutor(1) { task ->
+    Thread(task, "prism-oauth-response-deadline").apply { isDaemon = true }
+}.apply { removeOnCancelPolicy = true }
+
+/** The HTTP future itself arbitrates full-body completion against deadline/caller cancellation. */
+internal suspend fun <T : Any> awaitTokenResponse(future: CompletableFuture<T>, timeoutMs: Long): T {
+    require(timeoutMs > 0)
+    val cancellation = AtomicReference<Throwable?>()
+    val timer = AtomicReference<java.util.concurrent.ScheduledFuture<*>?>()
+    return try {
+        suspendCancellableCoroutine { continuation ->
+            future.whenComplete { value, error ->
+                val original = if (error is java.util.concurrent.CompletionException) error.cause ?: error else error
+                val failure = if (future.isCancelled || original is CancellationException) cancellation.get() ?: original else original
+                if (failure == null) continuation.resume(value) else continuation.resumeWithException(failure)
+            }
+            val timeout = tokenDeadlineExecutor.schedule({
+                cancellation.compareAndSet(null, OAuthRefreshException(false, "timeout", "OAuth 刷新超时"))
+                // cancel and full-body completion compete on one atomic CompletableFuture state.
+                // cancel(false-result) cannot discard a response which has already completed.
+                future.cancel(true)
+            }, timeoutMs, TimeUnit.MILLISECONDS)
+            timer.set(timeout)
+            continuation.invokeOnCancellation { cause ->
+                cancellation.compareAndSet(null, cause ?: CancellationException("OAuth request cancelled"))
+                future.cancel(true)
+                timeout.cancel(false)
+            }
+            if (future.isDone) timeout.cancel(false)
+        }
+    } catch (cause: CancellationException) {
+        // Prompt cancellation may win coroutine dispatch after HTTP completion. Preserve the
+        // already received response; decoding/encryption continue without a suspension point.
+        if (future.isDone && !future.isCompletedExceptionally) future.join() else throw cause
+    } finally {
+        timer.get()?.cancel(false)
+    }
+}
 
 /** 有界读取响应体；token 与额度查询共用，避免上游返回超大响应时占满内存。 */
 suspend fun sendBounded(client: HttpClient, request: HttpRequest): HttpResponse<ByteArray> =

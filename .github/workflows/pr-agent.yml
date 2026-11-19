@@ -142,7 +142,7 @@ jobs:
   #    CodeRabbit 也不响应机器人发起的指令。
   route_review:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'pr-agent') ||
       (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
       (
         github.event_name == 'check_run' &&
@@ -646,10 +646,11 @@ jobs:
   # 4. 核心审查 Job：评论区 /review 等指令（含 job 3 代发的 /review）
   pr_agent_review:
     if: >-
-      github.event_name == 'issue_comment' &&
-      github.event.sender.type != 'Bot' &&
-      github.event.issue.pull_request != null &&
-      startsWith(github.event.comment.body, '/')
+      (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr-agent') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.sender.type != 'Bot' &&
+       github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/'))
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -705,7 +706,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_PR_URL: ${{ github.event.issue.pull_request.url }}
+          EVENT_NAME: ${{ github.event_name }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
         run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            [[ "$DISPATCH_PR" =~ ^[0-9]+$ ]] || { echo "::error::pr_number 必须是数字"; exit 1; }
+            PR_NUMBER="$DISPATCH_PR"
+            COMMENT_PR_URL="https://api.github.com/repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}"
+            # Reuse the action's ordinary /review event path without reading PR-provided code.
+            REVIEW_EVENT_FILE="$(dirname "$GITHUB_EVENT_PATH")/pr-agent-review-event.json"
+            gh api "$COMMENT_PR_URL" | jq -n --slurpfile pr /dev/stdin \
+              '{action:"created",sender:{type:"User",login:env.GITHUB_ACTOR},repository:{full_name:env.GITHUB_REPOSITORY},comment:{body:"/review",pull_request_url:$pr[0].url,user:{type:"User",login:env.GITHUB_ACTOR}}}' > "$REVIEW_EVENT_FILE"
+            # A review-comment event uses the same command handler without attempting a reaction
+            # against a synthetic issue-comment ID.
+            echo "REVIEW_EVENT_NAME=pull_request_review_comment" >> "$GITHUB_ENV"
+            # Docker actions mount the runner workflow directory at /github/workflow.
+            echo "REVIEW_EVENT_PATH=/github/workflow/pr-agent-review-event.json" >> "$GITHUB_ENV"
+          fi
           HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
           PR_NUMBER="${COMMENT_PR_URL##*/}"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
@@ -722,6 +740,8 @@ jobs:
         uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ env.REVIEW_EVENT_NAME || github.event_name }}
+          GITHUB_EVENT_PATH: ${{ env.REVIEW_EVENT_PATH || github.event_path }}
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
@@ -748,7 +768,8 @@ jobs:
             Do not repeat a finding that the current code has already fixed. If the code quoted in a previous finding no longer exists, mark that finding resolved instead of reporting it again.
             Do not report pure style, refactoring, or micro-performance suggestions unless they can cause incorrect behavior or a test failure. Avoid duplicate findings for the same root cause.
           PR_REVIEWER.ENABLE_LARGE_PR_CHUNKING: "true"
-          PR_REVIEWER.MAX_NUMBER_OF_CALLS: "3"
+          # 3 个分块不足以覆盖大型插件 PR；仍由下方完整性检查拒绝任何裁剪。
+          PR_REVIEWER.MAX_NUMBER_OF_CALLS: "16"
           # 默认 3 条；命中上限时 PR-Agent 会把该轮判为 partial，不再把已修复的意见转为
           # RESOLVED（判定条件是 len(findings) < num_max_findings）。大 PR（如测试拆分）
           # 一轮可能报 30+ 条，10 条会稳定判 partial 并让门禁死锁，这里留足余量。

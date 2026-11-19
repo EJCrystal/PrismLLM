@@ -95,8 +95,12 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         id: String = "example.probe",
         delayed: Boolean = false,
         delayedClose: Boolean = false,
+        version: String = "1.0.0",
+        configuration: List<PluginField> = defaultConfiguration(),
     ): PackageFixture = fixture(
         id = id,
+        version = version,
+        configuration = configuration,
         constructorPrefix = { property -> """
             System.getProperties().put("$property.loader", getClass().getClassLoader());
             ${if (delayed) """
@@ -135,6 +139,36 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             while (loader(packaged).findResource("fixture/owned-resource.txt") != null) delay(5)
         }
         assertEquals(1, packaged.count("closed"))
+    }
+
+    private suspend fun initializeWithConcurrentBootstrapUpdate(
+        packaged: PackageFixture,
+        update: suspend (PluginRuntime) -> Unit,
+    ): PluginRuntime = coroutineScope {
+        val decisions = MemoryInstallationStore()
+        val writer = runtime(decisions)
+        writer.initialize()
+        val listing = CompletableDeferred<Unit>()
+        val releaseList = CompletableDeferred<Unit>()
+        val host = runtime(object : PluginInstallationStore by decisions {
+            override suspend fun list(): List<PluginInstallation> {
+                // Bootstrap has won the insert and holds its provider, but has not published it.
+                listing.complete(Unit)
+                releaseList.await()
+                return decisions.list()
+            }
+        })
+        val initialization = async { host.initialize(packaged.manifest.id) }
+        try {
+            withTimeout(4_000) { listing.await() }
+            assertEquals(1, packaged.count("constructed"))
+            assertEquals(0, packaged.count("closed"))
+            update(writer)
+        } finally {
+            releaseList.complete(Unit)
+        }
+        withTimeout(4_000) { initialization.await() }
+        host
     }
 
     private fun assertNoActive(host: PluginRuntime) {
@@ -394,6 +428,33 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `bootstrap rejects incomplete configuration before writing and falls back to the older candidate`(): Unit = runBlocking {
+        val older = fixture()
+        val newer = ownedFixture(
+            version = "2.0.0",
+            configuration = defaultConfiguration() + PluginField("newRequired", "New required", "text", required = true),
+        )
+        publish(older, newer)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+        val legacy = config("complete only for the older candidate")
+
+        host.initialize(newer.manifest.id) { legacy }
+
+        val record = assertNotNull(store.find(newer.manifest.id))
+        assertEquals(1, store.writes)
+        assertEquals(older.manifest.version, record.version)
+        assertEquals(older.sha256, record.sha256)
+        assertEquals(legacy, record.configuration)
+        assertEquals(older.manifest.version, host.state(newer.manifest.id).activeVersion)
+        assertEquals("complete only for the older candidate", invoke(host).plan.prompt)
+        assertEquals(1, newer.count("constructed"))
+        assertDisposed(newer)
+        host.close()
+        assertEquals(1, newer.count("closed"))
+    }
+
+    @Test
     fun `bootstrap chooses the latest compatible semantic version deterministically`(): Unit = runBlocking {
         val earlier = fixture(version = "1.9.0")
         val later = fixture(version = "1.10.0")
@@ -470,6 +531,61 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertEquals(1, packaged.count("constructed"))
         assertEquals(1, packaged.count("closed"))
         assertFalse(store.find(packaged.manifest.id)?.installed ?: true)
+    }
+
+    @Test
+    fun `concurrent upgrade before startup listing supersedes the pending bootstrap provider`(): Unit = runBlocking {
+        val original = ownedFixture()
+        val replacement = ownedFixture(version = "2.0.0")
+        publish(original)
+        val host = initializeWithConcurrentBootstrapUpdate(original) { writer ->
+            publish(original, replacement)
+            writer.install(replacement.manifest.id, replacement.manifest.version, replacement.manifest.permissions)
+            writer.configure(replacement.manifest.id, config("concurrent upgrade"))
+        }
+
+        assertDisposed(original)
+        val state = host.state(original.manifest.id)
+        assertEquals(replacement.manifest.version, state.activeVersion)
+        assertTrue(state.admissionEnabled)
+        assertEquals("concurrent upgrade", invoke(host, version = replacement.manifest.version).plan.prompt)
+        assertEquals(1, replacement.count("constructed"))
+        assertEquals(0, replacement.count("closed"))
+        host.close()
+        assertDisposed(replacement)
+        assertEquals(1, original.count("closed"))
+    }
+
+    @Test
+    fun `concurrent tombstone before startup listing disposes the pending bootstrap provider`(): Unit = runBlocking {
+        val original = ownedFixture()
+        publish(original)
+        val host = initializeWithConcurrentBootstrapUpdate(original) { it.uninstall(original.manifest.id) }
+
+        assertDisposed(original)
+        val state = host.state(original.manifest.id)
+        assertEquals("uninstalled", state.status)
+        assertNull(state.activeVersion)
+        assertFalse(state.admissionEnabled)
+        assertNoActive(host)
+        host.close()
+        assertEquals(1, original.count("closed"))
+    }
+
+    @Test
+    fun `concurrent disable before startup listing disposes the pending bootstrap provider`(): Unit = runBlocking {
+        val original = ownedFixture()
+        publish(original)
+        val host = initializeWithConcurrentBootstrapUpdate(original) { it.setEnabled(original.manifest.id, false) }
+
+        assertDisposed(original)
+        val state = host.state(original.manifest.id)
+        assertEquals("disabled", state.status)
+        assertNull(state.activeVersion)
+        assertFalse(state.admissionEnabled)
+        assertNoActive(host)
+        host.close()
+        assertEquals(1, original.count("closed"))
     }
 
     @Test

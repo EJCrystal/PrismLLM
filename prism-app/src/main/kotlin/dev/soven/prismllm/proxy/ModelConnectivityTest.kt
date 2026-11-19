@@ -244,24 +244,29 @@ private suspend fun runModelConnectivityTest(
             val responseState = (json?.get("status") as? JsonPrimitive)?.contentOrNull
             val incompleteResponse = protocol == GatewayProtocol.RESPONSES &&
                 responseState in setOf("incomplete", "failed", "cancelled", "queued", "in_progress")
-            val streamError = ok && protocol == GatewayProtocol.RESPONSES &&
+            val responsesError = ok && protocol == GatewayProtocol.RESPONSES &&
                 (json?.get("error") is JsonObject || incompleteResponse)
             val displayText = if (ok) extractModelTestResponseText(protocol, json) else null
             val result = ModelConnectivityTestResult(
-                success = ok && !streamError,
+                success = ok && !responsesError,
                 statusCode = status,
                 latencyMs = latencyMs,
                 responseText = displayText?.let { redactModelTestCredential(it, credential).take(maxResponseChars) },
-                errorMessage = if (ok && incompleteResponse) "上游 Responses 尚未成功完成：$responseState"
-                else if (!ok || streamError) extractModelTestError(json, status, credential) {
-                    redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
+                errorMessage = if (!ok || responsesError) extractModelTestError(json, status, credential) {
+                    if (ok && incompleteResponse) {
+                        "上游 Responses 尚未成功完成：${redactModelTestCredential(responseState.orEmpty(), credential)}"
+                    } else {
+                        redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
+                    }
                 } else null,
-                usage = if (ok && !streamError) extractModelTestUsage(protocol, json) else null,
-                upstreamReportedModel = if (ok && !streamError) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
+                usage = if (ok && !responsesError) extractModelTestUsage(protocol, json) else null,
+                upstreamReportedModel = if (ok && !responsesError) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential) } else null,
             )
             ModelConnectivityExecution(
                 result = result,
-                rawSample = displayText?.take(maxResponseChars).takeIf { captureRawSample && result.success },
+                rawSample = if (captureRawSample && result.success && !isModelTestOutputTruncated(protocol, json)) {
+                    displayText?.take(maxResponseChars)
+                } else null,
                 sanitize = { redactModelTestCredential(it, credential) },
             )
         } ?: ModelConnectivityExecution(
@@ -396,15 +401,32 @@ internal fun limitModelTestTokens(body: JsonObject, protocol: GatewayProtocol, m
     return if (protocol == GatewayProtocol.GEMINI) JsonObject(body + ("generationConfig" to bounded)) else bounded
 }
 
+private fun firstChatCompletionChoice(json: JsonObject?): JsonObject? =
+    (json?.get("choices") as? JsonArray)?.firstOrNull() as? JsonObject
+
+/** A reachable endpoint may return partial text; explicit truncation disqualifies only the raw sample. */
+private fun isModelTestOutputTruncated(protocol: GatewayProtocol, json: JsonObject?): Boolean = when (protocol) {
+    GatewayProtocol.CHAT_COMPLETIONS -> when ((firstChatCompletionChoice(json)?.get("finish_reason") as? JsonPrimitive)?.contentOrNull) {
+        "length", "content_filter" -> true
+        else -> false
+    }
+    GatewayProtocol.MESSAGES -> when ((json?.get("stop_reason") as? JsonPrimitive)?.contentOrNull) {
+        "max_tokens", "model_context_window_exceeded", "refusal" -> true
+        else -> false
+    }
+    GatewayProtocol.GEMINI -> (json?.get("candidates") as? JsonArray)?.any { candidate ->
+        when (((candidate as? JsonObject)?.get("finishReason") as? JsonPrimitive)?.contentOrNull) {
+            "MAX_TOKENS", "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL" -> true
+            else -> false
+        }
+    } == true
+    GatewayProtocol.RESPONSES -> false // Non-completed Responses already fail the connectivity check.
+}
+
 internal fun extractModelTestResponseText(protocol: GatewayProtocol, json: JsonObject?): String? {
     if (json == null) return null
     return when (protocol) {
-        GatewayProtocol.CHAT_COMPLETIONS -> {
-            val choices = json["choices"] as? JsonArray
-            collectText((choices?.firstOrNull() as? JsonObject)?.get("message")?.let { message ->
-                (message as? JsonObject)?.get("content")
-            })
-        }
+        GatewayProtocol.CHAT_COMPLETIONS -> collectText((firstChatCompletionChoice(json)?.get("message") as? JsonObject)?.get("content"))
         GatewayProtocol.RESPONSES -> {
             collectText(json["output_text"]) ?: collectText(json["output"]) ?: collectText(json["response"])
         }

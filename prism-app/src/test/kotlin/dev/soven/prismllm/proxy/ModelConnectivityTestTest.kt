@@ -8,6 +8,7 @@ import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.protocol.extractReportedModel
+import dev.soven.prismllm.proxy.fingerprint.parseFingerprintNumbers
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.KeyCredentialResolver
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
@@ -924,6 +925,24 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun both_entry_points_prefer_the_redacted_responses_error_over_failed_status() = runBlocking {
+        val credential = "sk-synthetic-responses-failure"
+        val escaped = unicodeEscapedCredential(credential)
+        val body = """{"status":"failed","error":{"code":"server_error","message":"denied $escaped"},"output_text":"partial $escaped"}"""
+
+        for (oauth in listOf(false, true)) {
+            val result = diagnosticTransport(
+                credential,
+                protocol = GatewayProtocol.RESPONSES,
+                oauth = oauth,
+                responseBody = body,
+            )
+
+            assertFailedDiagnostic(result, 200, "denied [REDACTED]", responseText = "partial [REDACTED]")
+        }
+    }
+
+    @Test
     fun native_code_assist_entry_redacts_unwrapped_success_and_error_fields() = runBlocking {
         val credential = "oauth-synthetic-code-assist-token"
         val escaped = unicodeEscapedCredential(credential)
@@ -1056,15 +1075,50 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun truncated_chat_completions_keeps_safe_preview_but_never_supplies_numeric_fingerprint_sample() = runBlocking {
+        val credential = "fingerprint-synthetic-secret"
+        val numbers = (1..100).joinToString(",")
+        val originalText = "$numbers $credential"
+        assertEquals(100, parseFingerprintNumbers(originalText).size)
+
+        for (reason in listOf("length", "content_filter", "stop")) {
+            val execution = fingerprintDiagnosticTransport(
+                credential,
+                """{"choices":[{"message":{"content":${JsonPrimitive(originalText)}},"finish_reason":"$reason"}],"model":"public-model"}""",
+                maxResponseChars = MAX_RESPONSE_CHARS,
+            )
+
+            assertSuccessfulDiagnostic(execution.result, "$numbers [REDACTED]", "public-model", usage = null)
+            assertEquals(if (reason == "stop") originalText else null, execution.rawSample, reason)
+        }
+    }
+
+    @Test
+    fun other_protocols_with_explicit_truncation_keep_preview_but_do_not_supply_raw_samples() = runBlocking {
+        val credential = "fingerprint-synthetic-secret"
+        val cases = listOf(
+            GatewayProtocol.MESSAGES to """{"content":[{"type":"text","text":"partial $credential"}],"stop_reason":"max_tokens","model":"public-model"}""",
+            GatewayProtocol.MESSAGES to """{"content":[{"type":"text","text":"partial $credential"}],"stop_reason":"model_context_window_exceeded","model":"public-model"}""",
+            GatewayProtocol.GEMINI to """{"candidates":[{"content":{"parts":[{"text":"partial $credential"}]},"finishReason":"MAX_TOKENS"}],"modelVersion":"public-model"}""",
+        )
+        for ((protocol, body) in cases) {
+            val execution = fingerprintDiagnosticTransport(credential, body, maxResponseChars = 100, protocol = protocol)
+
+            assertSuccessfulDiagnostic(execution.result, "partial [REDACTED]", "public-model", usage = null)
+            assertNull(execution.rawSample, body)
+        }
+    }
+
+    @Test
     fun incomplete_responses_json_does_not_supply_a_raw_fingerprint_sample() = runBlocking {
-        for (state in listOf("incomplete", "failed", "in_progress")) {
+        for ((state, error) in listOf("incomplete" to "null", "failed" to "{\"message\":\" \"}", "in_progress" to "null")) {
             val execution = fingerprintDiagnosticTransport(
                 "synthetic-json-secret",
-                """{"status":"$state","error":null,"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}""",
+                """{"status":"$state","error":$error,"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}""",
                 maxResponseChars = 100,
                 protocol = GatewayProtocol.RESPONSES,
             )
-            assertFalse(execution.result.success, state)
+            assertFailedDiagnostic(execution.result, 200, "上游 Responses 尚未成功完成：$state", responseText = "partial")
             assertNull(execution.rawSample, state)
         }
         for (state in listOf("\"status\":\"completed\",", "")) {

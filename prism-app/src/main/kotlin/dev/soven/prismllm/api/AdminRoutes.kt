@@ -40,6 +40,7 @@ import dev.soven.prismllm.oauth.OAuthLoginStartResult
 import dev.soven.prismllm.oauth.OAuthQuotaResult
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
 import dev.soven.prismllm.oauth.OAuthRefreshResult
+import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
 import dev.soven.prismllm.oauth.OAuthUnavailableReason
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import dev.soven.prismllm.proxy.CatalogModel
@@ -1190,20 +1191,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
         post("/oauth-accounts/{id}/models/refresh") {
             call.requireAdmin(app)
             val accountId = call.requiredParam("id", "缺少账号 id")
-            // 必须加载账号自身的授权与目录：目录按账号隔离，不能用别的账号或共享渠道代替。
-            val account = app.oauthAccountRepository.findDetailed(accountId)
-                ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-            val channelId = app.providerChannelProvisioner.ensure(account.provider)
-                ?: throw badRequest(
-                    "oauth_provider_not_servable",
-                    "该提供方的上游协议尚未实现: " + account.provider.value,
-                )
-            val token = try {
-                app.oauthTokenService.accessToken(account.id)
+            fun accountChanged() = conflict("oauth_account_changed", "订阅账号已变化，请重试")
+
+            // The token and the credential/egress snapshot must come from the same acquisition.
+            val bound = try {
+                app.oauthTokenService.accessTokenWithSnapshot(accountId)
             } catch (cause: CancellationException) {
                 // 请求被取消时不能伪装成凭据错误：取消要原样传播到调用链上。
                 throw cause
             } catch (cause: Throwable) {
+                if ((cause as? OAuthTokenUnavailableException)?.errorCode == "credential_replaced") throw accountChanged()
                 throw GatewayError(
                     HttpStatusCode.BadGateway,
                     "oauth_credential_unavailable",
@@ -1211,7 +1208,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     "upstream_error",
                     retryable = true,
                 )
-            } ?: throw badRequest("oauth_credential_unavailable", "账号还没有可用的 access token")
+            } ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
+            val account = bound.account
+            val token = bound.token
+            val channelId = app.providerChannelProvisioner.ensure(account.provider)
+                ?: throw badRequest(
+                    "oauth_provider_not_servable",
+                    "该提供方的上游协议尚未实现: " + account.provider.value,
+                )
             val proxy = try {
                 proxyAddress(account.proxyUrl, app.config.oauth.proxyAllowedHosts)
             } catch (cause: OAuthRefreshException) {
@@ -1251,7 +1255,12 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 else -> {
                     // probe 可能包含一次开通轮询，整体限时，避免上游迟缓时管理请求一直挂着。
                     val catalog = withTimeoutOrNull(MODEL_REFRESH_TIMEOUT_MS) {
-                        val probe = app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
+                        val probe = try {
+                            app.codeAssistProjectResolver.probe(account, token.accessToken, proxy)
+                        } catch (cause: OAuthTokenUnavailableException) {
+                            if (cause.errorCode == "credential_replaced") throw accountChanged()
+                            throw cause
+                        }
                         app.codeAssistModelCatalog.fetchFor(
                             token.accessToken,
                             probe.project.orEmpty(),
@@ -1297,8 +1306,8 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     retryable = true,
                 )
             }
-            if (!app.providerChannelProvisioner.syncModelCatalog(account.id, entries)) {
-                throw notFound("oauth_account_not_found", "订阅账号不存在")
+            if (!app.providerChannelProvisioner.syncModelCatalog(account.id, entries, expectedAccount = account)) {
+                throw accountChanged()
             }
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", account.id)

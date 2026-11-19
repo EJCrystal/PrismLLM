@@ -82,7 +82,11 @@ const modalStub = {
     slots['title-extra']?.(), slots.subhead?.(), slots.default?.(), slots.footer?.(),
   ]) },
 }
-const legacyStub = kind => ({ render: () => h('div', { 'data-legacy-view': kind }, `legacy ${kind}`) })
+const legacyStub = kind => ({
+  render: () => h('div', { 'data-legacy-view': kind }, kind === 'iq'
+    ? [h('input', { type: 'text', 'aria-label': '智商提示词' })]
+    : `legacy ${kind}`),
+})
 
 describe('descriptor-driven plugin UI (synthetic API data only)', () => {
   let server, api, originals, toasts, ApiError, modelTestTargetKey, PLUGIN_STATE_CHANGED
@@ -902,18 +906,80 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
-  it('keeps a user-selected records tab when the first contribution load resolves', async () => {
+  for (const [interaction, expectedTab] of [
+    ['IQ control focus', '智商'],
+    ['IQ control input', '智商'],
+    ['IQ tab focus', '智商'],
+    ['records tab click', '记录'],
+    ['no tab or panel interaction', null],
+  ]) {
+    it(`honors ${interaction} while the first contribution discovery is pending`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      setFixtures(fixture)
+      const pending = deferred()
+      mock.listContributions = () => pending.promise
+      const { container, state } = await mount('ChannelTestDrawer', { channel })
+      await waitFor(() => calls.contributions.length === 1)
+      const iq = button(container, '智商')
+      const records = button(container, '记录')
+      const control = container.querySelector('[data-legacy-view="iq"] input')
+      const selectedTab = () => container.querySelector('[role="tab"][aria-selected="true"]')
+      assert.equal(selectedTab(), iq)
+      assert.ok(control)
+      const close = button(container, '关闭模拟窗口')
+      close.focus() // Simulate the modal's initial focus, outside the tablist and panel.
+
+      if (interaction === 'IQ control focus') control.focus()
+      if (interaction === 'IQ control input') {
+        await change(control, 'draft prompt')
+        assert.equal(document.activeElement, close, 'input alone protects the draft without a focus event')
+      }
+      if (interaction === 'IQ tab focus') iq.focus()
+      if (interaction === 'records tab click') records.click()
+
+      pending.resolve(clonePluginData(fixture.contributions))
+      await waitFor(() => state.initialized && container.querySelectorAll('[role="tab"]').length === 4)
+      assert.equal(selectedTab(), button(container, expectedTab ?? fixture.contribution.entry.label))
+      if (interaction === 'IQ control focus') assert.equal(document.activeElement, control)
+      if (interaction === 'IQ control input') {
+        assert.equal(container.querySelector('[data-legacy-view="iq"] input'), control)
+        assert.equal(control.value, 'draft prompt')
+      }
+    })
+  }
+
+  it('keeps first-discovery interactions scoped to their own drawer', async () => {
     const fixture = makeOfficialPluginFixture()
     setFixtures(fixture)
-    const pending = deferred()
-    mock.listContributions = () => pending.promise
-    const entry = await mount('ChannelTestDrawer', { channel })
-    await waitFor(() => calls.contributions.length === 1)
-    entry.state.selectTab('records')
-    pending.resolve(clonePluginData(fixture.contributions))
-    await waitFor(() => entry.state.initialized)
-    assert.equal(entry.state.activeTab.value, 'records')
-    assert.equal(entry.container.querySelector('[role="tab"][aria-selected="true"]').textContent.trim(), '记录')
+    const discoveries = [deferred(), deferred()]
+    let request = 0
+    mock.listContributions = () => discoveries[request++].promise
+    const untouched = await mount('ChannelTestDrawer', { channel })
+    const interacting = await mount('ChannelTestDrawer', { channel: { ...channel, id: 'channel-2' } })
+    const control = interacting.container.querySelector('[data-legacy-view="iq"] input')
+    control.focus()
+    await change(control, 'draft in another drawer')
+    discoveries.forEach(pending => pending.resolve(clonePluginData(fixture.contributions)))
+    await waitFor(() => untouched.state.initialized && interacting.state.initialized)
+    assert.equal(text(untouched.container.querySelector('[role="tab"][aria-selected="true"]')), fixture.contribution.entry.label)
+    assert.equal(text(interacting.container.querySelector('[role="tab"][aria-selected="true"]')), '智商')
+    assert.equal(document.activeElement, control)
+    assert.equal(control.value, 'draft in another drawer')
+  })
+
+  it('does not count programmatic fallback focus as a user tab selection', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    const { container, state } = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
+    assert.equal(state.userSelectedTab, false)
+    field(container, '模型').focus()
+    mock.contributions = []
+    await state.load()
+    await settle()
+    assert.equal(state.activeTab.value, 'iq')
+    assert.equal(document.activeElement, button(container, '智商'))
+    assert.equal(state.userSelectedTab, false, 'automatic focus restoration must not record a tab selection')
   })
 
   it('renders missing resources and permits manual diagnostics on a disabled channel', async () => {

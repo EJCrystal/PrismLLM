@@ -29,7 +29,6 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
@@ -76,6 +75,11 @@ sealed interface OAuthRefreshResult {
     data object NotOAuthAccount : OAuthRefreshResult
 }
 
+/** Access and the exact credential row that produced it; never print token-bearing state. */
+internal class OAuthAccountAccess(val account: OAuthAccountRecord, val token: OAuthAccessToken) {
+    override fun toString(): String = "OAuthAccountAccess(<redacted>)"
+}
+
 /** The exact credential row and egress used to obtain a diagnostic token. Never log token contents. */
 internal class DiagnosticOAuthAccess internal constructor(
     private val account: OAuthAccountRecord,
@@ -115,12 +119,13 @@ class OAuthTokenService(
     private val now: () -> Long = System::currentTimeMillis,
 ) : KeyCredentialResolver, AutoCloseable {
     private val logger = LoggerFactory.getLogger(OAuthTokenService::class.java)
-    private val locks = Array(LOCK_STRIPES) { Mutex() }
     private val worker = AtomicReference<Job?>(null)
     private val refreshLifecycleLock = Any()
     private val refreshSupervisor = SupervisorJob()
     private val refreshScope = CoroutineScope(Dispatchers.IO + refreshSupervisor)
     private val refreshTasks = mutableMapOf<String, RefreshTask>()
+    // Guarded by refreshLifecycleLock; only admitted tasks register a mutex, until completion.
+    private val accountLocks = mutableMapOf<String, Mutex>()
     private val rotations = linkedMapOf<String, ArrayDeque<Rotation>>()
     private val refreshPermits = Semaphore(MAX_CONCURRENT_DIAGNOSTIC_REFRESHES)
     private var refreshAdmissionClosed = false
@@ -130,9 +135,21 @@ class OAuthTokenService(
      * 返回可用的 access token。普通静态密钥返回 null；
      * OAuth 账号不可用时抛出 [OAuthTokenUnavailableException]，调用方应切换到其他候选。
      */
-    suspend fun accessToken(accountId: String, forceRefresh: Boolean = false): OAuthAccessToken? {
+    suspend fun accessToken(accountId: String, forceRefresh: Boolean = false): OAuthAccessToken? =
+        accessTokenWithSnapshot(accountId, forceRefresh)?.token
+
+    internal suspend fun accessTokenWithSnapshot(accountId: String, forceRefresh: Boolean = false): OAuthAccountAccess? {
         val account = repository.find(accountId) ?: return null
-        return accessToken(account, forceRefresh)
+        if (!forceRefresh) cachedAccessToken(account)?.let { return OAuthAccountAccess(account, it) }
+        return try {
+            val saved = awaitRefresh(account, force = forceRefresh).account
+            OAuthAccountAccess(saved, requireAccessToken(saved))
+        } catch (cause: CancellationException) {
+            throw cause
+        } catch (cause: Exception) {
+            if (!DiagnosticPreparationDeadline.isTimeout(cause)) throw cause
+            throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "订阅账号刷新失败", "refresh_failed")
+        }
     }
 
     /** Caller cancellation stops waiting, but never interrupts an exchange that can rotate a token. */
@@ -193,18 +210,26 @@ class OAuthTokenService(
     ): RefreshOutcome {
         while (true) {
             val waiter = RefreshWaiter(account, currentCoroutineContext().job, preparation, force)
-            val task = synchronized(refreshLifecycleLock) {
+            val (task, registered) = synchronized(refreshLifecycleLock) {
                 check(!refreshAdmissionClosed) { "OAuth refresh service is closing" }
-                val existing = refreshTasks[account.id]?.takeUnless { it.work.isCancelled || it.work.isCompleted }
-                val selected = existing ?: RefreshTask().also { created ->
-                    if (refreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS) {
+                val existing = refreshTasks[account.id]
+                // A cancelling task still owns this account and its admission slot until it exits.
+                if (existing != null && existing.work.isCancelled && !existing.work.isCompleted) {
+                    return@synchronized existing to false
+                }
+                val selected = existing?.takeUnless { it.work.isCompleted } ?: RefreshTask().also { created ->
+                    if (existing == null && refreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS) {
                         throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "账号刷新繁忙，请稍后重试", "refresh_busy")
                     }
-                    created.work = refreshScope.async(start = CoroutineStart.LAZY) { runRefresh(account.id, created) }
+                    val mutex = lockFor(account.id)
+                    created.work = refreshScope.async(start = CoroutineStart.LAZY) { runRefresh(account.id, created, mutex) }
                     refreshTasks[account.id] = created
                     created.work.invokeOnCompletion { cause ->
                         synchronized(refreshLifecycleLock) {
-                            if (refreshTasks[account.id] === created) refreshTasks.remove(account.id)
+                            if (refreshTasks[account.id] === created) {
+                                refreshTasks.remove(account.id)
+                                accountLocks.remove(account.id)
+                            }
                         }
                         if (cause != null && cause !is CancellationException) {
                             logger.warn("oauth refresh failed, accountId={}, error={}", account.id, cause::class.simpleName)
@@ -213,7 +238,13 @@ class OAuthTokenService(
                 }
                 selected.waiters += waiter
                 selected.work.start()
-                selected
+                selected to true
+            }
+            if (!registered) {
+                if (preparation == null) task.work.join()
+                else DiagnosticPreparationDeadline.within(preparation) { task.work.join() }
+                    ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
+                continue
             }
             val outcome = try {
                 if (preparation == null) task.work.await()
@@ -231,33 +262,27 @@ class OAuthTokenService(
         }
     }
 
-    private suspend fun runRefresh(accountId: String, task: RefreshTask): RefreshOutcome =
-        lockFor(accountId).withLock {
+    private suspend fun runRefresh(accountId: String, task: RefreshTask, mutex: Mutex): RefreshOutcome =
+        mutex.withLock {
             val context = DiagnosticPreparationDeadline.withinSynchronous(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS) {
                 repository.loadRefreshContext(accountId)
                     ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
             } ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
             val latest = context.account
-            val eligible = synchronized(refreshLifecycleLock) {
-                task.waiters.filter { it.active() && (it.preparation == null || acceptsSnapshot(it.account, latest)) }
-            }
+            val eligible = synchronized(refreshLifecycleLock) { eligibleWaiters(task, latest) }
             if (eligible.isEmpty()) throw credentialReplaced()
-            val force = eligible.any { it.force }
-            if (!force) {
-                if (latest.authState != OAuthAuthState.ACTIVE) {
-                    throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号需要重新授权", latest.lastRefreshError)
-                }
-                cachedAccessToken(latest)?.let { return@withLock RefreshOutcome(latest, exchanged = false) }
-            }
+            if (eligible.none { it.force }) cachedRefreshOutcome(latest)?.let { return@withLock it }
+
             val prepared = prepareRefresh(context)
             val pending = try {
                 refreshPermits.withPermit {
                     synchronized(refreshLifecycleLock) {
-                        if (refreshAdmissionClosed || task.waiters.none {
-                            it.active() && (it.preparation == null || acceptsSnapshot(it.account, latest))
-                        }) {
+                        val admitted = eligibleWaiters(task, latest)
+                        if (refreshAdmissionClosed || admitted.isEmpty()) {
                             throw CancellationException("OAuth refresh admission ended before exchange")
                         }
+                        // A force waiter can leave while the task is queued for an exchange permit.
+                        if (admitted.none { it.force }) cachedRefreshOutcome(latest)?.let { return@withLock it }
                         task.exchangeStarted = true
                     }
                     // The service deadline starts before provider work. Its result slot closes
@@ -273,6 +298,8 @@ class OAuthTokenService(
             } catch (cause: CancellationException) {
                 throw cause
             } catch (cause: Exception) {
+                // A pre-exchange reauthorization rejection is not a provider failure.
+                if (!task.exchangeStarted) throw cause
                 val failure = cause as? OAuthRefreshException
                     ?: OAuthRefreshException(false, "refresh_failed", "订阅账号刷新失败")
                 // Failure writes, like successful save retries, must not hold an exchange permit.
@@ -353,19 +380,6 @@ class OAuthTokenService(
         is OAuthAccountRecord -> accessToken(credential.id)?.accessToken
             ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
         else -> throw IllegalStateException("未知的上游凭据类型: ${credential::class.qualifiedName}")
-    }
-
-    private suspend fun accessToken(account: OAuthAccountRecord, forceRefresh: Boolean): OAuthAccessToken {
-        if (!forceRefresh) cachedAccessToken(account)?.let { return it }
-        return try {
-            val outcome = awaitRefresh(account, force = forceRefresh)
-            requireAccessToken(outcome.account)
-        } catch (cause: CancellationException) {
-            throw cause
-        } catch (cause: Exception) {
-            if (!DiagnosticPreparationDeadline.isTimeout(cause)) throw cause
-            throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "订阅账号刷新失败", "refresh_failed")
-        }
     }
 
     private fun requireAccessToken(account: OAuthAccountRecord): OAuthAccessToken {
@@ -578,7 +592,19 @@ class OAuthTokenService(
         }
     }
 
-    private fun lockFor(accountId: String): Mutex = locks[(accountId.hashCode() and Int.MAX_VALUE) % locks.size]
+    private fun eligibleWaiters(task: RefreshTask, latest: OAuthAccountRecord): List<RefreshWaiter> =
+        task.waiters.filter { it.active() && (it.preparation == null || acceptsSnapshot(it.account, latest)) }
+
+    private fun cachedRefreshOutcome(account: OAuthAccountRecord): RefreshOutcome? {
+        if (account.authState != OAuthAuthState.ACTIVE) {
+            throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号需要重新授权", account.lastRefreshError)
+        }
+        return cachedAccessToken(account)?.let { RefreshOutcome(account, exchanged = false) }
+    }
+
+    private fun lockFor(accountId: String): Mutex = synchronized(refreshLifecycleLock) {
+        accountLocks.getOrPut(accountId) { Mutex() }
+    }
 
     private companion object {
         const val LOCK_STRIPES = 64

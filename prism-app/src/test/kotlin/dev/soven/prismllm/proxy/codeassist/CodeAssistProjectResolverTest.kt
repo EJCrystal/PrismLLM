@@ -3,6 +3,7 @@ package dev.soven.prismllm.proxy.codeassist
 import com.sun.net.httpserver.HttpExchange
 import com.sun.net.httpserver.HttpServer
 import dev.soven.prismllm.db.DiagnosticPreparationDeadline
+import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
 import io.ktor.client.engine.mock.MockEngine
 import io.ktor.client.engine.mock.respond
 import io.ktor.http.HttpHeaders
@@ -550,6 +551,20 @@ class CodeAssistProjectResolverTest {
                 scheduler.runCurrent()
             }
             assertEquals(1, requests.get())
+        }
+    }
+
+    @Test
+    fun `catalog probe rejects stale authorization instead of exposing its tier`() = runBlocking {
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val accounts = FakeAccounts(saved, snapshotMatches = { false })
+        HttpClient(MockEngine {
+            respond("""{"cloudaicompanionProject":"old-project","paidTier":{"id":"old-tier"}}""",
+                headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val failure = runCatching { CodeAssistProjectResolver(accounts, client).probe(account(), "old-token") }.exceptionOrNull()
+            assertEquals("credential_replaced", (failure as? dev.soven.prismllm.oauth.OAuthTokenUnavailableException)?.errorCode)
+            assertNull(saved.get())
         }
     }
 

@@ -5,6 +5,7 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.OAuthUnavailableReason
 import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
+import dev.soven.prismllm.oauth.matchesCredentialSnapshot
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -79,17 +80,11 @@ class CodeAssistProjectResolver(
 
     private class Export(val account: OAuthAccountRecord, val egress: String, val project: String?, val tier: String?)
 
-    private fun sameSnapshot(first: OAuthAccountRecord, second: OAuthAccountRecord): Boolean =
-        first.id == second.id && first.provider == second.provider && first.authState == second.authState &&
-            first.authorizedAt == second.authorizedAt &&
-            first.refreshTokenCiphertext == second.refreshTokenCiphertext &&
-            first.refreshTokenNonce == second.refreshTokenNonce &&
-            first.refreshTokenKeyVersion == second.refreshTokenKeyVersion &&
-            first.accessTokenCiphertext == second.accessTokenCiphertext &&
-            first.accessTokenNonce == second.accessTokenNonce &&
-            first.accessTokenKeyVersion == second.accessTokenKeyVersion &&
-            first.accessTokenExpiresAt == second.accessTokenExpiresAt && first.tokenType == second.tokenType &&
-            first.scope == second.scope && first.proxyUrl == second.proxyUrl
+    private fun credentialReplaced() = OAuthTokenUnavailableException(
+        OAuthUnavailableReason.REFRESH_FAILED,
+        "订阅账号凭据已被替换，请重试",
+        "credential_replaced",
+    )
 
     /**
      * 缓存键 = 账号 + 出口。代理地址（或允许主机白名单）一变，键就变，旧缓存立即失效；
@@ -118,7 +113,7 @@ class CodeAssistProjectResolver(
         preparation: DiagnosticPreparationDeadline.Budget?,
     ): Context {
         val proxyKey = egressKey(proxy)
-        val export = negotiated[account.id]?.takeIf { sameSnapshot(it.account, account) }
+        val export = negotiated[account.id]?.takeIf { it.account.matchesCredentialSnapshot(account) }
         val cached = databaseStep(preparation) { accounts.upstreamContext(account.id) }
         // The memory and DB records must agree before the DB value can be treated as a fast-path hit.
         // A diagnostic write can commit and then time out during cleanup before memory publication.
@@ -161,22 +156,16 @@ class CodeAssistProjectResolver(
         tierReported: Boolean = tier != null,
         preparation: DiagnosticPreparationDeadline.Budget? = null,
     ): Context? {
-        val previous = negotiated[account.id]?.takeIf { sameSnapshot(it.account, account) }
+        val previous = negotiated[account.id]?.takeIf { it.account.matchesCredentialSnapshot(account) }
         val merged = if (tierReported) tier else previous?.takeIf { it.egress == egress }?.tier
         val saved = databaseStep(preparation) {
             accounts.saveUpstreamContextIfSnapshotMatches(account, project, merged, now())
         }
         if (!saved) {
             negotiated[account.id]?.let { current ->
-                if (sameSnapshot(current.account, account)) negotiated.remove(account.id, current)
+                if (current.account.matchesCredentialSnapshot(account)) negotiated.remove(account.id, current)
             }
-            if (preparation != null) {
-                throw OAuthTokenUnavailableException(
-                    OAuthUnavailableReason.REFRESH_FAILED,
-                    "订阅账号凭据已被替换，请重试",
-                    "credential_replaced",
-                )
-            }
+            if (preparation != null) throw credentialReplaced()
             return null
         }
         negotiated[account.id] = Export(account, egress, project, merged)
@@ -214,23 +203,16 @@ class CodeAssistProjectResolver(
      * 管理面刷新模型依赖这三项，不应自己访问 oauth_accounts 表拼装。
      */
     suspend fun probe(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Probe {
-            val loaded = loadCodeAssist(account.id, accessToken, proxy)
-            val project = loaded.project ?: attempt(account.id, "onboardUser") {
-                onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
-            }
-            return if (project == null) {
-                Probe(null, loaded.tier, loaded.allowedTiers, loaded.paidTier)
-            } else {
-                val context = recordContext(
-                    account,
-                    egressKey(proxy),
-                    project,
-                    loaded.catalogTier(),
-                    loaded.reportsTier(),
-                )
-                Probe(context?.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
-            }
+        val loaded = loadCodeAssist(account.id, accessToken, proxy)
+        val project = loaded.project ?: attempt(account.id, "onboardUser") {
+            onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
+        if (project == null) return Probe(null, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+
+        val context = recordContext(account, egressKey(proxy), project, loaded.catalogTier(), loaded.reportsTier())
+            ?: throw credentialReplaced()
+        return Probe(context.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+    }
 
     private suspend fun loadCodeAssist(accountId: String, accessToken: String, proxy: InetSocketAddress?): Loaded {
         val text = call(loadBaseUrl + "/v1internal:loadCodeAssist", accessToken, LOAD_BODY, proxy)

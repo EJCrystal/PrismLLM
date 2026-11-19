@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Tag
 import java.lang.reflect.Proxy
 import java.sql.Connection
 import java.sql.ResultSet
+import java.sql.SQLException
 import java.sql.Statement
 import java.util.Base64
 import java.util.concurrent.ArrayBlockingQueue
@@ -282,20 +283,32 @@ class DiagnosticPreparationDeadlineTest {
         assertEquals(0, successful.discards.get())
 
         val timedOut = StatementJdbc(blockRead = true)
+        val workerFinished = CountDownLatch(1)
         val waiter = async(Dispatchers.Default) {
-            DiagnosticPreparationDeadline.withinSynchronous(5_000) {
-                DiagnosticPreparationDeadline.diagnosticConnection(timedOut.connection) { timedOut.discards.incrementAndGet() }.use { connection ->
-                    connection.createStatement().use { statement ->
-                        statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+            DiagnosticPreparationDeadline.withinSynchronousAndDrain(5_000) {
+                try {
+                    DiagnosticPreparationDeadline.diagnosticConnection(timedOut.connection) { timedOut.discards.incrementAndGet() }.use { connection ->
+                        connection.createStatement().use { statement ->
+                            statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+                        }
                     }
+                } finally {
+                    workerFinished.countDown()
                 }
             }
         }
         try {
             assertSignalled(timedOut.readEntered, "SELECT result read should block in the fake driver")
             assertTrue(timedOut.timeoutAtRead.get() in 1..5_000, "remaining budget must be applied before result reads")
+            assertEquals(1L, timedOut.allowRead.count, "the result read must wait for the test to release it")
+            assertEquals(1L, workerFinished.count, "the JDBC worker must still be running before the read is released")
+            assertEquals(0, timedOut.closes.get(), "the blocked read still owns the lease")
+            assertEquals(0, timedOut.aborts.get(), "the blocked read must not be aborted by another thread")
+            assertEquals(0, timedOut.discards.get(), "the lease must not be evicted before the read fails")
+
             timedOut.allowRead.countDown()
-            assertNull(waiter.await(), "driver timeout should be reported as a diagnostic timeout")
+            assertNull(withTimeout(3_000) { waiter.await() }, "driver timeout should be reported as a diagnostic timeout")
+            assertEquals(0L, workerFinished.count, "the JDBC worker should have finished cleanup")
             assertEquals(1, timedOut.aborts.get(), "a timed-out socket must not be reused")
             assertEquals(1, timedOut.discards.get(), "a timed-out diagnostic lease must be evicted")
             assertEquals(1, timedOut.closes.get())
@@ -304,6 +317,48 @@ class DiagnosticPreparationDeadlineTest {
             waiter.cancel()
             withContext(Dispatchers.IO) { waiter.join() }
         }
+    }
+
+    @Test
+    fun `PostgreSQL query cancellation times out without evicting the lease`() = runBlocking {
+        val jdbc = StatementJdbc(blockRead = false, executeFailure = SQLException("simulated query cancellation", "57014"))
+        val result = DiagnosticPreparationDeadline.withinSynchronousAndDrain(5_000) {
+            DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use { connection ->
+                try {
+                    connection.createStatement().use { statement ->
+                        statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+                    }
+                } catch (cause: SQLException) {
+                    connection.rollback()
+                    throw cause
+                }
+            }
+        }
+
+        assertNull(result, "SQLSTATE 57014 should be reported as a diagnostic timeout")
+        assertEquals(1, jdbc.rollbacks.get(), "the canceled transaction still needs rollback")
+        assertTrue(jdbc.timeoutAtRollback.get() in 1..1_000, "rollback must use a bounded cleanup timeout")
+        assertEquals(0, jdbc.aborts.get())
+        assertEquals(0, jdbc.discards.get())
+        assertEquals(1, jdbc.closes.get())
+        assertEquals(jdbc.originalTimeout, jdbc.timeoutAtClose.get(), "normal close must restore the prior timeout before pool return")
+    }
+
+    @Test
+    fun `PostgreSQL connection failure still times out and evicts the lease`() = runBlocking {
+        val jdbc = StatementJdbc(blockRead = false, executeFailure = SQLException("simulated connection failure", "08006"))
+        val result = DiagnosticPreparationDeadline.withinSynchronousAndDrain(5_000) {
+            DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+                }
+            }
+        }
+
+        assertNull(result, "SQLSTATE 08006 should be reported as a diagnostic timeout")
+        assertEquals(1, jdbc.aborts.get())
+        assertEquals(1, jdbc.discards.get())
+        assertEquals(1, jdbc.closes.get())
     }
 
     @Test
@@ -377,16 +432,19 @@ class DiagnosticPreparationDeadlineTest {
         }
     }
 
-    private inner class StatementJdbc(blockRead: Boolean) {
+    private inner class StatementJdbc(blockRead: Boolean, private val executeFailure: SQLException? = null) {
         val originalTimeout = 9_000
         val networkTimeout = AtomicInteger(originalTimeout)
         val timeoutAtExecute = AtomicInteger()
         val timeoutAtRead = AtomicInteger()
+        val timeoutAtRollback = AtomicInteger()
+        val timeoutAtClose = AtomicInteger()
+        val rollbacks = AtomicInteger()
         val aborts = AtomicInteger()
         val discards = AtomicInteger()
         val closes = AtomicInteger()
         val readEntered = CountDownLatch(1)
-        val allowRead = CountDownLatch(if (blockRead) 0 else 1)
+        val allowRead = CountDownLatch(if (blockRead) 1 else 0)
         private val blockedRead = blockRead
 
         val connection: Connection = Proxy.newProxyInstance(
@@ -397,8 +455,17 @@ class DiagnosticPreparationDeadlineTest {
                 "getNetworkTimeout" -> networkTimeout.get()
                 "setNetworkTimeout" -> { networkTimeout.set(args!![1] as Int); null }
                 "createStatement" -> statementProxy()
+                "rollback" -> {
+                    timeoutAtRollback.set(networkTimeout.get())
+                    rollbacks.incrementAndGet()
+                    null
+                }
                 "abort" -> { aborts.incrementAndGet(); null }
-                "close" -> { closes.incrementAndGet(); null }
+                "close" -> {
+                    timeoutAtClose.set(networkTimeout.get())
+                    closes.incrementAndGet()
+                    null
+                }
                 "isClosed" -> closes.get() != 0
                 "equals" -> proxy === args?.get(0)
                 "hashCode" -> System.identityHashCode(proxy)
@@ -414,6 +481,7 @@ class DiagnosticPreparationDeadlineTest {
             when (method.name) {
                 "executeQuery" -> {
                     timeoutAtExecute.set(networkTimeout.get())
+                    executeFailure?.let { throw it }
                     resultSetProxy()
                 }
                 "close" -> null

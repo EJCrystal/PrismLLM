@@ -239,6 +239,31 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun tokenSnapshotStaysPairedWithItsTokenAfterRefreshAndAdminReplacement() = runBlocking {
+        val id = createAccount("snapshot-original", accountEmail = email("snapshot"))
+        val original = accounts.find(id)!!
+        val service = service()
+        try {
+            val acquired = assertNotNull(service.accessTokenWithSnapshot(id))
+            assertEquals("at-1", acquired.token.accessToken)
+            assertEquals("at-1", cipher.decrypt(acquired.account.accessTokenCiphertext!!, acquired.account.accessTokenNonce!!))
+            assertTrue(acquired.account.refreshTokenCiphertext != original.refreshTokenCiphertext)
+            accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                provider = acquired.account.provider,
+                refreshToken = cipher.encrypt("admin-replacement-refresh"),
+                accessToken = cipher.encrypt("admin-replacement-access"),
+                accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000,
+            ))
+            val changed = accounts.find(id)!!
+            assertFalse(acquired.account.matchesCredentialSnapshot(changed))
+            assertEquals("at-1", acquired.token.accessToken)
+            assertEquals("at-1", cipher.decrypt(acquired.account.accessTokenCiphertext!!, acquired.account.accessTokenNonce!!))
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
     fun refreshesCachesAndPersistsRotatedRefreshToken() = runBlocking {
         val keyId = createAccount("rt-1", accountEmail = email("cache"), accountPlan = "free")
         val service = service()
@@ -636,6 +661,79 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun cancelledForcedWaiterCannotAuthorizeAnOrdinaryExchangeAfterPermitWait() = runBlocking {
+        val accountId = createAccount("force-eligibility", accountEmail = email("force-eligibility"))
+        accounts.recordFailure(accountId, "invalid_grant", terminal = true)
+        val providerCalls = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                providerCalls.incrementAndGet()
+                return OAuthTokenResponse("must-not-be-used")
+            }
+        })
+        val field = OAuthTokenService::class.java.getDeclaredField("refreshPermits").apply { isAccessible = true }
+        val permits = field.get(service) as kotlinx.coroutines.sync.Semaphore
+        repeat(4) { permits.acquire() }
+        val ordinarySnapshot = accounts.find(accountId)!!
+        val forced = async(start = CoroutineStart.UNDISPATCHED) { service.refreshNow(accountId) }
+        val ordinary = async(start = CoroutineStart.UNDISPATCHED) { runCatching { service.accessToken(accountId) } }
+        try {
+            withTimeout(5_000) {
+                // The account mutex is released only after this task leaves its active permit wait.
+                while (!accountMutex(service, accountId).isLocked) delay(1)
+            }
+            forced.cancelAndJoin()
+            repeat(4) { permits.release() }
+            val failure = withTimeout(5_000) { ordinary.await() }.exceptionOrNull()
+            assertEquals(OAuthUnavailableReason.REAUTH_REQUIRED, assertIs<OAuthTokenUnavailableException>(failure).reason)
+            assertEquals(0, providerCalls.get())
+            assertEquals(ordinarySnapshot.refreshTokenCiphertext, accounts.find(accountId)!!.refreshTokenCiphertext)
+        } finally {
+            while (permits.availablePermits < 4) permits.release()
+            forced.cancelAndJoin()
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun accountsWithTheSameFormerStripeDoNotBlockEachOthersPersistence() = runBlocking {
+        val calls = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        })
+        val firstId = createAccount("same-stripe-first", accountEmail = email("same-stripe-first"))
+        val oldStripe = (firstId.hashCode() and Int.MAX_VALUE) % 64
+        var secondId: String
+        do { secondId = createAccount("same-stripe-second", accountEmail = email("same-stripe-second")) }
+        while ((secondId.hashCode() and Int.MAX_VALUE) % 64 != oldStripe)
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+            lock.autoCommit = false
+            try {
+                lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                    statement.setString(1, firstId)
+                    statement.executeQuery().use { assertTrue(it.next()) }
+                }
+                val pid = lock.createStatement().use { it.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) } }
+                val first = async(Dispatchers.IO) { service.accessToken(firstId) }
+                awaitBlockedAccountSave(pid)
+                val second = withTimeout(5_000) { service.accessToken(secondId) }
+                assertEquals("access-same-stripe-second", second!!.accessToken)
+                assertEquals(2, calls.get())
+                lock.rollback()
+                assertNotNull(withTimeout(5_000) { first.await() })
+            } finally {
+                lock.rollback()
+            }
+        }
+        assertTrue(service.drainRefreshes())
+    }
+
+    @Test
     fun diagnosticAcceptsOnlyServiceRecordedNormalRotationNotAdminAccessOrProxyChanges() = runBlocking {
         val keyId = createAccount("rt-normal-rotation", accountEmail = email("normal-rotation"))
         val clock = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
@@ -886,7 +984,7 @@ class OAuthTokenServiceTest {
         val terminalId = createAccount("rt-terminal-scan", accountEmail = email("reauth"))
         accounts.recordFailure(terminalId, "invalid_grant", terminal = true)
 
-        val due = accounts.listDueForRefresh(System.currentTimeMillis() + 900_000)
+        val due = accounts.listDueForRefresh(System.currentTimeMillis() + 900_000, limit = 1_000)
         assertTrue(due.any { it.id == dueId })
         assertFalse(due.any { it.id == terminalId })
     }
@@ -928,10 +1026,8 @@ class OAuthTokenServiceTest {
     }
 
     private fun accountMutex(service: OAuthTokenService, accountId: String): kotlinx.coroutines.sync.Mutex {
-        val field = OAuthTokenService::class.java.getDeclaredField("locks").apply { isAccessible = true }
-        @Suppress("UNCHECKED_CAST")
-        val locks = field.get(service) as Array<kotlinx.coroutines.sync.Mutex>
-        return locks[(accountId.hashCode() and Int.MAX_VALUE) % locks.size]
+        val method = OAuthTokenService::class.java.getDeclaredMethod("lockFor", String::class.java).apply { isAccessible = true }
+        return method.invoke(service, accountId) as kotlinx.coroutines.sync.Mutex
     }
 
     private fun serviceWithProvider(provider: OAuthTokenProvider): OAuthTokenService = OAuthTokenService(

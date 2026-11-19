@@ -173,10 +173,9 @@ internal class DiagnosticPreparationDeadline private constructor(
             return Budget(timeoutMs, nanoTime)
         }
 
-        private fun isTimeoutFailure(cause: Throwable): Boolean = generateSequence(cause) { it.cause }.any {
-            it is java.net.SocketTimeoutException || it is java.sql.SQLTimeoutException ||
-                (it is SQLException && (it.sqlState == "57014" || it.sqlState?.startsWith("08") == true))
-        }
+        // A canceled query can leave a usable connection; only transport/connection failures require eviction.
+        private fun invalidConnection(cause: Throwable): Boolean =
+            cause is java.net.SocketTimeoutException || (cause is SQLException && cause.sqlState?.startsWith("08") == true)
 
         private fun wrapJdbcValue(
             value: Any?,
@@ -211,7 +210,7 @@ internal class DiagnosticPreparationDeadline private constructor(
                     val result = invoke(value, method, args)
                     if (method.name == "unwrap") result else wrapJdbcValue(result, setRemainingNetworkTimeout, poison)
                 } catch (cause: Throwable) {
-                    if (isTimeoutFailure(cause)) poison(cause)
+                    if (generateSequence(cause) { it.cause }.any(::invalidConnection)) poison(cause)
                     throw cause
                 }
             }
@@ -397,10 +396,10 @@ internal class DiagnosticPreparationDeadline private constructor(
 
         fun deadlineExceeded(): RuntimeException = Expired()
 
-        /** Recognize PostgreSQL query cancellation without exposing SQL or driver messages. */
+        /** A diagnostic timeout does not necessarily invalidate the checked-out connection. */
         fun isTimeout(cause: Throwable): Boolean = generateSequence(cause) { it.cause }.any {
-            it is Expired || it is java.net.SocketTimeoutException || it is java.sql.SQLTimeoutException ||
-                (it is SQLException && (it.sqlState == "57014" || it.sqlState?.startsWith("08") == true))
+            it is Expired || it is java.sql.SQLTimeoutException ||
+                (it is SQLException && it.sqlState == "57014") || invalidConnection(it)
         }
 
         suspend fun <T : Any> within(timeoutMs: Long, prepare: suspend () -> T): T? =

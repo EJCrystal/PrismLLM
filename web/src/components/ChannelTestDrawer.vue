@@ -59,6 +59,10 @@ const activeKey = computed(() => {
 /** 记录页每次重新进入都重读，保证刚跑完的检测立刻出现。 */
 const recordsKey = ref(0)
 const recordTarget = ref<{ type: 'iq' | 'fingerprint'; id: number } | null>(null)
+function preserveTabOnInteraction() {
+  // 后续刷新可能主动恢复焦点；只有首次发现完成前的交互会阻止默认切换。
+  if (!initialized) userSelectedTab = true
+}
 function selectTab(id: string) {
   userSelectedTab = true
   if (id === activeTab.value) return
@@ -189,7 +193,8 @@ onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort()
   <Modal :title="`模型测试 · ${channel.name}`" eyebrow="检测" full :body-scrollable="activeTab === 'records'" @close="emit('close')">
     <template #title-extra><span class="badge channel-test-status" :class="channel.enabled ? 'success' : 'neutral'" :aria-label="channel.enabled ? '渠道路由已启用' : '渠道路由已停用，仍可手动测试'">{{ channel.enabled ? '启用中' : '已停用' }}</span></template>
     <template #subhead>
-      <div ref="tabList" class="channel-test-tabs" role="tablist" aria-label="模型测试方式">
+      <div ref="tabList" class="channel-test-tabs" role="tablist" aria-label="模型测试方式"
+        @focusin="preserveTabOnInteraction" @pointerdown="preserveTabOnInteraction">
         <button v-for="(tab, index) in tabs" :key="tab.id" :id="`${tabId}-${tab.id}`" type="button" role="tab" class="channel-test-tab"
           :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`${tabId}-panel`"
           :tabindex="activeTab === tab.id ? 0 : -1" @click="selectTab(tab.id)" @keydown="navigateTabs($event, index)"><Icon :name="tab.icon" :size="17" /><span>{{ tab.label }}</span></button>
@@ -198,7 +203,9 @@ onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort()
       <p v-else-if="invalidContributions.size" class="channel-test-plugin-note" role="status">此生效版本的诊断入口已不可用。可手动重新检查入口状态。<button type="button" class="link-button" @click="refresh">重新检查</button></p>
       <p v-else-if="initialized && !availableContributions.length" class="channel-test-plugin-note">没有已生效的渠道诊断插件，可在「插件」页检查。智商、指纹与记录仍可使用。</p>
     </template>
-    <section :id="`${tabId}-panel`" ref="tabPanel" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0">
+    <section :id="`${tabId}-panel`" ref="tabPanel" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0"
+      @focusin="preserveTabOnInteraction" @pointerdown.capture="preserveTabOnInteraction" @keydown.capture="preserveTabOnInteraction"
+      @input="preserveTabOnInteraction" @change="preserveTabOnInteraction" @click.capture="preserveTabOnInteraction">
       <TestRecordsView v-if="activeTab === 'records'" :key="'records-' + recordsKey" :channel-id="channel.id" :initial-record="recordTarget" @record-opened="recordTarget = null" />
       <KeepAlive :max="8"><component v-if="activeComponent" :is="activeComponent" :key="activeKey" v-bind="activeProps" @open-record="openRecord" @unavailable="markUnavailable" /></KeepAlive>
     </section>

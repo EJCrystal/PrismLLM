@@ -84,7 +84,7 @@ class PluginRuntime(
         mutex.withLock {
             checkOpen()
             if (initialized) return
-            val pending = ArrayList<LoadedPlugin>()
+            val pending = LinkedHashMap<String, LoadedPlugin>()
             var published = false
             try {
                 if (bootstrapId != null && store.find(bootstrapId) == null) {
@@ -135,7 +135,13 @@ class PluginRuntime(
                                     } catch (_: Exception) {
                                         throw PluginHostException("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
                                     }
-                                    val configuration = PluginValidation.installationConfiguration(acceptedPackage.item.manifest.configuration, values)
+                                    val fields = acceptedPackage.item.manifest.configuration
+                                    val configuration = try {
+                                        val retained = PluginValidation.installationConfiguration(fields, values)
+                                        PluginValidation.configuration(fields, retained)
+                                    } catch (error: PluginHostException) {
+                                        throw BootstrapCandidateConfigurationFailure(error)
+                                    }
                                     checkOpen()
                                     val proposed = PluginInstallation(
                                         id = bootstrapId, version = acceptedPackage.item.manifest.version, sha256 = acceptedPackage.item.sha256,
@@ -149,30 +155,24 @@ class PluginRuntime(
                                 val wonInsert = createdInstallation === installation
                                 val matchesCandidate = installation.version == acceptedPackage.item.manifest.version &&
                                     installation.sha256.equals(acceptedPackage.item.sha256, ignoreCase = true)
-                                if (wonInsert && matchesCandidate) metadata[Selection(installation)] = acceptedPackage
-                                if (wonInsert && matchesCandidate && installation.installed && installation.desiredEnabled) {
-                                    try {
-                                        PluginValidation.grants(acceptedPackage.item.manifest, installation.approvedPermissions)
-                                        loaded!!.configuration = configuration(acceptedPackage, installation.configuration)
-                                        pending.add(loaded!!)
+                                if (wonInsert && matchesCandidate) {
+                                    metadata[Selection(installation)] = acceptedPackage
+                                    if (installation.installed && installation.desiredEnabled) {
+                                        val accepted = checkNotNull(loaded)
+                                        accepted.configuration = installation.configuration
+                                        pending[installation.id] = accepted
                                         loaded = null
-                                    } catch (error: PluginHostException) {
-                                        loadErrors[Selection(installation)] = error.message ?: "Installed package could not be loaded"
                                     }
-                                }
-                                loaded?.let(::dispose)
-                                loaded = null
-                                if (!wonInsert) {
-                                    bootstrapErrors.remove(bootstrapId)
-                                    resolved = true
-                                    break
                                 }
                                 bootstrapErrors.remove(bootstrapId)
                                 resolved = true
                                 break
-                            } catch (error: Throwable) {
+                            } catch (error: BootstrapCandidateConfigurationFailure) {
+                                if (firstCandidateFailure == null) firstCandidateFailure = catalog.bootstrapFailure(
+                                    PluginHostException("PLUGIN_INVALID_CONFIGURATION", error.validation.message ?: "Invalid plugin configuration"),
+                                )
+                            } finally {
                                 loaded?.let(::dispose)
-                                throw error
                             }
                         }
                         if (!resolved) throw firstCandidateFailure ?: PluginHostException(
@@ -186,14 +186,18 @@ class PluginRuntime(
                 }
                 for (installation in store.list().sortedBy { it.id }) {
                     checkOpen()
-                    if (!installation.installed || !installation.desiredEnabled) continue
-                    if (pending.any { sameSelection(installation, it) }) continue
+                    val enabled = installation.installed && installation.desiredEnabled
+                    val previous = pending[installation.id]
+                    if (enabled && previous != null && sameSelection(installation, previous)) continue
+                    // The listed decision supersedes an unpublished owner, even if it disables loading.
+                    pending.remove(installation.id)?.let(::dispose)
+                    if (!enabled) continue
                     val selection = Selection(installation)
                     try {
                         val staged = packageFor(installation)
                         val grants = PluginValidation.grants(staged.item.manifest, installation.approvedPermissions).toSet()
                         val configuration = configuration(staged, installation.configuration)
-                        pending.add(load(staged, grants, configuration))
+                        pending[installation.id] = load(staged, grants, configuration)
                     } catch (error: PluginHostException) {
                         loadErrors[selection] = error.message ?: "Plugin could not be loaded"
                     }
@@ -201,13 +205,13 @@ class PluginRuntime(
                 currentCoroutineContext().ensureActive()
                 synchronized(lifecycleLock) {
                     checkOpen()
-                    pending.forEach { active[it.staged.item.manifest.id] = it }
+                    active.putAll(pending)
                     initialized = true
                     published = true
                 }
             } finally {
                 // Until atomic publication, initialization owns every returned provider/loader.
-                if (!published) pending.forEach(::dispose)
+                if (!published) pending.values.forEach(::dispose)
             }
         }
     }
@@ -744,6 +748,9 @@ class PluginRuntime(
 
     private fun now(previous: PluginInstallation?): Long = maxOf(System.currentTimeMillis(), (previous?.updatedAt ?: 0).let { if (it == Long.MAX_VALUE) it else it + 1 })
     private fun elapsed(started: Long): Long = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started).coerceAtLeast(0)
+
+    // Distinguish candidate validation in getOrCreate from legacy-read or store failures.
+    private class BootstrapCandidateConfigurationFailure(val validation: PluginHostException) : RuntimeException(validation)
 
     private data class Selection(val id: String, val version: String, val sha256: String) {
         constructor(installation: PluginInstallation) : this(installation.id, installation.version, installation.sha256.lowercase())

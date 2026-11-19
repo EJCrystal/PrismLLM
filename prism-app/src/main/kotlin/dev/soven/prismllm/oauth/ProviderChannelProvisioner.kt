@@ -38,6 +38,16 @@ data class ProviderModelMappings(
 
 class ModelMappingRevisionChangedException : RuntimeException("共享模型映射已变化，请刷新后再保存")
 
+/** Compare credentials and egress, not mutable catalog/authorization settings such as model grants. */
+internal fun OAuthAccountRecord.matchesCredentialSnapshot(other: OAuthAccountRecord): Boolean =
+    id == other.id && provider == other.provider && authState == other.authState &&
+        authorizedAt == other.authorizedAt && proxyUrl == other.proxyUrl &&
+        refreshTokenCiphertext == other.refreshTokenCiphertext && refreshTokenNonce == other.refreshTokenNonce &&
+        refreshTokenKeyVersion == other.refreshTokenKeyVersion &&
+        accessTokenCiphertext == other.accessTokenCiphertext && accessTokenNonce == other.accessTokenNonce &&
+        accessTokenKeyVersion == other.accessTokenKeyVersion && accessTokenExpiresAt == other.accessTokenExpiresAt &&
+        tokenType == other.tokenType && scope == other.scope
+
 /**
  * 每个 provider 共用模型映射，账号目录与授权仍然独立。
  * 所有共享写入在一个显式事务内先锁 channel 父行、再锁 account；不依赖进程 Mutex，
@@ -117,10 +127,13 @@ class ProviderChannelProvisioner(
     suspend fun syncModelCatalog(
         accountId: String,
         catalog: List<OAuthAccountModelCatalogEntry>,
+        expectedAccount: OAuthAccountRecord? = null,
     ): Boolean = channels.inTransaction {
         val existing = accounts.findDetailedInTransaction(accountId) ?: return@inTransaction false
         val channel = channels.ensureProviderChannelInTransaction(existing.provider) ?: return@inTransaction false
         val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction false
+        // Discard a fetched catalog before it can overwrite the directory or prune the current grants.
+        if (expectedAccount != null && !expectedAccount.matchesCredentialSnapshot(current)) return@inTransaction false
         val oldDefaults = automaticDefaults(accounts.listProviderInTransaction(current.provider))
         if (!accounts.saveModelCatalogInTransaction(accountId, catalog)) return@inTransaction false
         val saved = requireNotNull(accounts.findDetailedInTransaction(accountId))
