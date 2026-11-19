@@ -233,6 +233,105 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `responses rate limit before output fails over before committing stream`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "responses-rate-limit-retry"
+            createChannel(modelId, "${fake.baseUrl}/responses-rate-limit/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val primary = app.channelRepository.list().single { it.name == "1-$modelId" }
+            val requestId = UUID.randomUUID().toString()
+            val requestCount = fake.requests.size
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("response.completed"), body)
+            assertFalse(body.contains("rate_limit_exceeded"), body)
+            assertEquals(requestCount + 2, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(2, log.upstreamAttempts)
+            assertEquals(2, log.attempts.size)
+            val failed = log.attempts.first()
+            assertEquals(primary.id, failed.channelId)
+            assertEquals(200, failed.statusCode)
+            assertEquals(429, failed.upstreamErrorStatusCode)
+            assertEquals("rate_limit_exceeded", failed.upstreamErrorCode)
+            assertEquals("upstream_error", failed.errorCode)
+            assertTrue(failed.retryable)
+            assertFalse(failed.committed)
+            assertNull(failed.firstTokenMs)
+            assertEquals("Upstream rate limit exceeded Bearer [REDACTED] sk-[REDACTED]", failed.errorMessage)
+            assertFalse(failed.errorMessage!!.contains("abc.def.ghi"))
+            assertFalse(failed.errorMessage!!.contains("sk-1234567890abcdef"))
+            assertTrue(app.candidateCooldown.isBlocked(primary.id, primary.keys.single().id, modelId))
+            val cooldownRemainingMs =
+                app.candidateCooldown.cooldownUntil(primary.id, primary.keys.single().id, modelId)!! - System.currentTimeMillis()
+            assertTrue(cooldownRemainingMs in 45_000L..55_000L, "cooldownRemainingMs=$cooldownRemainingMs")
+            val succeeded = log.attempts.last()
+            assertEquals(200, succeeded.statusCode)
+            assertNull(succeeded.upstreamErrorStatusCode)
+            assertNull(succeeded.errorCode)
+            assertTrue(succeeded.committed)
+            assertTrue(app.candidateCooldown.isBlocked(primary.id, primary.keys.single().id, modelId))
+        }
+    }
+
+    @Test
+    fun `responses rate limit with no fallback returns 429 before committing stream`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "responses-rate-limit-exhausted"
+            createChannel(modelId, "${fake.baseUrl}/responses-rate-limit-error/v1", protocol = GatewayProtocol.RESPONSES)
+            val requestId = UUID.randomUUID().toString()
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+            assertTrue(body.contains("rate_limit_exceeded"), body)
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(HttpStatusCode.TooManyRequests.value, log.statusCode)
+            assertEquals(1, log.upstreamAttempts)
+            val failed = log.attempts.single()
+            assertEquals(200, failed.statusCode)
+            assertEquals(429, failed.upstreamErrorStatusCode)
+            assertEquals("rate_limit_exceeded", failed.upstreamErrorCode)
+            assertTrue(failed.retryable)
+            assertFalse(failed.committed)
+            assertNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
+    fun `responses rate limit after output is not retried`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "responses-rate-limit-after-output"
+            createChannel(modelId, "${fake.baseUrl}/responses-rate-limit-after-output/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val requestId = UUID.randomUUID().toString()
+            val requestCount = fake.requests.size
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("Hel"), body)
+            assertTrue(body.contains("response.failed"), body)
+            assertEquals(requestCount + 1, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(1, log.upstreamAttempts)
+            val failed = log.attempts.single()
+            assertEquals("responses_failed", failed.errorCode)
+            assertTrue(failed.committed)
+            assertFalse(failed.retryable)
+        }
+    }
+
+    @Test
     fun `stream errors retain HTTP and error status when retrying successfully`() = runBlocking {
         testApplication {
             application { app.install(this) }

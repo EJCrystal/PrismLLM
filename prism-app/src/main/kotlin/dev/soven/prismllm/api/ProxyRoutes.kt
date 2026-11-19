@@ -1549,6 +1549,16 @@ private suspend fun proxyStream(
                             val next = readProtocolLine(upstream, maxLineBytes, envelope) ?: break
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
+                            if (upstreamProtocol == GatewayProtocol.RESPONSES) {
+                                responsesStreamRateLimitException(
+                                    next,
+                                    retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                                )?.let { error ->
+                                    state.streamError = error
+                                    upstream.cancel(error)
+                                    throw error
+                                }
+                            }
                             if (
                                 allowUpstreamErrorFailover &&
                                 ((upstreamProtocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
@@ -2309,6 +2319,41 @@ private fun anthropicStreamException(line: String): GatewayError {
     }
     return upstreamException(status, payload, retryAfterMs = null, protocol = GatewayProtocol.MESSAGES)
 }
+
+private fun responsesStreamRateLimitException(line: String, retryAfterMs: Long?): GatewayError? {
+    val payload = ssePayload(line) ?: return null
+    val root = runCatching { Json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return null
+    val eventType = (root["type"] as? JsonPrimitive)?.contentOrNull
+    val error = when (eventType) {
+        "response.failed" -> ((root["response"] as? JsonObject)?.get("error") as? JsonObject)
+        "error" -> (root["error"] as? JsonObject) ?: root
+        else -> null
+    } ?: return null
+    val code = (error["code"] as? JsonPrimitive)?.contentOrNull
+    val type = (error["type"] as? JsonPrimitive)?.contentOrNull
+    val rateLimitCode = sequenceOf(code, type)
+        .filterNotNull()
+        .firstOrNull { it.lowercase() in RESPONSES_RATE_LIMIT_CODES }
+        ?: return null
+
+    val retryAfter = retryAfterMs ?: parseRateLimitResetMs(error.toString())
+    val message = sanitizeUpstreamErrorBody(
+        (error["message"] as? JsonPrimitive)?.contentOrNull,
+    ) ?: "上游限流"
+    return GatewayError(
+        status = HttpStatusCode.TooManyRequests,
+        code = "upstream_error",
+        message = message,
+        type = "api_error",
+        upstreamCode = rateLimitCode,
+        retryable = true,
+        retryAfterMs = retryAfter,
+        upstreamStatus = HttpStatusCode.TooManyRequests.value,
+        upstreamErrorBody = extractResponsesDiagnosticPayload(payload),
+    )
+}
+
+private val RESPONSES_RATE_LIMIT_CODES = setOf("rate_limit_exceeded", "rate_limit_error")
 
 private fun isFirstResponsesToken(line: String): Boolean {
     val payload = ssePayload(line) ?: return false
