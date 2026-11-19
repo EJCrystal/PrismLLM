@@ -136,7 +136,7 @@ class KeyDisableRulesTest {
     @Test
     fun `upstream code participates in text matching`() {
         val policy = KeyDisablePolicy(
-            rules = listOf(rule(statusCodes = listOf(403), bodyPatterns = listOf("billing[_-]?error"), threshold = 1)),
+            rules = listOf(rule(statusCodes = listOf(403), bodyPatterns = listOf("billing[\\s_-]*error"), threshold = 1)),
         )
         val hit = assertNotNull(
             policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "billing_error"), now).decision,
@@ -159,6 +159,46 @@ class KeyDisableRulesTest {
         assertEquals("insufficient_balance", decision.ruleId)
         assertEquals(KeyDisableAction.PERMANENT, decision.action)
         assertEquals(1, decision.count)
+    }
+
+    @Test
+    fun `anchored patterns match body and upstream code independently`() {
+        val policy = KeyDisablePolicy(
+            rules = listOf(rule(statusCodes = listOf(403), bodyPatterns = listOf("^ACTIVITY_DISABLED$"), threshold = 1)),
+        )
+        assertNotNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "ACTIVITY_DISABLED"), now).decision,
+        )
+        assertNotNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "ACTIVITY_DISABLED"), now).decision,
+        )
+        assertNotNull(
+            policy.record(
+                KeyHealthState(),
+                KeyAttemptSignal.UpstreamResponse(403, "ACTIVITY_DISABLED", "ACTIVITY_DISABLED"),
+                now,
+            ).decision,
+        )
+    }
+
+    @Test
+    fun `default billing rule accepts space hyphen and underscore separators`() {
+        val policy = KeyDisablePolicy()
+        for (body in listOf(
+            "billing error",
+            "billing-error",
+            "billing_error",
+            "insufficient balance",
+            "insufficient-quota",
+            "payment required",
+        )) {
+            val decision = assertNotNull(
+                policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(402, body), now).decision,
+                "expected $body to disable the key",
+            )
+            assertEquals("insufficient_balance", decision.ruleId, body)
+            assertEquals(KeyDisableAction.PERMANENT, decision.action, body)
+        }
     }
 
     @Test

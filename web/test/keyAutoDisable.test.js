@@ -37,9 +37,9 @@ describe('密钥自动禁用规则', () => {
     assert.equal(normalized.rules[0].action, 'PERMANENT')
     assert.deepEqual(normalized.rules[0].bodyPatterns, [
       'INSUFFICIENT_BALANCE',
-      'billing[_-]?error',
-      'insufficient[_-]?(balance|quota|credit|funds)',
-      'payment[_-]?required',
+      'billing[\\s_-]*error',
+      'insufficient[\\s_-]*(balance|quota|credit|funds)',
+      'payment[\\s_-]*required',
       '余额不足',
       '欠费',
       '请充值',

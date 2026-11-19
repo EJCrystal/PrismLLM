@@ -151,18 +151,16 @@ data class KeyDisableRule(
         is KeyAttemptSignal.UpstreamResponse -> {
             val codeMatched = signal.statusCode in statusCodes ||
                 (statusCodeAtLeast != null && signal.statusCode >= statusCodeAtLeast)
-            val text = listOfNotNull(
-                signal.errorBody.takeIf { it.isNotEmpty() },
-                signal.upstreamCode?.takeIf { it.isNotEmpty() },
-            ).joinToString("\n")
-            if (codeMatched) matchText(text) else null
+            if (codeMatched) matchText(signal.errorBody, signal.upstreamCode) else null
         }
     }
 
-    private fun matchText(text: String): KeyRuleMatch? {
+    private fun matchText(vararg texts: String?): KeyRuleMatch? {
         if (compiledPatterns.isEmpty()) return KeyRuleMatch(null)
-        if (text.isEmpty()) return null
-        val hit = compiledPatterns.firstOrNull { it.matcher(text).find() } ?: return null
+        val candidates = texts.filterNotNull().filter { it.isNotEmpty() }
+        if (candidates.isEmpty()) return null
+        val hit = compiledPatterns.firstOrNull { pattern -> candidates.any { pattern.matcher(it).find() } }
+            ?: return null
         return KeyRuleMatch(hit.pattern())
     }
 
@@ -487,9 +485,9 @@ data class KeyDisablePolicy(
                 statusCodes = listOf(401, 402, 403),
                 bodyPatterns = listOf(
                     "INSUFFICIENT_BALANCE",
-                    "billing[_-]?error",
-                    "insufficient[_-]?(balance|quota|credit|funds)",
-                    "payment[_-]?required",
+                    "billing[\\s_-]*error",
+                    "insufficient[\\s_-]*(balance|quota|credit|funds)",
+                    "payment[\\s_-]*required",
                     "余额不足",
                     "欠费",
                     "请充值",

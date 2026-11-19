@@ -28,9 +28,9 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
       statusCodeAtLeast: null,
       bodyPatterns: [
         'INSUFFICIENT_BALANCE',
-        'billing[_-]?error',
-        'insufficient[_-]?(balance|quota|credit|funds)',
-        'payment[_-]?required',
+        'billing[\\s_-]*error',
+        'insufficient[\\s_-]*(balance|quota|credit|funds)',
+        'payment[\\s_-]*required',
         '余额不足',
         '欠费',
         '请充值',
