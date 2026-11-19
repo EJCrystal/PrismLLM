@@ -586,6 +586,17 @@ class FakeUpstream {
                     completed = true
                     return@respondBytesWriter
                 }
+                if (scenario == "responses-rate-limit" || scenario == "responses-rate-limit-error") {
+                    val eventType = if (scenario == "responses-rate-limit-error") "error" else "response.failed"
+                    val payload = if (scenario == "responses-rate-limit-error") {
+                        """{"type":"error","code":"rate_limit_exceeded","message":"Upstream rate limit exceeded"}"""
+                    } else {
+                        """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded Bearer abc.def.ghi sk-1234567890abcdef","type":"tokens","resets_in_seconds":50}}}"""
+                    }
+                    writeSseEvent(eventType, payload)
+                    completed = true
+                    return@respondBytesWriter
+                }
                 if (scenario == "responses-created-stall") {
                     delay(2_000)
                     completed = true
@@ -626,6 +637,10 @@ class FakeUpstream {
                         writeSseEvent("response.completed", RESPONSES_FINAL_EVENT)
                     }
                     "oversized-line-after-content" -> writeSseEvent("response.completed", oversizedPayload())
+                    "responses-rate-limit-after-output" -> writeSseEvent(
+                        "response.failed",
+                        """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded Bearer abc.def.ghi sk-1234567890abcdef","type":"tokens","resets_in_seconds":50}}}""",
+                    )
                     "responses-failed" -> writeSseEvent(
                         "response.failed",
                         """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"server_error","message":"upstream failed"}}}""",
