@@ -728,6 +728,20 @@ jobs:
           PR_NUMBER="${COMMENT_PR_URL##*/}"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          launcher = Path(os.environ["GITHUB_EVENT_PATH"]).with_name("pr-agent-launch.py")
+          launcher.write_text('''import os
+          import runpy
+          import sys
+          if os.environ.get("REVIEW_EVENT_NAME"):
+              os.environ["GITHUB_EVENT_NAME"] = os.environ["REVIEW_EVENT_NAME"]
+              os.environ["GITHUB_EVENT_PATH"] = os.environ["REVIEW_EVENT_PATH"]
+          sys.path.insert(0, "/app")
+          runpy.run_path("/app/pr_agent/servers/github_action_runner.py", run_name="__main__")
+          ''')
+          PY
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
@@ -739,12 +753,8 @@ jobs:
         # （apply_repo_settings 通过、review 正常发起），按上游建议用 digest pin。
         uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
         with:
-          entrypoint: /bin/sh
-          args: >-
-            -c 'if [ -n "$REVIEW_EVENT_NAME" ]; then
-            export GITHUB_EVENT_NAME="$REVIEW_EVENT_NAME";
-            export GITHUB_EVENT_PATH="$REVIEW_EVENT_PATH";
-            fi; exec python /app/pr_agent/servers/github_action_runner.py'
+          entrypoint: python
+          args: /github/workflow/pr-agent-launch.py
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
