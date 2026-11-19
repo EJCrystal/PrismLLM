@@ -1094,6 +1094,36 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun candy_keeps_successful_original_answer_even_when_fingerprint_completion_is_rejected() = runBlocking {
+        val original = """{"answer":21,"reason":"ok"}"""
+        val execution = fingerprintDiagnosticTransport(
+            "21",
+            """{"choices":[{"message":{"content":${JsonPrimitive(original)}},"finish_reason":"length"}]}""",
+            maxResponseChars = 100,
+            requireCompleteSample = false,
+        )
+        assertEquals(original, execution.rawSample)
+        assertTrue(execution.result.responseText.orEmpty().contains("[REDACTED]"))
+        assertEquals(IqVerdict.PASSED, evaluateIqTest(IqBenchmark.CANDY, execution.result.success, execution.rawSample).verdict)
+    }
+
+    @Test
+    fun gemini_samples_only_stop_or_compatible_missing_finish_reason() = runBlocking {
+        for (reason in listOf("LANGUAGE", "OTHER", "STOP", "")) {
+            val finish = if (reason.isEmpty()) "" else ",\"finishReason\":\"$reason\""
+            val execution = fingerprintDiagnosticTransport(
+                "gemini-secret",
+                """{"candidates":[{"content":{"parts":[{"text":"sample gemini-secret"}]}$finish}]}""",
+                maxResponseChars = 100,
+                protocol = GatewayProtocol.GEMINI,
+            )
+            assertTrue(execution.result.success)
+            assertEquals("sample [REDACTED]", execution.result.responseText)
+            assertEquals(if (reason == "STOP" || reason.isEmpty()) "sample gemini-secret" else null, execution.rawSample)
+        }
+    }
+
+    @Test
     fun other_protocols_with_explicit_truncation_keep_preview_but_do_not_supply_raw_samples() = runBlocking {
         val credential = "fingerprint-synthetic-secret"
         val cases = listOf(
@@ -1311,6 +1341,7 @@ class ModelConnectivityTestTest {
         failure: Throwable? = null,
         responseDelayMs: Long = 0,
         requestEntered: CompletableDeferred<Unit>? = null,
+        requireCompleteSample: Boolean = true,
     ): ModelConnectivityExecution {
         val channel = ChannelRecord(
             id = "fingerprint-channel", name = "fingerprint-channel",
@@ -1336,7 +1367,7 @@ class ModelConnectivityTestTest {
             }
         }
         return client.use {
-            sampleFingerprintModelConnectivity(
+            testSavedChannelModelConnectivity(
                 channel = channel,
                 credentialRef = savedKey,
                 model = "diagnostic-model",
@@ -1345,7 +1376,13 @@ class ModelConnectivityTestTest {
                 credentials = KeyCredentialResolver { credential },
                 httpClient = it,
                 timeoutMs = timeoutMs,
+                maxOutputTokens = 128,
                 maxResponseChars = maxResponseChars,
+                globalOverrides = UpstreamRequestOverrides(),
+                headerProfiles = UpstreamHeaderProfiles.defaults,
+                isolatedIqRequest = true,
+                captureRawSample = true,
+                requireCompleteSample = requireCompleteSample,
             )
         }
     }

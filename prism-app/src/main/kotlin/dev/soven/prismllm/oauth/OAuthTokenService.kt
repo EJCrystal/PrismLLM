@@ -201,6 +201,7 @@ class OAuthTokenService(
         val waiters = mutableListOf<RefreshWaiter>()
         lateinit var work: Deferred<RefreshOutcome>
         var exchangeStarted = false
+        @Volatile var waitingForExchangePermit = false
     }
 
     private suspend fun awaitRefresh(
@@ -273,16 +274,26 @@ class OAuthTokenService(
             if (eligible.isEmpty()) throw credentialReplaced()
             if (eligible.none { it.force }) cachedRefreshOutcome(latest)?.let { return@withLock it }
 
-            val prepared = prepareRefresh(context)
+            var exchangeContext = context
+            task.waitingForExchangePermit = true
             val pending = try {
                 refreshPermits.withPermit {
+                    task.waitingForExchangePermit = false
+                    // Preparation may have waited behind other exchanges. Re-read the exact row
+                    // before checking waiter snapshots or choosing the credential and egress.
+                    exchangeContext = DiagnosticPreparationDeadline.withinSynchronous(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS) {
+                        repository.loadRefreshContext(accountId)
+                            ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
+                    } ?: throw DiagnosticPreparationDeadline.deadlineExceeded()
+                    val current = exchangeContext.account
+                    val prepared = prepareRefresh(exchangeContext)
                     synchronized(refreshLifecycleLock) {
-                        val admitted = eligibleWaiters(task, latest)
+                        val admitted = eligibleWaiters(task, current)
                         if (refreshAdmissionClosed || admitted.isEmpty()) {
                             throw CancellationException("OAuth refresh admission ended before exchange")
                         }
                         // A force waiter can leave while the task is queued for an exchange permit.
-                        if (admitted.none { it.force }) cachedRefreshOutcome(latest)?.let { return@withLock it }
+                        if (admitted.none { it.force }) cachedRefreshOutcome(current)?.let { return@withLock it }
                         task.exchangeStarted = true
                     }
                     // The service deadline starts before provider work. Its result slot closes
@@ -305,7 +316,7 @@ class OAuthTokenService(
                 // Failure writes, like successful save retries, must not hold an exchange permit.
                 withContext(NonCancellable) {
                     withinRefreshDatabaseBudget {
-                        recordRefreshFailure(accountId, failure.errorCode, failure.terminal, context.refreshTokenCiphertext)
+                        recordRefreshFailure(accountId, failure.errorCode, failure.terminal, exchangeContext.refreshTokenCiphertext)
                     }
                 }
                 throw OAuthTokenUnavailableException(

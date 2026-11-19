@@ -107,6 +107,7 @@ internal suspend fun sampleFingerprintModelConnectivity(
     return testSavedChannelModelConnectivity(
         channel, credentialRef, model, protocol, prompt, credentials, httpClient, timeoutMs,
         maxOutputTokens, maxResponseChars, globalOverrides, headerProfiles, isolatedIqRequest = true, captureRawSample = true,
+        requireCompleteSample = true,
     )
 }
 
@@ -125,10 +126,11 @@ internal suspend fun testSavedChannelModelConnectivity(
     headerProfiles: List<UpstreamHeaderProfile>,
     isolatedIqRequest: Boolean,
     captureRawSample: Boolean,
+    requireCompleteSample: Boolean = false,
 ): ModelConnectivityExecution {
     val credential = resolveSavedCredential(credentials, credentialRef)
     return runModelConnectivityTest(
-        credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars, captureRawSample,
+        credential, protocol, httpClient, UpstreamEnvelope.NONE, timeoutMs, maxResponseChars, captureRawSample, requireCompleteSample,
     ) {
         buildModelTestRequest(
             channel, credential, model, protocol, prompt, UpstreamEnvelope.NONE, null,
@@ -223,6 +225,7 @@ private suspend fun runModelConnectivityTest(
     timeoutMs: Long,
     maxResponseChars: Int,
     captureRawSample: Boolean = false,
+    requireCompleteSample: Boolean = false,
     request: () -> HttpRequestBuilder,
 ): ModelConnectivityExecution {
     val startedAt = System.currentTimeMillis()
@@ -264,7 +267,7 @@ private suspend fun runModelConnectivityTest(
             )
             ModelConnectivityExecution(
                 result = result,
-                rawSample = if (captureRawSample && result.success && !isModelTestOutputTruncated(protocol, json)) {
+                rawSample = if (captureRawSample && result.success && (!requireCompleteSample || !isModelTestOutputTruncated(protocol, json))) {
                     displayText?.take(maxResponseChars)
                 } else null,
                 sanitize = { redactModelTestCredential(it, credential) },
@@ -415,10 +418,8 @@ private fun isModelTestOutputTruncated(protocol: GatewayProtocol, json: JsonObje
         else -> false
     }
     GatewayProtocol.GEMINI -> (json?.get("candidates") as? JsonArray)?.any { candidate ->
-        when (((candidate as? JsonObject)?.get("finishReason") as? JsonPrimitive)?.contentOrNull) {
-            "MAX_TOKENS", "SAFETY", "RECITATION", "BLOCKLIST", "PROHIBITED_CONTENT", "SPII", "MALFORMED_FUNCTION_CALL" -> true
-            else -> false
-        }
+        val reason = ((candidate as? JsonObject)?.get("finishReason") as? JsonPrimitive)?.contentOrNull
+        reason != null && reason != "STOP"
     } == true
     GatewayProtocol.RESPONSES -> false // Non-completed Responses already fail the connectivity check.
 }

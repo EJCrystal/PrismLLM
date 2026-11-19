@@ -679,10 +679,7 @@ class OAuthTokenServiceTest {
         val forced = async(start = CoroutineStart.UNDISPATCHED) { service.refreshNow(accountId) }
         val ordinary = async(start = CoroutineStart.UNDISPATCHED) { runCatching { service.accessToken(accountId) } }
         try {
-            withTimeout(5_000) {
-                // The account mutex is released only after this task leaves its active permit wait.
-                while (!accountMutex(service, accountId).isLocked) delay(1)
-            }
+            awaitExchangePermitWait(service, accountId)
             forced.cancelAndJoin()
             repeat(4) { permits.release() }
             val failure = withTimeout(5_000) { ordinary.await() }.exceptionOrNull()
@@ -692,6 +689,38 @@ class OAuthTokenServiceTest {
         } finally {
             while (permits.availablePermits < 4) permits.release()
             forced.cancelAndJoin()
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun queuedDiagnosticRechecksCredentialAndProxyBeforeStartingAnExchange() = runBlocking {
+        val accountId = createAccount("queued-snapshot", accountEmail = email("queued-snapshot"))
+        val providerCalls = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                providerCalls.incrementAndGet()
+                return OAuthTokenResponse("must-not-be-used")
+            }
+        })
+        val field = OAuthTokenService::class.java.getDeclaredField("refreshPermits").apply { isAccessible = true }
+        val permits = field.get(service) as kotlinx.coroutines.sync.Semaphore
+        repeat(4) { permits.acquire() }
+        val original = accounts.find(accountId)!!
+        val caller = async(start = CoroutineStart.UNDISPATCHED) {
+            runCatching { service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(10_000)) }
+        }
+        try {
+            awaitExchangePermitWait(service, accountId)
+            accounts.updateSettings(accountId, proxyUrl = "http://127.0.0.1:8181")
+            repeat(4) { permits.release() }
+            assertTrue(withTimeout(5_000) { caller.await() }.isFailure)
+            assertEquals(0, providerCalls.get(), "the original egress must not be used after permit waiting")
+            assertEquals("http://127.0.0.1:8181", accounts.find(accountId)!!.proxyUrl)
+        } finally {
+            while (permits.availablePermits < 4) permits.release()
+            caller.cancelAndJoin()
             assertTrue(service.drainRefreshes())
         }
     }
@@ -1023,6 +1052,19 @@ class OAuthTokenServiceTest {
 
         val account = assertNotNull(accounts.find(keyId))
         assertEquals(Long.MAX_VALUE, account.accessTokenExpiresAt)
+    }
+
+    private suspend fun awaitExchangePermitWait(service: OAuthTokenService, accountId: String) = withTimeout(5_000) {
+        val tasksField = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+        val monitorField = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }
+        while (true) {
+            val waiting = synchronized(monitorField.get(service)) {
+                val task = (tasksField.get(service) as Map<*, *>)[accountId]
+                task != null && task.javaClass.getDeclaredField("waitingForExchangePermit").apply { isAccessible = true }.getBoolean(task)
+            }
+            if (waiting) return@withTimeout
+            delay(1)
+        }
     }
 
     private fun accountMutex(service: OAuthTokenService, accountId: String): kotlinx.coroutines.sync.Mutex {
