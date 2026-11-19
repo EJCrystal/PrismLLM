@@ -458,8 +458,11 @@ function removeEntry(target: ModelRouteIdentity) {
   changed()
   announcement.value = `已移除 ${credentialLabel(entry)}。`
   if (!entries.value.length) {
-    selectedQuery.value = ''
     void nextTick(() => {
+      if (selectedFilterActive.value) {
+        root.value?.querySelector<HTMLInputElement>('[aria-label="搜索已选凭据"]')?.focus()
+        return
+      }
       if (isCompactWorkspace() && mobilePane.value === 'selected') {
         root.value?.querySelectorAll<HTMLButtonElement>('.route-mobile-tab')[1]?.focus()
         return

@@ -729,5 +729,28 @@ describe('ModelRoutesView mounted credential-order editor', () => {
     assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '1')
     assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
     assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /已选凭据 1 个/)
+
+    // Removing the last selected entry while filtered preserves the keyword, focuses the selected search box, and keeps filtering newly added entries
+    window.confirm = () => true
+    host.querySelector(`[data-model-id="${modelA}"]`).click()
+    await settle()
+    entryButton('remove', keyFor(oauthB)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticA)])
+    await search('搜索已选凭据', '渠道 A')
+    entryButton('remove', keyFor(staticA)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.equal(host.querySelector('[aria-label="搜索已选凭据"]').value, '渠道 A')
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /匹配 0 \/ 0 个/)
+    assert.match(text(host.querySelector('.route-empty-order')), /当前搜索条件已生效/)
+
+    availableRow(keyFor(staticC)).querySelector('button').click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /匹配 0 \/ 1 个/)
+    assert.match(text(host.querySelector('.route-filter-empty')), /没有匹配的已选凭据/)
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '添加 渠道 A / 主密钥')
   })
 })
