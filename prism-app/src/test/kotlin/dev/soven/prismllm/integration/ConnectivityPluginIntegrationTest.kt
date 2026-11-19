@@ -879,10 +879,12 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                         coroutineScope {
                             val pending = async(Dispatchers.Default) { invoke(account.id, legacy) }
                             awaitCondition("initial account query is blocked by the table lock", timeoutMs = 5_000) {
-                                lock.createStatement().use { statement ->
-                                    statement.executeQuery("select exists (select 1 from pg_stat_activity where $blocker = any(pg_blocking_pids(pid)))").use { rows ->
-                                        check(rows.next())
-                                        rows.getBoolean(1)
+                                DriverManager.getConnection(databaseUrl, postgres.username, postgres.password).use { observer ->
+                                    observer.createStatement().use { statement ->
+                                        statement.executeQuery("select exists (select 1 from pg_stat_activity where $blocker = any(pg_blocking_pids(pid)))").use { rows ->
+                                            check(rows.next())
+                                            rows.getBoolean(1)
+                                        }
                                     }
                                 }
                             }

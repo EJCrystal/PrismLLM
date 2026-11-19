@@ -237,11 +237,15 @@ function action(value: unknown): PluginAction {
   const data = record(value, ['id', 'label', 'fields', 'resource', 'supportsBatch', 'resultKind', 'notes'])
   requireContract(data.resource === undefined || data.resource === 'model-test-targets', '资源')
   requireContract(data.resultKind === undefined || data.resultKind === 'probe-v1', '结果类型')
-  return {
+  const parsed: PluginAction = {
     id: identifier(data.id), label: text(data.label, 200, true), fields: fields(data.fields),
     resource: 'model-test-targets', supportsBatch: boolean(data.supportsBatch, false), resultKind: 'probe-v1',
     notes: array(data.notes, 16, true).map(item => text(item, 2_000)),
   }
+  for (const kind of ['model', 'protocol']) {
+    requireContract(parsed.fields.some(field => field.kind === kind && field.required), '必填资源控件')
+  }
+  return parsed
 }
 
 function scopeValueAvailable(value: string, supportsBatch: boolean, context: PluginContextKind): boolean {

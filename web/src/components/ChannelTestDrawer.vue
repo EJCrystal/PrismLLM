@@ -106,15 +106,16 @@ async function focusIqIfRemoved(
   const focusWasRemoved = removedTabIds.includes(focusedTabId) || (focusWasInPanel && activeTabWasRemoved)
   const shouldRestoreReplacedTab = !focusWasRemoved && !!replacedTabId && focusWasInPanel
   if (!focusWasRemoved && !shouldRestoreReplacedTab) return
-  if (focusWasRemoved) activeTab.value = 'iq'
+  const fallbackTabId = activeTabWasRemoved ? 'iq' : activeTab.value
+  if (focusWasRemoved && activeTabWasRemoved) activeTab.value = 'iq'
   await nextTick()
   if (disposed) return
   if (focusWasRemoved) {
-    if (activeTab.value !== 'iq') return
-    const iqTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
-      .find((tab) => tab.id === `${tabId}-iq`)
-    iqTab?.focus()
-    iqTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+    if (activeTab.value !== fallbackTabId) return
+    const fallbackTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
+      .find((tab) => tab.id === `${tabId}-${fallbackTabId}`)
+    fallbackTab?.focus()
+    fallbackTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
     return
   }
   if (activeTab.value !== replacedTabId) return

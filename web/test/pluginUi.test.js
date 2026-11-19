@@ -607,6 +607,148 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.deepEqual(calls.legacy, [])
   })
 
+  for (const completion of ['response', 'error']) {
+    it(`keeps the OAuth host invocation draft and result through a deferred contribution refresh ${completion}`, async () => {
+      const fixture = makePluginFixture()
+      const entry = await mountDiagnosticSurface('OAuthModelTestModal', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const hostElement = entry.container.querySelector('.plugin-diagnostic-host')
+      const hostKey = entry.state.hostKey.value
+      const setups = diagnosticHostSetups
+      const prompt = 'retain my account diagnostic draft'
+      await change(field(entry.container, '本次提示词'), prompt)
+      const invocation = deferred()
+      mock.invoke = () => invocation.promise
+      const run = host.run()
+      await waitFor(() => calls.invocations.length === 1)
+      const call = calls.invocations[0]
+      const discovery = deferred()
+      mock.listContributions = () => discovery.promise
+      const reads = calls.contributions.length
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => calls.contributions.length === reads + 1 && !host.loading.value)
+      assert.equal(entry.state.loading.value, true)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.state.hostKey.value, hostKey)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(call.options.signal.aborted, false)
+      assert.equal(host.running.value, true)
+      assert.equal(host.form.prompt, prompt)
+      invocation.resolve(responseFor(call))
+      await run; await settle()
+      const resultElement = entry.container.querySelector('.plugin-result')
+      assert.ok(resultElement, 'the invocation can complete while contribution discovery is pending')
+      if (completion === 'response') discovery.resolve(clonePluginData(fixture.contributions))
+      else discovery.reject(new Error('background contribution discovery unavailable'))
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+      assert.equal(entry.container.querySelector('.plugin-result'), resultElement)
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(entry.state.hostKey.value, hostKey)
+      assert.equal(field(entry.container, '本次提示词').value, prompt)
+      assert.equal(host.rows.value[0].execution.outcome.success, true)
+      assert.equal(call.options.signal.aborted, false)
+      if (completion === 'error') {
+        const alert = entry.container.querySelector('[role="alert"]')
+        assert.match(text(alert), /background contribution discovery unavailable/)
+        assert.equal(hostElement.contains(alert), false, 'discovery failures are shown alongside the existing host')
+        const retry = deferred()
+        mock.listContributions = () => retry.promise
+        button(alert, '重试').click()
+        await waitFor(() => entry.state.loading.value)
+        assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), hostElement)
+        retry.resolve(clonePluginData(fixture.contributions))
+        await waitFor(() => !entry.state.loading.value)
+        assert.equal(entry.state.loadError.value, '')
+        assert.equal(entry.container.querySelector('.plugin-result'), resultElement)
+        assert.equal(diagnosticHostSetups, setups, 'manual retry does not remount a valid entry')
+      }
+    })
+  }
+
+  for (const changeKind of ['entry', 'version']) {
+    it(`remounts the OAuth diagnostic only after a deferred refresh confirms a changed ${changeKind}`, async () => {
+      const fixture = makePluginFixture()
+      const entry = await mountDiagnosticSurface('OAuthModelTestModal', fixture)
+      await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+      const host = captures.get('PluginDiagnosticHost')
+      const setups = diagnosticHostSetups
+      const oldKey = entry.state.hostKey.value
+      const invocation = deferred()
+      mock.invoke = () => invocation.promise
+      const run = host.run()
+      await waitFor(() => calls.invocations.length === 1)
+      const call = calls.invocations[0]
+      const next = makePluginFixture({ version: changeKind === 'version' ? '2.0.0' : '1.0.0' })
+      if (changeKind === 'entry') {
+        next.accountContribution.entry.id = 'replacement-account'
+        next.state.activeUi.entries[1].id = 'replacement-account'
+      }
+      const discovery = deferred()
+      mock.listContributions = () => discovery.promise
+      const reload = entry.state.load()
+      await settle()
+      assert.equal(captures.get('PluginDiagnosticHost'), host)
+      assert.equal(diagnosticHostSetups, setups)
+      assert.equal(call.options.signal.aborted, false)
+      mock.states.set(next.state.id, clonePluginData(next.state))
+      discovery.resolve(clonePluginData(next.contributions))
+      await reload
+      await waitFor(() => diagnosticHostSetups === setups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
+      assert.notEqual(entry.state.hostKey.value, oldKey)
+      assert.equal(call.options.signal.aborted, true)
+      const replacement = captures.get('PluginDiagnosticHost')
+      assert.equal(replacement.props.contribution.entry.id, next.accountContribution.entry.id)
+      assert.equal(replacement.props.contribution.activeVersion, next.accountContribution.activeVersion)
+      invocation.resolve(responseFor(call))
+      await run; await settle()
+      assert.equal(replacement.rows.value.length, 0, 'the old invocation cannot populate the replacement host')
+      assert.equal(entry.container.querySelector('.plugin-result'), null)
+    })
+  }
+
+  it('keeps the current OAuth diagnostic running when manually rechecking another invalid entry', async () => {
+    const first = makeOfficialPluginFixture()
+    const second = makePluginFixture()
+    const entry = await mountDiagnosticSurface('OAuthModelTestModal', first)
+    await waitFor(() => !captures.get('PluginDiagnosticHost').loading.value)
+    const host = captures.get('PluginDiagnosticHost')
+    const setups = diagnosticHostSetups
+    const hostKey = entry.state.hostKey.value
+    setFixtures(first, second)
+    await entry.state.load()
+    entry.state.markUnavailable({ pluginId: second.manifest.id, activeVersion: second.accountContribution.activeVersion, entryId: second.accountContribution.entry.id })
+    await change(field(entry.container, '本次提示词'), 'keep the current OAuth draft')
+    const invocation = deferred()
+    mock.invoke = () => invocation.promise
+    const run = host.run()
+    await waitFor(() => calls.invocations.length === 1)
+    const call = calls.invocations[0]
+    const discovery = deferred()
+    mock.listContributions = () => discovery.promise
+    const reload = entry.state.load(true)
+    await settle()
+    assert.equal(call.options.signal.aborted, false)
+    assert.equal(entry.state.invalidContributions.value.size, 1, 'rechecks keep invalid entries excluded until discovery succeeds')
+    discovery.resolve(clonePluginData(mock.contributions))
+    await reload; await settle()
+    assert.equal(captures.get('PluginDiagnosticHost'), host)
+    assert.equal(diagnosticHostSetups, setups)
+    assert.equal(entry.state.hostKey.value, hostKey)
+    assert.equal(entry.state.diagnosticGenerations.value.get(`${second.manifest.id}:${second.accountContribution.entry.id}:${second.accountContribution.activeVersion}`), 1)
+    assert.equal(entry.state.diagnosticGenerations.value.size, 1)
+    assert.equal(call.options.signal.aborted, false)
+    assert.equal(host.running.value, true)
+    invocation.resolve(responseFor(call))
+    await run; await settle()
+    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+    assert.equal(field(entry.container, '本次提示词').value, 'keep the current OAuth draft')
+  })
+
   it('only notifies confirmed unavailable codes once and leaves ordinary failures and PLUGIN_BUSY retryable', async () => {
     for (const [code, expected] of [['network', 0], ['PLUGIN_BUSY', 0], ['PLUGIN_DISABLED', 1], ['PLUGIN_ACTIVE_VERSION_CONFLICT', 1]]) {
       const fixture = makePluginFixture()
@@ -1374,11 +1516,15 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
         const entry = await mount('ChannelTestDrawer', { channel })
         await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
         const host = captures.get('PluginDiagnosticHost')
+        const setups = diagnosticHostSetups
+        const activeKey = entry.state.activeKey.value
+        await change(field(entry.container, '本次提示词'), 'retain the active diagnostic draft')
         const pending = deferred()
         mock.invoke = () => pending.promise
         const run = host.run()
         await waitFor(() => calls.invocations.length === 1)
         const call = calls.invocations[0]
+        const activeTab = entry.container.querySelector('[role="tab"][aria-selected="true"]')
         const removedTab = [...entry.container.querySelectorAll('[role="tab"]')].find(tab => text(tab) === '合成诊断')
         const focused = focusLocation === 'removed-tab' ? removedTab : focusLocation === 'active-panel'
           ? entry.container.querySelector('[role="tabpanel"]') : button(entry.container, '关闭模拟窗口')
@@ -1387,20 +1533,28 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
         if (removal === 'notification') {
           entry.state.markUnavailable({ pluginId: second.manifest.id, activeVersion: second.contribution.activeVersion, entryId: second.contribution.entry.id })
         } else {
-          mock.contributions = clonePluginData(first.contributions)
-          await entry.state.load()
+          const discovery = deferred()
+          mock.listContributions = () => discovery.promise
+          const reload = entry.state.load()
+          await settle()
+          assert.equal(document.activeElement, focused)
+          assert.equal(call.options.signal.aborted, false, 'discovery must preserve the active invocation while pending')
+          discovery.resolve(clonePluginData(first.contributions))
+          await reload
         }
         await settle()
-        const iq = [...entry.container.querySelectorAll('[role="tab"]')].find(tab => text(tab) === '智商')
         assert.equal(removedTab.isConnected, false)
-        assert.equal(document.activeElement, focusLocation === 'removed-tab' ? iq : focused)
-        const expectedTab = focusLocation === 'removed-tab' ? 'iq' : `plugin:${first.manifest.id}:${first.contribution.entry.id}`
-        assert.equal(entry.state.activeTab.value, expectedTab)
-        assert.equal(call.options.signal.aborted, focusLocation === 'removed-tab')
-        assert.equal(host.running.value, focusLocation !== 'removed-tab')
+        assert.equal(document.activeElement, focusLocation === 'removed-tab' ? activeTab : focused)
+        assert.equal(entry.state.activeTab.value, `plugin:${first.manifest.id}:${first.contribution.entry.id}`)
+        assert.equal(entry.state.activeKey.value, activeKey)
+        assert.equal(captures.get('PluginDiagnosticHost'), host)
+        assert.equal(diagnosticHostSetups, setups)
+        assert.equal(host.form.prompt, 'retain the active diagnostic draft')
+        assert.equal(call.options.signal.aborted, false)
+        assert.equal(host.running.value, true)
         pending.resolve(responseFor(call))
         await run; await settle()
-        assert.equal(entry.container.querySelectorAll('.plugin-result').length, focusLocation === 'removed-tab' ? 0 : 1)
+        assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
       })
     }
   }

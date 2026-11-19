@@ -275,6 +275,32 @@ describe('bounded declarative plugin contracts', () => {
     })
   }
 
+  for (const kind of ['model', 'protocol']) {
+    for (const requirement of ['missing', 'optional', 'omitted-required']) {
+      it(`rejects ${requirement} ${kind} resource fields in every executable descriptor parser`, () => {
+        for (let index = 0; index < catalog().ui.entries.length; index++) {
+          const raw = catalog(SECOND_PLUGIN)
+          const action = raw.ui.entries[index].action
+          if (requirement === 'missing') action.fields = action.fields.filter(field => field.kind !== kind)
+          else {
+            const field = action.fields.find(field => field.kind === kind)
+            if (requirement === 'optional') field.required = false
+            else delete field.required
+          }
+          const label = `${raw.ui.entries[index].placement}: ${requirement} ${kind}`
+          assert.throws(() => parsePluginCatalogItem(raw), invalidResponse, `catalogue ${label}`)
+          assert.throws(() => parsePluginRuntimeState(runtime({
+            installed: true, installedVersion: '1.0.0', activeVersion: '1.0.0',
+            desiredEnabled: true, admissionEnabled: true, status: 'active', activeUi: raw.ui,
+          })), invalidResponse, `runtime ${label}`)
+          assert.throws(() => parsePluginContributions([{
+            pluginId: SECOND_PLUGIN, activeVersion: '1.0.0', entry: raw.ui.entries[index],
+          }]), invalidResponse, `contribution ${label}`)
+        }
+      })
+    }
+  }
+
   it('validates scope choices after field length constraints and checks defaults in every context', () => {
     const makeScopeEntry = () => {
       const raw = catalog(SECOND_PLUGIN)

@@ -697,6 +697,8 @@ class PluginRuntime(
         if (!loaded.startDisposal()) return null
         return cleanupWorkers.submit {
             try {
+                // DiagnosticPlugin.close is a cooperative stop signal and may overlap plan/report
+                // by SDK contract. The loader remains owned until close AND real workers finish.
                 withLoader(loaded.loader) { loaded.plugin.close() }
             } finally {
                 if (loaded.finishDisposal()) closeLoader(loaded.loader)

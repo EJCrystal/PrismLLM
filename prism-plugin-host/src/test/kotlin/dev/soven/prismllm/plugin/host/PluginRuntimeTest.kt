@@ -1612,6 +1612,8 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                     val error = withTimeout(3_000) { invocation.await() }.exceptionOrNull() as PluginHostException
                     assertEquals("PLUGIN_CODE_TIMEOUT", error.code)
                     host.close()
+                    // SDK contract: provider close may stop/unblock active calls; only loader
+                    // release waits for the actual worker to exit as well as provider close.
                     awaitProperty("${packaged.property}.closed", "1")
                     assertNotNull(loader(packaged).findResource("fixture/owned-resource.txt"))
                     assertEquals(0, packaged.count("resource-after-close"))
