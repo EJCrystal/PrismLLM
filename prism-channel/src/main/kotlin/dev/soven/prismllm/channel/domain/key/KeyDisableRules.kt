@@ -21,7 +21,7 @@ sealed interface KeyAttemptSignal {
     /** 客户端取消、网关本地限流或请求体错误：既不奖也不罚。 */
     data object Ignored : KeyAttemptSignal
 
-    /** 上游返回 HTTP 错误；[errorBody] 由调用方截断后传入，[upstreamCode] 仅用于审计。 */
+    /** 上游返回 HTTP 错误；[errorBody] 由调用方截断后传入，[upstreamCode] 同时参与规则文本匹配。 */
     data class UpstreamResponse(
         val statusCode: Int,
         val errorBody: String = "",
@@ -151,7 +151,11 @@ data class KeyDisableRule(
         is KeyAttemptSignal.UpstreamResponse -> {
             val codeMatched = signal.statusCode in statusCodes ||
                 (statusCodeAtLeast != null && signal.statusCode >= statusCodeAtLeast)
-            if (codeMatched) matchText(signal.errorBody) else null
+            val text = listOfNotNull(
+                signal.errorBody.takeIf { it.isNotEmpty() },
+                signal.upstreamCode?.takeIf { it.isNotEmpty() },
+            ).joinToString("\n")
+            if (codeMatched) matchText(text) else null
         }
     }
 
@@ -479,9 +483,18 @@ data class KeyDisablePolicy(
         val DEFAULT_RULES: List<KeyDisableRule> = listOf(
             KeyDisableRule(
                 id = "insufficient_balance",
-                name = "账户余额不足",
+                name = "账户余额或计费异常",
                 statusCodes = listOf(401, 402, 403),
-                bodyPatterns = listOf("INSUFFICIENT_BALANCE"),
+                bodyPatterns = listOf(
+                    "INSUFFICIENT_BALANCE",
+                    "billing[_-]?error",
+                    "insufficient[_-]?(balance|quota|credit|funds)",
+                    "payment[_-]?required",
+                    "余额不足",
+                    "欠费",
+                    "请充值",
+                    "额度(不足|用尽)",
+                ),
                 threshold = 1,
                 action = KeyDisableAction.PERMANENT,
             ),

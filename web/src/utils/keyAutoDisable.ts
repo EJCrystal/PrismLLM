@@ -23,10 +23,19 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
   rules: [
     {
       id: 'insufficient_balance',
-      name: '账户余额不足',
+      name: '账户余额或计费异常',
       statusCodes: [401, 402, 403],
       statusCodeAtLeast: null,
-      bodyPatterns: ['INSUFFICIENT_BALANCE'],
+      bodyPatterns: [
+        'INSUFFICIENT_BALANCE',
+        'billing[_-]?error',
+        'insufficient[_-]?(balance|quota|credit|funds)',
+        'payment[_-]?required',
+        '余额不足',
+        '欠费',
+        '请充值',
+        '额度(不足|用尽)',
+      ],
       threshold: 1,
       windowMinutes: 5,
       streak: true,

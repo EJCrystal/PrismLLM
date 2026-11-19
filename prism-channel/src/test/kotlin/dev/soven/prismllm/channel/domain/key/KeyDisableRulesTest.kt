@@ -134,6 +134,34 @@ class KeyDisableRulesTest {
     }
 
     @Test
+    fun `upstream code participates in text matching`() {
+        val policy = KeyDisablePolicy(
+            rules = listOf(rule(statusCodes = listOf(403), bodyPatterns = listOf("billing[_-]?error"), threshold = 1)),
+        )
+        val hit = assertNotNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "billing_error"), now).decision,
+        )
+        assertEquals("r1", hit.ruleId)
+        assertNull(
+            policy.record(KeyHealthState(), KeyAttemptSignal.UpstreamResponse(403, "", "rate_limit"), now).decision,
+        )
+    }
+
+    @Test
+    fun `default rules permanently disable billing errors on first hit`() {
+        val decision = assertNotNull(
+            KeyDisablePolicy().record(
+                KeyHealthState(),
+                KeyAttemptSignal.UpstreamResponse(403, "", "billing_error"),
+                now,
+            ).decision,
+        )
+        assertEquals("insufficient_balance", decision.ruleId)
+        assertEquals(KeyDisableAction.PERMANENT, decision.action)
+        assertEquals(1, decision.count)
+    }
+
+    @Test
     fun `patterns are case insensitive`() {
         val policy = KeyDisablePolicy(
             rules = listOf(rule(bodyPatterns = listOf("Incorrect API Key"), threshold = 1)),
