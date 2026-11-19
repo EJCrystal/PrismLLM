@@ -738,10 +738,15 @@ jobs:
         # 无错误日志、exit 0）。此 digest 为 2026-10-16 构建，已在本地完整复现
         # （apply_repo_settings 通过、review 正常发起），按上游建议用 digest pin。
         uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
+        with:
+          entrypoint: /bin/sh
+          args: >-
+            -c 'if [ -n "$REVIEW_EVENT_NAME" ]; then
+            export GITHUB_EVENT_NAME="$REVIEW_EVENT_NAME";
+            export GITHUB_EVENT_PATH="$REVIEW_EVENT_PATH";
+            fi; exec python /app/pr_agent/servers/github_action_runner.py'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_EVENT_NAME: ${{ env.REVIEW_EVENT_NAME || github.event_name }}
-          GITHUB_EVENT_PATH: ${{ env.REVIEW_EVENT_PATH || github.event_path }}
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
