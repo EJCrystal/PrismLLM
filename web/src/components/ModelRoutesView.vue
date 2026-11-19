@@ -24,6 +24,7 @@ const saving = ref(false)
 const saveError = ref('')
 const savedNotice = ref('')
 const announcement = ref('')
+const selectedQuery = ref('')
 const credentialQuery = ref('')
 const conflict = ref(false)
 const conflictLatest = ref<ModelRouteDetail | null>(null)
@@ -177,16 +178,31 @@ async function loadClientKeys() {
   }
 }
 
+function matchesCredentialQuery(entry: ModelRouteCredential, search: string): boolean {
+  if (!search) return true
+  return [entry.channelName, entry.credentialName, entry.channelId, entry.credentialId, ...entry.upstreamModels, ...entry.protocols]
+    .join(' ')
+    .toLowerCase()
+    .includes(search)
+}
+
 const sortedModels = computed(() => [...models.value].sort((a, b) => a.modelId.localeCompare(b.modelId)))
 const dirty = computed(() => !!detail.value && orderSnapshot(entries.value) !== orderSnapshot(detail.value.entries))
 const editorBusy = computed(() => detailLoading.value || saving.value || conflictLoading.value)
 const selectedKeys = computed(() => new Set(entries.value.map(entryKey)))
+const selectedFilterActive = computed(() => selectedQuery.value.trim().length > 0)
+const filteredViewEntries = computed(() => {
+  const search = selectedQuery.value.trim().toLowerCase()
+  return viewEntries.value
+    .map((entry, index) => ({ entry, index }))
+    .filter(({ entry }) => matchesCredentialQuery(entry, search))
+})
 const availableCredentials = computed(() => {
   const search = credentialQuery.value.trim().toLowerCase()
   return (detail.value?.availableCredentials ?? [])
     .filter(entry => !selectedKeys.value.has(entryKey(entry)))
     .filter(entry => !onlySelectableAvailable.value || entry.selectable)
-    .filter(entry => !search || [entry.channelName, entry.credentialName, entry.channelId, entry.credentialId, ...entry.upstreamModels, ...entry.protocols].join(' ').toLowerCase().includes(search))
+    .filter(entry => matchesCredentialQuery(entry, search))
 })
 const remainingCount = computed(() => (detail.value?.availableCredentials ?? []).filter(entry => !selectedKeys.value.has(entryKey(entry))).length)
 const unavailableRemainingCount = computed(() => (detail.value?.availableCredentials ?? []).filter(entry => !selectedKeys.value.has(entryKey(entry)) && !entry.selectable).length)
@@ -200,6 +216,13 @@ function clearDrag() {
 function clearPositionEdit() {
   editingPositionKey.value = ''
   editingPositionValue.value = ''
+}
+
+function clearSelectedQuery() {
+  selectedQuery.value = ''
+  void nextTick(() => {
+    root.value?.querySelector<HTMLInputElement>('[aria-label="搜索已选凭据"]')?.focus()
+  })
 }
 
 function markRecentlyMoved(key: string) {
@@ -268,6 +291,7 @@ async function selectModel(modelId: string) {
   selectedModelId.value = modelId
   detail.value = null
   entries.value = []
+  selectedQuery.value = ''
   credentialQuery.value = ''
   conflict.value = false
   conflictLatest.value = null
@@ -407,7 +431,8 @@ function addEntry(entry: ModelRouteCredential) {
   entries.value.push(...cloneEntries([entry]))
   changed()
   announcement.value = `已添加 ${credentialLabel(entry)}，位于第 ${entries.value.length} 位。`
-  if (isCompactWorkspace() && mobilePane.value === 'add') {
+  const hiddenBySelectedFilter = !matchesCredentialQuery(entry, selectedQuery.value.trim().toLowerCase())
+  if ((isCompactWorkspace() && mobilePane.value === 'add') || hiddenBySelectedFilter) {
     void nextTick(() => {
       const buttons = [...(root.value?.querySelectorAll<HTMLButtonElement>('[data-available-credential] button:not(:disabled)') ?? [])]
       const target = buttons[Math.min(Math.max(addIndex, 0), buttons.length - 1)]
@@ -421,22 +446,34 @@ function addEntry(entry: ModelRouteCredential) {
 
 function removeEntry(target: ModelRouteIdentity) {
   if (editorBusy.value || perspectiveActive.value) return
-  const index = entries.value.findIndex(entry => entryKey(entry) === entryKey(target))
+  const targetKey = entryKey(target)
+  const visibleBefore = filteredViewEntries.value
+  const visibleIndex = visibleBefore.findIndex(item => entryKey(item.entry) === targetKey)
+  const index = entries.value.findIndex(entry => entryKey(entry) === targetKey)
   if (index < 0) return
+  if (editingPositionKey.value === targetKey) clearPositionEdit()
   const [entry] = entries.value.splice(index, 1)
   changed()
   announcement.value = `已移除 ${credentialLabel(entry)}。`
-  const next = entries.value[Math.min(index, entries.value.length - 1)]
-  if (next) {
-    void focusEntry(entryKey(next), 'remove')
+  if (!entries.value.length) {
+    selectedQuery.value = ''
+    void nextTick(() => {
+      if (isCompactWorkspace() && mobilePane.value === 'selected') {
+        root.value?.querySelectorAll<HTMLButtonElement>('.route-mobile-tab')[1]?.focus()
+        return
+      }
+      root.value?.querySelector<HTMLInputElement>('[aria-label="搜索可添加凭据"]')?.focus()
+    })
+    return
+  }
+  const visibleAfter = filteredViewEntries.value
+  const nextVisible = visibleAfter[Math.min(Math.max(visibleIndex, 0), visibleAfter.length - 1)]?.entry
+  if (nextVisible) {
+    void focusEntry(entryKey(nextVisible), 'remove')
     return
   }
   void nextTick(() => {
-    if (isCompactWorkspace() && mobilePane.value === 'selected') {
-      root.value?.querySelectorAll<HTMLButtonElement>('.route-mobile-tab')[1]?.focus()
-      return
-    }
-    root.value?.querySelector<HTMLInputElement>('[aria-label="搜索可添加凭据"]')?.focus()
+    root.value?.querySelector<HTMLInputElement>('[aria-label="搜索已选凭据"]')?.focus()
   })
 }
 
@@ -537,6 +574,7 @@ watch(perspectiveKeyId, () => {
   clearPositionEdit()
   if (perspectiveKeyId.value) mobilePane.value = 'selected'
 })
+watch(selectedQuery, () => clearPositionEdit())
 watch(perspectiveKey, key => {
   if (!key && perspectiveKeyId.value) perspectiveKeyId.value = ''
 })
@@ -664,7 +702,8 @@ onBeforeUnmount(() => {
 
         <div class="route-workspace" :class="{ 'is-readonly': perspectiveActive }">
           <div class="route-selected-pane" :class="{ 'is-mobile-hidden': !perspectiveActive && mobilePane !== 'selected' }">
-            <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ viewEntries.length }} 个</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
+            <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ selectedFilterActive && viewEntries.length ? `匹配 ${filteredViewEntries.length} / ${viewEntries.length} 个` : `${viewEntries.length} 个` }}</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
+            <label class="search-box route-credential-search"><Icon name="search" :size="16" /><input v-model="selectedQuery" type="search" aria-label="搜索已选凭据" placeholder="搜索渠道、凭据或上游模型" autocomplete="off" /></label>
             <p v-if="perspectiveActive" class="muted small">只读视角：全局路由共 {{ viewEntries.length }} 条，当前调用方可用 {{ perspectiveUsableCount }} 条。未保存草稿会保留，切回全局后可继续编辑。</p>
             <p v-else id="route-order-help" class="muted small">支持拖动、上移/下移/置顶，或<strong>双击序号</strong>直接修改位次（其余自动顺延）。</p>
             <div v-if="!viewEntries.length" class="route-empty route-empty-order">
@@ -674,8 +713,12 @@ onBeforeUnmount(() => {
                 : (!detail.configured ? '待配置，请添加凭据' : '尚未选择路由凭据') }}</strong>
               <p>{{ perspectiveActive ? '该模型当前没有全局路由凭据。' : '从右侧添加凭据。空列表不会自动使用其他凭据，模型将无法接收请求。' }}</p>
             </div>
+            <div v-else-if="!filteredViewEntries.length" class="route-filter-empty muted small" role="status">
+              <span>没有匹配的已选凭据。</span>
+              <button type="button" class="button ghost mini" @click="clearSelectedQuery">清除搜索</button>
+            </div>
             <ol v-else class="route-entry-list" aria-label="已选凭据顺序" :aria-describedby="perspectiveActive ? undefined : 'route-order-help'">
-              <li v-for="(entry, index) in viewEntries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-scope-denied': !!credentialScopeReason(entry), 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry), 'is-just-moved': recentlyMovedKey === entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy && !perspectiveActive && editingPositionKey !== entryKey(entry)" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
+              <li v-for="{ entry, index } in filteredViewEntries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-scope-denied': !!credentialScopeReason(entry), 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry), 'is-just-moved': recentlyMovedKey === entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy && !perspectiveActive && editingPositionKey !== entryKey(entry)" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
                 <input
                   v-if="editingPositionKey === entryKey(entry)"
                   v-model="editingPositionValue"
@@ -801,6 +844,7 @@ onBeforeUnmount(() => {
 .route-empty-order { display: grid; justify-items: center; gap: 8px; margin: 14px 0; padding: 24px 14px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--muted); text-align: center; }
 .route-empty-order strong { color: var(--ink); }
 .route-empty-order p { max-width: 44ch; margin: 0; }
+.route-filter-empty { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 10px; }
 .route-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 24px; }
 .route-section-head h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; font-size: 14px; }
 .route-selected-pane > p, .route-workspace > .route-selected-pane > p { margin: 0; line-height: 1.5; }

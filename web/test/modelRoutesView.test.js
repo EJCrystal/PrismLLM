@@ -646,4 +646,61 @@ describe('ModelRoutesView mounted credential-order editor', () => {
       window.matchMedia = originalMatchMedia
     }
   })
+
+  it('filters selected credentials while preserving global positions, editing, focus, and reset on model switch', async () => {
+    await mount()
+    // Start with [staticA, oauthB], filter to oauthB before adding staticC so staticC is filtered out on add
+    await search('搜索已选凭据', 'upstream-b')
+    assert.deepEqual(entryIds(), [keyFor(oauthB)])
+    assert.equal(text(entryRow(keyFor(oauthB)).querySelector('.route-position')), '2')
+    assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /匹配 1 \/ 2 个/)
+
+    // Adding a credential that does not match the active selected filter keeps focus in the add pane
+    availableRow(keyFor(staticC)).querySelector('button').click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(oauthB)])
+    assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /匹配 1 \/ 3 个/)
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索可添加凭据')
+
+    // Filter to staticC by protocol and double-click its real global position (3 -> 1)
+    await search('搜索已选凭据', 'messages')
+    assert.deepEqual(entryIds(), [keyFor(staticC)])
+    assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '3')
+    entryRow(keyFor(staticC)).querySelector('.route-position').dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+    await settle()
+    const posInput = entryRow(keyFor(staticC)).querySelector('input[data-action="position-input"]')
+    assert.ok(posInput)
+    assert.equal(posInput.value, '3')
+    posInput.value = '1'
+    posInput.dispatchEvent(new Event('input', { bubbles: true }))
+    posInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }))
+    await settle()
+    assert.equal(text(entryRow(keyFor(staticC)).querySelector('.route-position')), '1')
+
+    // Removing the only matching entry moves focus to the selected search input and offers clear action
+    entryButton('remove', keyFor(staticC)).click()
+    await settle()
+    assert.deepEqual(entryIds(), [])
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.match(text(host.querySelector('.route-filter-empty')), /没有匹配的已选凭据/)
+
+    // Clicking clear restores remaining entries and keeps focus on the selected search input
+    button('清除搜索').click()
+    await settle()
+    assert.deepEqual(entryIds(), [keyFor(staticA), keyFor(oauthB)])
+    assert.equal(document.activeElement?.getAttribute('aria-label'), '搜索已选凭据')
+    assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /已选凭据 2 个/)
+
+    // Works in readonly caller perspective mode too, preserving global positions
+    await selectPerspective('caller-a')
+    await search('搜索已选凭据', '渠道 B')
+    assert.deepEqual(entryIds(), [keyFor(oauthB)])
+    assert.equal(text(entryRow(keyFor(oauthB)).querySelector('.route-position')), '2')
+    assert.match(text(host.querySelector('.route-selected-pane .route-section-head')), /匹配 1 \/ 2 个/)
+
+    // Switching models clears selectedQuery
+    host.querySelector(`[data-model-id="${modelB}"]`).click()
+    await settle()
+    assert.equal(host.querySelector('[aria-label="搜索已选凭据"]').value, '')
+  })
 })
