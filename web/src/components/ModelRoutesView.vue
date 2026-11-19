@@ -707,7 +707,13 @@ onBeforeUnmount(() => {
 
         <div class="route-workspace" :class="{ 'is-readonly': perspectiveActive }">
           <div class="route-selected-pane" :class="{ 'is-mobile-hidden': !perspectiveActive && mobilePane !== 'selected' }">
-            <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ selectedFilterActive ? `匹配 ${filteredViewEntries.length} / ${viewEntries.length} 个` : `${viewEntries.length} 个` }}</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
+            <div class="route-section-head">
+              <div class="route-section-title">
+                <h3>已选凭据</h3>
+                <span class="route-section-count muted small" role="status" aria-atomic="true">{{ selectedFilterActive ? `匹配 ${filteredViewEntries.length} / ${viewEntries.length} 个` : `${viewEntries.length} 个` }}</span>
+              </div>
+              <span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span>
+            </div>
             <label class="search-box route-credential-search"><Icon name="search" :size="16" /><input v-model="selectedQuery" type="search" aria-label="搜索已选凭据" placeholder="搜索渠道、凭据或上游模型" autocomplete="off" /></label>
             <p v-if="perspectiveActive" class="muted small">只读视角：全局路由共 {{ viewEntries.length }} 条，当前调用方可用 {{ perspectiveUsableCount }} 条。未保存草稿会保留，切回全局后可继续编辑。</p>
             <p v-else id="route-order-help" class="muted small">支持拖动、上移/下移/置顶，或<strong>双击序号</strong>直接修改位次（其余自动顺延）。</p>
@@ -722,8 +728,8 @@ onBeforeUnmount(() => {
                 <button type="button" class="button ghost mini" @click="clearSelectedQuery">清除搜索</button>
               </template>
             </div>
-            <div v-else-if="!filteredViewEntries.length" class="route-filter-empty muted small" role="status">
-              <span>没有匹配的已选凭据。</span>
+            <div v-else-if="!filteredViewEntries.length" class="route-filter-empty muted small">
+              <span role="status">没有匹配的已选凭据。</span>
               <button type="button" class="button ghost mini" @click="clearSelectedQuery">清除搜索</button>
             </div>
             <ol v-else class="route-entry-list" aria-label="已选凭据顺序" :aria-describedby="perspectiveActive ? undefined : 'route-order-help'">
@@ -855,6 +861,8 @@ onBeforeUnmount(() => {
 .route-empty-order p { max-width: 44ch; margin: 0; }
 .route-filter-empty { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 10px; }
 .route-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 24px; }
+.route-section-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
+.route-section-count { font-weight: 600; }
 .route-section-head h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; font-size: 14px; }
 .route-selected-pane > p, .route-workspace > .route-selected-pane > p { margin: 0; line-height: 1.5; }
 .route-workspace { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.95fr); align-items: start; gap: 18px; min-width: 0; }
