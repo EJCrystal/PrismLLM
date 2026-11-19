@@ -430,8 +430,10 @@ function addEntry(entry: ModelRouteCredential) {
   const addIndex = availableCredentials.value.findIndex(item => entryKey(item) === entryKey(entry))
   entries.value.push(...cloneEntries([entry]))
   changed()
-  announcement.value = `已添加 ${credentialLabel(entry)}，位于第 ${entries.value.length} 位。`
   const hiddenBySelectedFilter = !matchesCredentialQuery(entry, selectedQuery.value.trim().toLowerCase())
+  announcement.value = hiddenBySelectedFilter
+    ? `已添加 ${credentialLabel(entry)}，位于第 ${entries.value.length} 位；未匹配当前已选搜索条件。`
+    : `已添加 ${credentialLabel(entry)}，位于第 ${entries.value.length} 位。`
   if ((isCompactWorkspace() && mobilePane.value === 'add') || hiddenBySelectedFilter) {
     void nextTick(() => {
       const buttons = [...(root.value?.querySelectorAll<HTMLButtonElement>('[data-available-credential] button:not(:disabled)') ?? [])]
@@ -702,7 +704,7 @@ onBeforeUnmount(() => {
 
         <div class="route-workspace" :class="{ 'is-readonly': perspectiveActive }">
           <div class="route-selected-pane" :class="{ 'is-mobile-hidden': !perspectiveActive && mobilePane !== 'selected' }">
-            <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ selectedFilterActive && viewEntries.length ? `匹配 ${filteredViewEntries.length} / ${viewEntries.length} 个` : `${viewEntries.length} 个` }}</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
+            <div class="route-section-head"><h3>已选凭据 <span class="muted small">{{ selectedFilterActive ? `匹配 ${filteredViewEntries.length} / ${viewEntries.length} 个` : `${viewEntries.length} 个` }}</span></h3><span v-if="dirty && !perspectiveActive" class="badge warning">未保存</span></div>
             <label class="search-box route-credential-search"><Icon name="search" :size="16" /><input v-model="selectedQuery" type="search" aria-label="搜索已选凭据" placeholder="搜索渠道、凭据或上游模型" autocomplete="off" /></label>
             <p v-if="perspectiveActive" class="muted small">只读视角：全局路由共 {{ viewEntries.length }} 条，当前调用方可用 {{ perspectiveUsableCount }} 条。未保存草稿会保留，切回全局后可继续编辑。</p>
             <p v-else id="route-order-help" class="muted small">支持拖动、上移/下移/置顶，或<strong>双击序号</strong>直接修改位次（其余自动顺延）。</p>
@@ -712,6 +714,10 @@ onBeforeUnmount(() => {
                 ? (detail.configured ? '该模型没有全局路由凭据' : '该模型尚未配置路由')
                 : (!detail.configured ? '待配置，请添加凭据' : '尚未选择路由凭据') }}</strong>
               <p>{{ perspectiveActive ? '该模型当前没有全局路由凭据。' : '从右侧添加凭据。空列表不会自动使用其他凭据，模型将无法接收请求。' }}</p>
+              <template v-if="selectedFilterActive">
+                <p class="small" role="status">当前搜索条件已生效{{ perspectiveActive ? '。' : '，新增不匹配的凭据会被隐藏。' }}</p>
+                <button type="button" class="button ghost mini" @click="clearSelectedQuery">清除搜索</button>
+              </template>
             </div>
             <div v-else-if="!filteredViewEntries.length" class="route-filter-empty muted small" role="status">
               <span>没有匹配的已选凭据。</span>
