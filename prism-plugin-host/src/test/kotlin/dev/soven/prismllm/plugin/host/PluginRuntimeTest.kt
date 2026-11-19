@@ -372,6 +372,28 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `bootstrap disposes provider identity mismatch and falls back to the next older candidate`(): Unit = runBlocking {
+        val older = fixture(version = "1.8.0")
+        val newer = fixture(version = "2.0.0", providerVersion = "9.9.9")
+        publish(older, newer)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+
+        host.initialize(older.manifest.id) { config("legacy fallback") }
+
+        val state = host.state(older.manifest.id)
+        assertEquals("1.8.0", state.installedVersion)
+        assertEquals("1.8.0", state.activeVersion)
+        assertEquals(config("legacy fallback"), state.configuration)
+        assertEquals(1, newer.count("constructed"))
+        awaitProperty("${newer.property}.closed", "1")
+        assertEquals(1, newer.count("closed"))
+        assertEquals(1, older.count("constructed"))
+        assertEquals(0, older.count("closed"))
+        assertEquals("1.8.0", store.find(older.manifest.id)?.version)
+    }
+
+    @Test
     fun `bootstrap chooses the latest compatible semantic version deterministically`(): Unit = runBlocking {
         val earlier = fixture(version = "1.9.0")
         val later = fixture(version = "1.10.0")
@@ -444,7 +466,10 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val state = host.state(packaged.manifest.id)
         assertFalse(state.installed)
         assertEquals(config("concurrent tombstone"), state.configuration)
-        assertEquals(0, packaged.count("constructed"))
+        awaitProperty("${packaged.property}.closed", "1")
+        assertEquals(1, packaged.count("constructed"))
+        assertEquals(1, packaged.count("closed"))
+        assertFalse(store.find(packaged.manifest.id)?.installed ?: true)
     }
 
     @Test
@@ -1289,7 +1314,8 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertNotNull(broken.loadError)
         assertNull(broken.activeUi)
         assertEquals(1, mismatch.count("closed"))
-        failure("PLUGIN_NOT_ACTIVE") { second.execute(mismatch.manifest.id, "1.0.0", input, target) { ok } }
+        assertFalse(broken.installed, "An unloadable bootstrap candidate must not leave an installation record")
+        failure("PLUGIN_NOT_INSTALLED") { second.execute(mismatch.manifest.id, "1.0.0", input, target) { ok } }
     }
 
     @Test

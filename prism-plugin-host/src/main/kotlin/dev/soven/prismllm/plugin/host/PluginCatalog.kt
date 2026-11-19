@@ -37,28 +37,33 @@ class PluginCatalog(catalogDirectory: Path) {
         validate(reference).also { requireCompatible(it.item) }
     }
 
-    internal fun bootstrapPackage(id: String): ValidatedPluginPackage? = io {
-        val candidates = references().filter { it.id == id }
-            .sortedWith { a, b -> compareVersions(b.version, a.version) }
+    internal fun bootstrapPackage(id: String): ValidatedPluginPackage? {
         var firstFailure: PluginHostException? = null
-        for (reference in candidates) {
+        for (candidate in bootstrapCandidates(id)) {
             try {
-                val candidate = io { validate(reference) }
-                requireCompatible(candidate.item)
-                return@io candidate
+                return bootstrapCandidate(candidate)
             } catch (error: PluginHostException) {
-                // A broken or incompatible newer version must not hide a usable older version.
-                // If none works, preserve the highest version's actionable failure as before.
-                if (firstFailure == null) {
-                    firstFailure = if (error.code == "PLUGIN_INCOMPATIBLE") error else PluginHostException(
-                        "PLUGIN_INCOMPATIBLE", "${error.code}: ${error.message}".take(4_000),
-                    )
-                }
+                if (firstFailure == null) firstFailure = bootstrapFailure(error)
             }
         }
         firstFailure?.let { throw it }
-        null // An absent optional plugin is a normal no-op.
+        return null // An absent optional plugin is a normal no-op.
     }
+
+    /** Bounded catalogue references in descending version order; archives are read one at a time. */
+    internal fun bootstrapCandidates(id: String): List<CatalogReference> = io {
+        references().filter { it.id == id }
+            .sortedWith { a, b -> compareVersions(b.version, a.version) }
+    }
+
+    internal fun bootstrapCandidate(reference: CatalogReference): ValidatedPluginPackage = io {
+        validate(reference).also { requireCompatible(it.item) }
+    }
+
+    internal fun bootstrapFailure(error: PluginHostException): PluginHostException =
+        if (error.code == "PLUGIN_INCOMPATIBLE") error else PluginHostException(
+            "PLUGIN_INCOMPATIBLE", "${error.code}: ${error.message}".take(4_000),
+        )
 
     private fun references(): List<CatalogReference> {
         val catalogPath = directory.resolve("catalog.json")
@@ -131,4 +136,4 @@ class PluginCatalog(catalogDirectory: Path) {
 private data class CatalogDocument(val schemaVersion: Int, val packages: List<CatalogReference>)
 
 @Serializable
-private data class CatalogReference(val id: String, val version: String, val file: String, val sha256: String)
+internal data class CatalogReference(val id: String, val version: String, val file: String, val sha256: String)

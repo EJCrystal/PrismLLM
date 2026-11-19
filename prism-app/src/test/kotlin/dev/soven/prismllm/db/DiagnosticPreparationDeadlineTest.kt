@@ -8,11 +8,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.junit.jupiter.api.Tag
 import java.lang.reflect.Proxy
 import java.sql.Connection
+import java.sql.ResultSet
+import java.sql.Statement
 import java.util.Base64
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.CountDownLatch
@@ -205,11 +214,13 @@ class DiagnosticPreparationDeadlineTest {
         }
     }
 
+    @OptIn(ExperimentalCoroutinesApi::class)
     @Test
-    fun `caller times out during uninterruptible commit and lease stays owned through cleanup`() = runBlocking {
+    fun `caller times out during uninterruptible commit and lease stays owned through cleanup`() = runTest {
         val jdbc = BlockingJdbc()
-        val waiter = async(Dispatchers.Default) {
-            DiagnosticPreparationDeadline.withinSynchronous(1_000) {
+        val budget = DiagnosticPreparationDeadline.start(1_000, { testScheduler.currentTime * 1_000_000L })
+        val waiter = async {
+            DiagnosticPreparationDeadline.withinSynchronous(budget) {
                 DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use {
                     it.commit()
                 }
@@ -217,8 +228,11 @@ class DiagnosticPreparationDeadlineTest {
             }
         }
         try {
+            runCurrent()
             assertSignalled(jdbc.commitEntered, "commit should enter the fake driver")
-            assertNull(withTimeout(3_000) { waiter.await() }, "caller must stop waiting while commit is blocked")
+            advanceTimeBy(1_001)
+            runCurrent()
+            assertNull(waiter.await(), "caller must stop waiting while commit is blocked")
             assertEquals(0, jdbc.returns.get(), "commit still owns the lease after the caller times out")
             assertEquals(1L, jdbc.closeEntered.count)
             assertEquals(0, jdbc.aborts.get(), "caller must never abort the owner's connection")
@@ -244,8 +258,51 @@ class DiagnosticPreparationDeadlineTest {
             assertEquals(0, ordinary.aborts.get())
         } finally {
             jdbc.releaseAll()
-            withTimeout(3_000) { waiter.join() }
+            waiter.cancel()
+            withContext(Dispatchers.IO) { waiter.join() }
             assertSignalled(jdbc.returned, "test must release its owned lease")
+        }
+    }
+
+    @Test
+    fun `diagnostic SQL read uses remaining network timeout restores on success and evicts on timeout`() = runBlocking {
+        val successful = StatementJdbc(blockRead = false)
+        val result = DiagnosticPreparationDeadline.withinSynchronous(5_000) {
+            DiagnosticPreparationDeadline.diagnosticConnection(successful.connection) { successful.discards.incrementAndGet() }.use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+                }
+            }
+        }
+        assertEquals(true, result)
+        assertTrue(successful.timeoutAtExecute.get() in 1..5_000)
+        assertTrue(successful.timeoutAtRead.get() in 1..5_000)
+        assertEquals(successful.originalTimeout, successful.networkTimeout.get(), "normal pool return restores the prior timeout")
+        assertEquals(0, successful.aborts.get())
+        assertEquals(0, successful.discards.get())
+
+        val timedOut = StatementJdbc(blockRead = true)
+        val waiter = async(Dispatchers.Default) {
+            DiagnosticPreparationDeadline.withinSynchronous(5_000) {
+                DiagnosticPreparationDeadline.diagnosticConnection(timedOut.connection) { timedOut.discards.incrementAndGet() }.use { connection ->
+                    connection.createStatement().use { statement ->
+                        statement.executeQuery("SELECT 1").use { rows -> rows.next() }
+                    }
+                }
+            }
+        }
+        try {
+            assertSignalled(timedOut.readEntered, "SELECT result read should block in the fake driver")
+            assertTrue(timedOut.timeoutAtRead.get() in 1..5_000, "remaining budget must be applied before result reads")
+            timedOut.allowRead.countDown()
+            assertNull(waiter.await(), "driver timeout should be reported as a diagnostic timeout")
+            assertEquals(1, timedOut.aborts.get(), "a timed-out socket must not be reused")
+            assertEquals(1, timedOut.discards.get(), "a timed-out diagnostic lease must be evicted")
+            assertEquals(1, timedOut.closes.get())
+        } finally {
+            timedOut.allowRead.countDown()
+            waiter.cancel()
+            withContext(Dispatchers.IO) { waiter.join() }
         }
     }
 
@@ -286,8 +343,10 @@ class DiagnosticPreparationDeadlineTest {
         }
 
         val drainingJdbc = BlockingJdbc()
-        val drain = async(Dispatchers.Default) {
-            DiagnosticPreparationDeadline.withinSynchronousAndDrain(1_000) {
+        val scheduler = TestCoroutineScheduler()
+        val budget = DiagnosticPreparationDeadline.start(60_000) { scheduler.currentTime * 1_000_000 }
+        val drain = async(StandardTestDispatcher(scheduler)) {
+            DiagnosticPreparationDeadline.withinSynchronousAndDrain(budget) {
                 DiagnosticPreparationDeadline.diagnosticConnection(drainingJdbc.connection) {
                     drainingJdbc.discards.incrementAndGet()
                 }.use { it.commit() }
@@ -295,20 +354,113 @@ class DiagnosticPreparationDeadlineTest {
             }
         }
         try {
+            scheduler.runCurrent()
             assertSignalled(drainingJdbc.commitEntered, "draining operation should enter commit")
-            // An independent bounded waiter observes expiry without cancelling the draining caller.
-            assertNull(kotlinx.coroutines.withTimeoutOrNull(1_500) { drain.await() })
+            scheduler.advanceTimeBy(60_001)
+            scheduler.runCurrent()
             assertTrue(!drain.isCompleted, "drain must wait for the real worker, not its cancellation flag")
             drainingJdbc.allowCommit.countDown()
             assertSignalled(drainingJdbc.closeEntered, "drain must also cover blocked close")
             assertTrue(!drain.isCompleted)
             drainingJdbc.allowClose.countDown()
-            assertNull(withTimeout(3_000) { drain.await() })
+            withTimeout(3_000) {
+                while (!drain.isCompleted) {
+                    scheduler.runCurrent()
+                    delay(1)
+                }
+            }
+            assertNull(drain.await())
             assertSignalled(drainingJdbc.returned, "drain returns after the lease is released")
         } finally {
             drainingJdbc.releaseAll()
             withTimeout(3_000) { drain.join() }
         }
+    }
+
+    private inner class StatementJdbc(blockRead: Boolean) {
+        val originalTimeout = 9_000
+        val networkTimeout = AtomicInteger(originalTimeout)
+        val timeoutAtExecute = AtomicInteger()
+        val timeoutAtRead = AtomicInteger()
+        val aborts = AtomicInteger()
+        val discards = AtomicInteger()
+        val closes = AtomicInteger()
+        val readEntered = CountDownLatch(1)
+        val allowRead = CountDownLatch(if (blockRead) 0 else 1)
+        private val blockedRead = blockRead
+
+        val connection: Connection = Proxy.newProxyInstance(
+            Connection::class.java.classLoader,
+            arrayOf(Connection::class.java),
+        ) { proxy, method, args ->
+            when (method.name) {
+                "getNetworkTimeout" -> networkTimeout.get()
+                "setNetworkTimeout" -> { networkTimeout.set(args!![1] as Int); null }
+                "createStatement" -> statementProxy()
+                "abort" -> { aborts.incrementAndGet(); null }
+                "close" -> { closes.incrementAndGet(); null }
+                "isClosed" -> closes.get() != 0
+                "equals" -> proxy === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxy)
+                "toString" -> "StatementJdbc"
+                else -> defaultJdbcValue(method.returnType)
+            }
+        } as Connection
+
+        private fun statementProxy(): Statement = Proxy.newProxyInstance(
+            Statement::class.java.classLoader,
+            arrayOf(Statement::class.java),
+        ) { proxy, method, args ->
+            when (method.name) {
+                "executeQuery" -> {
+                    timeoutAtExecute.set(networkTimeout.get())
+                    resultSetProxy()
+                }
+                "close" -> null
+                "isClosed" -> false
+                "getConnection" -> connection
+                "equals" -> proxy === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxy)
+                "toString" -> "StatementJdbc.Statement"
+                else -> defaultJdbcValue(method.returnType)
+            }
+        } as Statement
+
+        private fun resultSetProxy(): ResultSet = Proxy.newProxyInstance(
+            ResultSet::class.java.classLoader,
+            arrayOf(ResultSet::class.java),
+        ) { proxy, method, args ->
+            when (method.name) {
+                "next" -> {
+                    timeoutAtRead.set(networkTimeout.get())
+                    if (blockedRead) {
+                        readEntered.countDown()
+                        check(allowRead.await(3, TimeUnit.SECONDS)) { "test did not release fake JDBC read" }
+                        throw java.net.SocketTimeoutException("simulated PostgreSQL socket read timeout")
+                    }
+                    true
+                }
+                "close" -> null
+                "isClosed" -> false
+                "getStatement" -> null
+                "equals" -> proxy === args?.get(0)
+                "hashCode" -> System.identityHashCode(proxy)
+                "toString" -> "StatementJdbc.ResultSet"
+                else -> defaultJdbcValue(method.returnType)
+            }
+        } as ResultSet
+    }
+
+    private fun defaultJdbcValue(type: Class<*>): Any? = when (type) {
+        java.lang.Boolean.TYPE -> false
+        java.lang.Integer.TYPE -> 0
+        java.lang.Long.TYPE -> 0L
+        java.lang.Double.TYPE -> 0.0
+        java.lang.Float.TYPE -> 0.0f
+        java.lang.Short.TYPE -> 0.toShort()
+        java.lang.Byte.TYPE -> 0.toByte()
+        java.lang.Character.TYPE -> '\u0000'
+        else -> null
     }
 
     private class BlockingJdbc {

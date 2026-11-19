@@ -1251,6 +1251,32 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.notEqual(captures.get('PluginDiagnosticHost').form.prompt, 'stale cached input for B')
   })
 
+  it('keeps an upgraded contribution tab selected and restores its tab focus after the panel remounts', async () => {
+    const first = makeOfficialPluginFixture({ version: '1.0.0' })
+    const upgraded = makeOfficialPluginFixture({ version: '2.0.0' })
+    setFixtures(first)
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
+    const tabKey = `plugin:${first.manifest.id}:${first.contribution.entry.id}`
+    assert.equal(entry.state.activeTab.value, tabKey)
+    const focusedPanelControl = field(entry.container, '模型')
+    focusedPanelControl.focus()
+    assert.equal(document.activeElement, focusedPanelControl)
+    const initialSetups = diagnosticHostSetups
+
+    mock.states.set(upgraded.state.id, clonePluginData(upgraded.state))
+    mock.contributions = clonePluginData(upgraded.contributions)
+    await entry.state.load()
+    await waitFor(() => diagnosticHostSetups === initialSetups + 1 && !captures.get('PluginDiagnosticHost').loading.value)
+
+    const upgradedTab = [...entry.container.querySelectorAll('[role="tab"]')].find(tab => tab.id.endsWith(`-${tabKey}`))
+    assert.ok(upgradedTab)
+    assert.equal(entry.state.activeTab.value, tabKey)
+    assert.equal(captures.get('PluginDiagnosticHost').props.contribution.activeVersion, '2.0.0')
+    assert.equal(document.activeElement, upgradedTab)
+    assert.equal(entry.state.activeKey.value, `${tabKey}:${channel.id}:2.0.0:0`)
+  })
+
   for (const focusLocation of ['tab', 'panel', 'elsewhere']) {
     it(`moves focus after an active diagnostic disappears when focus is ${focusLocation}`, async () => {
       const fixture = makeOfficialPluginFixture()
@@ -1258,15 +1284,18 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       const entry = await mount('ChannelTestDrawer', { channel })
       await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
       const activeTab = entry.container.querySelector('[role="tab"][aria-selected="true"]')
+      const iq = [...entry.container.querySelectorAll('[role="tab"]')].find(tab => text(tab) === '智商')
+      let scrollOptions = null
+      iq.scrollIntoView = options => { scrollOptions = options }
       const focused = focusLocation === 'tab' ? activeTab : focusLocation === 'panel'
         ? field(entry.container, '模型') : button(entry.container, '关闭模拟窗口')
       focused.focus()
       assert.equal(document.activeElement, focused)
       entry.state.markUnavailable({ pluginId: fixture.manifest.id, activeVersion: fixture.contribution.activeVersion, entryId: fixture.contribution.entry.id })
       await settle()
-      const iq = [...entry.container.querySelectorAll('[role="tab"]')].find(tab => text(tab) === '智商')
       assert.equal(document.activeElement, focusLocation === 'elsewhere' ? focused : iq)
       assert.equal(entry.state.activeTab.value, 'iq')
+      if (focusLocation !== 'elsewhere') assert.deepEqual(scrollOptions, { block: 'nearest', inline: 'nearest' })
     })
   }
 

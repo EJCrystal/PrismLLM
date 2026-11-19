@@ -13,8 +13,11 @@ import dev.soven.prismllm.oauth.domain.OAuthAuthState
 import dev.soven.prismllm.oauth.domain.OAuthProviderConfig
 import dev.soven.prismllm.oauth.infra.ChatGptOAuthProvider
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
+import dev.soven.prismllm.oauth.infra.OAuthTokenProvider
+import dev.soven.prismllm.oauth.infra.OAuthTokenResponse
 import dev.soven.prismllm.oauth.infra.OAuthTokenProviderRegistry
 import dev.soven.prismllm.oauth.infra.isProxyHostAllowed
+import dev.soven.prismllm.oauth.infra.postTokenRequest
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate
@@ -66,6 +69,8 @@ class OAuthTokenServiceTest {
     private val tokenRequests = AtomicInteger()
     private val lastRequestBody = AtomicReference<String>()
     private val beforeReply = AtomicReference<(() -> Unit)?>(null)
+    private val responseBodyStarted = AtomicReference<CompletableDeferred<Unit>?>(null)
+    private val finishResponseBody = AtomicReference<CompletableDeferred<Unit>?>(null)
     private var reply: () -> Pair<Int, String> = { 200 to SUCCESS }
 
     @BeforeAll
@@ -95,7 +100,11 @@ class OAuthTokenServiceTest {
             val bytes = body.toByteArray()
             exchange.responseHeaders.add("Content-Type", "application/json")
             exchange.sendResponseHeaders(status, bytes.size.toLong())
-            exchange.responseBody.use { it.write(bytes) }
+            responseBodyStarted.get()?.complete(Unit)
+            finishResponseBody.get()?.let { finish ->
+                runBlocking { withTimeout(10_000) { finish.await() } }
+            }
+            runCatching { exchange.responseBody.use { it.write(bytes) } }
             exchange.close()
         }
         server.start()
@@ -113,7 +122,120 @@ class OAuthTokenServiceTest {
         tokenRequests.set(0)
         lastRequestBody.set(null)
         beforeReply.set(null)
+        responseBodyStarted.set(null)
+        finishResponseBody.set(null)
         reply = { 200 to SUCCESS }
+    }
+
+    @Test
+    fun tokenRequestDeadlineCoversAStalledResponseBody() = runBlocking {
+        val bodyStarted = CompletableDeferred<Unit>()
+        val finishBody = CompletableDeferred<Unit>()
+        responseBodyStarted.set(bodyStarted)
+        finishResponseBody.set(finishBody)
+
+        try {
+            val request = async(Dispatchers.IO) {
+                runCatching {
+                    postTokenRequest(
+                        endpoint = "http://127.0.0.1:${server.address.port}/token",
+                        contentType = "application/json",
+                        body = "{}",
+                        proxyUrl = null,
+                        timeoutMs = 500,
+                    )
+                }
+            }
+            withTimeout(5_000) { bodyStarted.await() }
+            val failure = assertIs<OAuthRefreshException>(request.await().exceptionOrNull())
+            assertEquals("timeout", failure.errorCode)
+        } finally {
+            finishBody.complete(Unit)
+            responseBodyStarted.set(null)
+            finishResponseBody.set(null)
+        }
+    }
+
+    @Test
+    fun exchangePermitIsAvailableWhileOtherAccountsRetryBlockedSaves() = runBlocking {
+        val providerCalls = AtomicInteger()
+        val fifthExchange = CompletableDeferred<Unit>()
+        val provider = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                if (providerCalls.incrementAndGet() == 5) fifthExchange.complete(Unit)
+                return OAuthTokenResponse(
+                    accessToken = "access-$refreshToken",
+                    refreshToken = "rotated-$refreshToken",
+                )
+            }
+        }
+        val service = serviceWithProvider(provider)
+        val accountIds = mutableListOf<String>()
+        val stripes = mutableSetOf<kotlinx.coroutines.sync.Mutex>()
+        while (accountIds.size < 5) {
+            val accountId = createAccount("permit-${UUID.randomUUID()}", accountEmail = email("permit"))
+            val stripe = accountMutex(service, accountId)
+            if (stripes.add(stripe)) accountIds += accountId
+        }
+        val saveBlockedIds = accountIds.take(4)
+        val calls = mutableListOf<kotlinx.coroutines.Deferred<dev.soven.prismllm.oauth.domain.OAuthAccessToken?>>()
+
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+            lock.autoCommit = false
+            try {
+                saveBlockedIds.forEach { accountId ->
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                        statement.setString(1, accountId)
+                        statement.executeQuery().use { assertTrue(it.next()) }
+                    }
+                }
+                saveBlockedIds.forEach { accountId ->
+                    calls += async(Dispatchers.IO) { service.accessToken(accountId, forceRefresh = true) }
+                }
+                val blockerPid = lock.createStatement().use { statement ->
+                    statement.executeQuery("select pg_backend_pid()").use { rows ->
+                        assertTrue(rows.next())
+                        rows.getInt(1)
+                    }
+                }
+                awaitBlockedAccountSaveCount(blockerPid, expected = 4)
+
+                calls += async(Dispatchers.IO) { service.accessToken(accountIds.last(), forceRefresh = true) }
+                withTimeout(5_000) { fifthExchange.await() }
+            } finally {
+                lock.rollback()
+            }
+        }
+
+        try {
+            val results = calls.map { it.await() }
+            assertEquals(5, providerCalls.get())
+            assertTrue(results.all { it?.accessToken?.startsWith("access-permit-") == true })
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    private suspend fun awaitBlockedAccountSaveCount(blockerPid: Int, expected: Int) = withTimeout(5_000) {
+        while (true) {
+            val count = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { observer ->
+                observer.prepareStatement(
+                    "select count(*) from pg_stat_activity where datname = current_database() " +
+                        "and query ilike '%oauth_accounts%' and $blockerPid = any(pg_blocking_pids(pid)) " +
+                        "and state = 'active' and wait_event_type = 'Lock'",
+                ).use { statement ->
+                    statement.executeQuery().use { rows ->
+                        assertTrue(rows.next())
+                        rows.getInt(1)
+                    }
+                }
+            }
+            if (count >= expected) return@withTimeout
+            delay(10)
+        }
+        error("unreachable")
     }
 
     @Test
@@ -331,12 +453,10 @@ class OAuthTokenServiceTest {
                         "the 1.5-second diagnostic waiter must return independently of service persistence",
                     )
 
-                    // The next blocked FOR UPDATE is the retry. Its query_start proves PostgreSQL
-                    // canceled the first save at its 10-second statement deadline; keep the lock
-                    // until the service has started that retry, then release it in finally.
-                    val retrySave = awaitBlockedAccountSave(blockerPid, after = firstSave.queryStart)
-                    val retryDelayMs = retrySave.queryStart.time - firstSave.queryStart.time
-                    assertTrue(retryDelayMs >= 10_000, "expected retry after 10-second save timeout, got ${retryDelayMs}ms")
+                    // The service drains the real first transaction before retrying. Observe that
+                    // the first PostgreSQL statement is gone, then confirm a retry is blocked.
+                    awaitAccountSaveEnded(firstSave)
+                    awaitBlockedAccountSave(blockerPid, after = firstSave.queryStart)
                 } finally {
                     lock.rollback()
                 }
@@ -356,7 +476,7 @@ class OAuthTokenServiceTest {
         }
     }
 
-    private data class BlockedAccountSave(val queryStart: java.sql.Timestamp)
+    private data class BlockedAccountSave(val backendPid: Int, val queryStart: java.sql.Timestamp)
 
     private suspend fun awaitBlockedAccountSave(
         blockerPid: Int,
@@ -365,7 +485,7 @@ class OAuthTokenServiceTest {
         while (true) {
             val blocked = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { observer ->
                 observer.prepareStatement(
-                    "select query_start from pg_stat_activity " +
+                    "select pid, query_start from pg_stat_activity " +
                         "where datname = current_database() and query ilike '%oauth_accounts%' " +
                         "and $blockerPid = any(pg_blocking_pids(pid)) and state = 'active' " +
                         "and wait_event_type = 'Lock' " +
@@ -374,12 +494,30 @@ class OAuthTokenServiceTest {
                 ).use { statement ->
                     if (after != null) statement.setTimestamp(1, after)
                     statement.executeQuery().use { rows ->
-                        if (rows.next()) BlockedAccountSave(rows.getTimestamp(1)) else null
+                        if (rows.next()) BlockedAccountSave(rows.getInt("pid"), rows.getTimestamp("query_start")) else null
                     }
                 }
             }
             if (blocked != null) return@withTimeout blocked
             // Poll PostgreSQL's lock graph instead of inferring lock state from elapsed time.
+            delay(10)
+        }
+        error("unreachable")
+    }
+
+    private suspend fun awaitAccountSaveEnded(save: BlockedAccountSave) = withTimeout(16_000) {
+        while (true) {
+            val stillActive = DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { observer ->
+                observer.prepareStatement(
+                    "select 1 from pg_stat_activity where pid = ? and query_start = ? " +
+                        "and state = 'active' and query ilike '%oauth_accounts%'",
+                ).use { statement ->
+                    statement.setInt(1, save.backendPid)
+                    statement.setTimestamp(2, save.queryStart)
+                    statement.executeQuery().use { it.next() }
+                }
+            }
+            if (!stillActive) return@withTimeout
             delay(10)
         }
         error("unreachable")
@@ -795,6 +933,13 @@ class OAuthTokenServiceTest {
         val locks = field.get(service) as Array<kotlinx.coroutines.sync.Mutex>
         return locks[(accountId.hashCode() and Int.MAX_VALUE) % locks.size]
     }
+
+    private fun serviceWithProvider(provider: OAuthTokenProvider): OAuthTokenService = OAuthTokenService(
+        repository = accounts,
+        cipher = cipher,
+        providers = OAuthTokenProviderRegistry(listOf(provider)),
+        config = OAuthConfig(refreshAheadMs = 900_000),
+    )
 
     private fun service(now: () -> Long = System::currentTimeMillis): OAuthTokenService {
         val provider = ChatGptOAuthProvider(

@@ -66,6 +66,7 @@ import dev.soven.prismllm.proxy.ModelConnectivityTestResult
 import dev.soven.prismllm.proxy.resolveTimeoutMs
 import dev.soven.prismllm.proxy.sampleFingerprintModelConnectivity
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
+import dev.soven.prismllm.proxy.testSavedChannelModelConnectivity
 import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.channel.persistence.KeyAutoDisableSettingsAuditContext
@@ -3084,7 +3085,7 @@ private fun persistedIqTestJob(jobId: String, spec: IqTestJobSpec) = NewIqTestJo
 )
 
 private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqTestRunResponse {
-    val result = testChannelModelConnectivity(
+    val execution = testSavedChannelModelConnectivity(
         channel = spec.channel,
         credentialRef = spec.credential,
         model = spec.model,
@@ -3098,7 +3099,9 @@ private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqT
         globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
         headerProfiles = app.upstreamHeaderCatalogService.profiles(),
         isolatedIqRequest = spec.benchmark == IqBenchmark.CANDY,
+        captureRawSample = spec.benchmark == IqBenchmark.CANDY,
     )
+    val result = execution.result
     val html = if (spec.benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
     val structure = if (spec.benchmark == IqBenchmark.PELICAN) {
         analyzePelicanStructure(result.responseText)
@@ -3125,7 +3128,7 @@ private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqT
     val evaluation = evaluateIqTest(
         benchmark = spec.benchmark,
         success = result.success,
-        responseText = result.responseText,
+        responseText = if (spec.benchmark == IqBenchmark.CANDY) execution.rawSample else result.responseText,
         errorMessage = result.errorMessage,
         structure = structure,
         judgeResult = judgeResult,
@@ -3154,7 +3157,7 @@ private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqT
             questionTitle = spec.question?.title,
             answerType = spec.question?.answerType,
             expectedAnswerValue = spec.question?.expectedAnswer,
-            actualAnswer = evaluation.actualAnswer,
+            actualAnswer = execution.safeText(evaluation.actualAnswer),
             errorMessage = result.errorMessage,
             usage = result.usage,
             upstreamReportedModel = result.upstreamReportedModel?.take(200),

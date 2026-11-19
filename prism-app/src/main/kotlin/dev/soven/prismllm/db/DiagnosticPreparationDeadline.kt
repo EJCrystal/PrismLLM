@@ -27,8 +27,12 @@ import org.postgresql.jdbc.PgStatement
 import java.lang.reflect.InvocationTargetException
 import java.lang.reflect.Method
 import java.lang.reflect.Proxy
+import java.sql.CallableStatement
 import java.sql.Connection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
 import java.sql.SQLException
+import java.sql.Statement
 import java.util.concurrent.Executor
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -70,8 +74,14 @@ internal class DiagnosticPreparationDeadline private constructor(
         return millisUntil(deadlineNanos, nanoTime)
     }
 
+    private fun applyStatementNetworkTimeout(connection: Connection) {
+        connection.setNetworkTimeout(directExecutor, remainingMillis().coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+    }
+
     override fun afterStatementPrepared(transaction: Transaction, preparedStatement: PreparedStatementApi) {
-        // JDBC's seconds-based timeout would overrun a sub-second preparation budget.
+        // Network timeout bounds reads as well as execution; query cancel alone may not stop a blocked socket read.
+        applyStatementNetworkTimeout((transaction as JdbcTransaction).connection.connection as Connection)
+        // The JDBC standard timeout rounds to seconds; retain the PostgreSQL millisecond query timeout too.
         val statement = (preparedStatement as JdbcPreparedStatementImpl).statement.unwrap(PgStatement::class.java)
         statement.setQueryTimeoutMs(remainingMillis())
     }
@@ -163,6 +173,50 @@ internal class DiagnosticPreparationDeadline private constructor(
             return Budget(timeoutMs, nanoTime)
         }
 
+        private fun isTimeoutFailure(cause: Throwable): Boolean = generateSequence(cause) { it.cause }.any {
+            it is java.net.SocketTimeoutException || it is java.sql.SQLTimeoutException ||
+                (it is SQLException && (it.sqlState == "57014" || it.sqlState?.startsWith("08") == true))
+        }
+
+        private fun wrapJdbcValue(
+            value: Any?,
+            setRemainingNetworkTimeout: () -> Unit,
+            poison: (Throwable) -> Unit,
+        ): Any? {
+            val target = value ?: return null
+            val api = when (target) {
+                is CallableStatement -> CallableStatement::class.java
+                is PreparedStatement -> PreparedStatement::class.java
+                is Statement -> Statement::class.java
+                is ResultSet -> ResultSet::class.java
+                else -> return value
+            }
+            return Proxy.newProxyInstance(api.classLoader, arrayOf(api)) { proxy, method, args ->
+                if (method.declaringClass == Any::class.java) {
+                    return@newProxyInstance when (method.name) {
+                        "equals" -> proxy === args?.get(0)
+                        "hashCode" -> System.identityHashCode(proxy)
+                        "toString" -> "Diagnostic${api.simpleName}($value)"
+                        else -> invoke(value, method, args)
+                    }
+                }
+                try {
+                    when {
+                        value is Statement && method.name in setOf(
+                            "execute", "executeQuery", "executeUpdate", "executeLargeUpdate", "executeBatch", "executeLargeBatch",
+                        ) -> setRemainingNetworkTimeout()
+                        value is ResultSet && method.name !in setOf("close", "isClosed", "getStatement") ->
+                            setRemainingNetworkTimeout()
+                    }
+                    val result = invoke(value, method, args)
+                    if (method.name == "unwrap") result else wrapJdbcValue(result, setRemainingNetworkTimeout, poison)
+                } catch (cause: Throwable) {
+                    if (isTimeoutFailure(cause)) poison(cause)
+                    throw cause
+                }
+            }
+        }
+
         /**
          * Wrap on the diagnostic owner after acquisition. [discard] must evict this checked-out
          * lease before returning (HikariDataSource.evictConnection). Ordinary connections are unchanged.
@@ -200,6 +254,9 @@ internal class DiagnosticPreparationDeadline private constructor(
                     throw cause
                 }
             }
+            fun setRemainingNetworkTimeout() =
+                setTimeout(deadline.remainingMillis().coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+
             return Proxy.newProxyInstance(
                 Connection::class.java.classLoader,
                 arrayOf(Connection::class.java),
@@ -214,15 +271,14 @@ internal class DiagnosticPreparationDeadline private constructor(
                     method.name == "isClosed" && terminal.get() -> true
                     method.name == "close" -> {
                         if (!terminal.get()) {
-                            // A Hikari lease is recycled inside close(), so restore before entering
-                            // it. Close itself is isolated by the worker, not by a late abort timer.
+                            // Restore before Hikari can recycle the lease.
                             setTimeout(originalNetworkTimeout)
                             if (terminal.compareAndSet(false, true)) invoke(connection, method, args) else null
                         } else null
                     }
                     terminal.get() -> throw SQLException("Diagnostic connection is closed")
                     method.name == "commit" -> {
-                        setTimeout(deadline.remainingMillis().coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+                        setRemainingNetworkTimeout()
                         invoke(connection, method, args)
                     }
                     method.name == "rollback" -> {
@@ -238,14 +294,14 @@ internal class DiagnosticPreparationDeadline private constructor(
                             throw cause
                         }
                     }
-                    else -> invoke(connection, method, args)
+                    else -> wrapJdbcValue(invoke(connection, method, args), ::setRemainingNetworkTimeout, ::poison)
                 }
             } as Connection
         }
 
-        private fun invoke(connection: Connection, method: Method, args: Array<out Any?>?): Any? =
+        private fun invoke(target: Any, method: Method, args: Array<out Any?>?): Any? =
             try {
-                method.invoke(connection, *(args ?: emptyArray()))
+                method.invoke(target, *(args ?: emptyArray()))
             } catch (cause: InvocationTargetException) {
                 throw cause.targetException
             }
@@ -343,7 +399,8 @@ internal class DiagnosticPreparationDeadline private constructor(
 
         /** Recognize PostgreSQL query cancellation without exposing SQL or driver messages. */
         fun isTimeout(cause: Throwable): Boolean = generateSequence(cause) { it.cause }.any {
-            it is Expired || (it is SQLException && it.sqlState == "57014")
+            it is Expired || it is java.net.SocketTimeoutException || it is java.sql.SQLTimeoutException ||
+                (it is SQLException && (it.sqlState == "57014" || it.sqlState?.startsWith("08") == true))
         }
 
         suspend fun <T : Any> within(timeoutMs: Long, prepare: suspend () -> T): T? =

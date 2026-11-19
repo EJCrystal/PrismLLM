@@ -125,6 +125,41 @@ class OAuthAccountRepositoryTest {
     }
 
     @Test
+    fun `upstream context snapshot CAS rejects a replaced authorization`() = runBlocking {
+        val original = create("context-cas", enabled = true)
+        val replacement = cipher.encrypt("replacement-refresh")
+        repository.updateCredentials(
+            original.id,
+            OAuthAccountCredentialUpdate(provider = original.provider, refreshToken = replacement),
+            now = original.createdAt + 1_000,
+        )
+
+        assertFalse(
+            repository.saveUpstreamContextIfSnapshotMatches(
+                expectedAccount = original,
+                project = "stale-project",
+                tier = "stale-tier",
+                checkedAt = original.createdAt + 2_000,
+            ),
+        )
+        assertEquals(OAuthAccountRepository.UpstreamContext(null, null, null), repository.upstreamContext(original.id))
+
+        val current = repository.find(original.id)!!
+        assertTrue(
+            repository.saveUpstreamContextIfSnapshotMatches(
+                expectedAccount = current,
+                project = "current-project",
+                tier = "current-tier",
+                checkedAt = original.createdAt + 3_000,
+            ),
+        )
+        assertEquals(
+            OAuthAccountRepository.UpstreamContext("current-project", "current-tier", original.createdAt + 3_000),
+            repository.upstreamContext(original.id),
+        )
+    }
+
+    @Test
     fun `quota groups survive persistence for grouped Antigravity limits`() = runBlocking {
         val account = create("groups", enabled = true)
         val snapshot = OAuthQuotaSnapshot(
@@ -444,6 +479,80 @@ class OAuthAccountRepositoryTest {
             now = account.createdAt + 5_000,
         ), "an old forced-refresh result must not cross administrator reauthorization")
         assertEquals(reauthorized, repository.find(account.id))
+    }
+
+    @Test
+    fun `proxy-only change preserves rotation but clears stale access and reconciles exact retry`() = runBlocking {
+        val created = create("proxy-rotation", enabled = true)
+        val original = repository.updateCredentials(
+            created.id,
+            OAuthAccountCredentialUpdate(
+                provider = created.provider,
+                accessToken = cipher.encrypt("old-egress-access"),
+                accessTokenExpiresAt = created.createdAt + 3_600_000,
+                scope = "original-scope",
+            ),
+            now = created.createdAt + 500,
+        )!!
+        val rotated = cipher.encrypt("rotated-after-proxy-change")
+        val staleEgressAccess = cipher.encrypt("new-access-from-old-egress")
+        repository.updateSettings(original.id, proxyUrl = "http://127.0.0.1:8080", now = original.createdAt + 1_000)
+
+        val saved = repository.saveRefreshed(
+            accountId = original.id,
+            accessToken = staleEgressAccess,
+            expiresAt = original.createdAt + 3_600_000,
+            tokenType = original.tokenType,
+            scope = original.scope,
+            rotatedRefreshToken = rotated,
+            expectedRefreshCiphertext = original.refreshTokenCiphertext,
+            expectedAccount = original,
+            now = original.createdAt + 2_000,
+        )!!
+        assertEquals("http://127.0.0.1:8080", saved.proxyUrl)
+        assertEquals(rotated.ciphertext, saved.refreshTokenCiphertext)
+        assertEquals(rotated.nonce, saved.refreshTokenNonce)
+        assertEquals(rotated.keyVersion, saved.refreshTokenKeyVersion)
+        assertFalse(saved.hasAccessToken, "old-egress access must never escape the fallback")
+        assertNull(saved.accessTokenCiphertext)
+        assertNull(saved.accessTokenNonce)
+        assertNull(saved.accessTokenKeyVersion)
+        assertNull(saved.accessTokenExpiresAt)
+
+        val retried = repository.saveRefreshed(
+            accountId = original.id,
+            accessToken = staleEgressAccess,
+            expiresAt = original.createdAt + 3_600_000,
+            tokenType = original.tokenType,
+            scope = original.scope,
+            rotatedRefreshToken = rotated,
+            expectedRefreshCiphertext = original.refreshTokenCiphertext,
+            expectedAccount = original,
+            now = original.createdAt + 3_000,
+        )
+        assertEquals(saved, retried, "an unknown commit must reconcile without restoring stale access")
+
+        val replacement = cipher.encrypt("administrator-refresh-after-fallback")
+        val reauthorized = repository.updateCredentials(
+            original.id,
+            OAuthAccountCredentialUpdate(provider = original.provider, refreshToken = replacement),
+            now = original.createdAt + 4_000,
+        )!!
+        assertNull(
+            repository.saveRefreshed(
+                accountId = original.id,
+                accessToken = staleEgressAccess,
+                expiresAt = original.createdAt + 3_600_000,
+                tokenType = original.tokenType,
+                scope = original.scope,
+                rotatedRefreshToken = rotated,
+                expectedRefreshCiphertext = original.refreshTokenCiphertext,
+                expectedAccount = original,
+                now = original.createdAt + 5_000,
+            ),
+            "a true authorization replacement must reject the old refresh result",
+        )
+        assertEquals(reauthorized, repository.find(original.id))
     }
 
     @Test

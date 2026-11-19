@@ -89,33 +89,95 @@ class PluginRuntime(
             try {
                 if (bootstrapId != null && store.find(bootstrapId) == null) {
                     try {
-                        val bundled = withContext(Dispatchers.IO) { catalog.bootstrapPackage(bootstrapId) }
-                        if (bundled != null && store.find(bootstrapId) == null) {
+                        val candidates = withContext(Dispatchers.IO) { catalog.bootstrapCandidates(bootstrapId) }
+                        var firstCandidateFailure: PluginHostException? = null
+                        var resolved = candidates.isEmpty()
+                        for (reference in candidates) {
+                            // Another writer (including an uninstall tombstone) wins without being
+                            // overwritten. The ordinary managed-install pass below handles that row.
+                            if (store.find(bootstrapId) != null) {
+                                resolved = true
+                                break
+                            }
                             checkOpen()
-                            val staged = withContext(Dispatchers.IO) { installer.stage(bundled) }
-                            val installation = store.getOrCreate(bootstrapId) {
-                                val values = try {
-                                    initialConfiguration()
-                                } catch (error: CancellationException) {
-                                    throw error
-                                } catch (_: Exception) {
-                                    throw PluginHostException("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
-                                }
-                                val configuration = PluginValidation.installationConfiguration(bundled.item.manifest.configuration, values)
-                                checkOpen()
-                                PluginInstallation(
-                                    id = bootstrapId, version = staged.item.manifest.version, sha256 = staged.item.sha256,
-                                    source = staged.item.source, installed = true, desiredEnabled = true,
-                                    approvedPermissions = PluginValidation.grants(staged.item.manifest, staged.item.manifest.permissions),
-                                    configuration = configuration, updatedAt = System.currentTimeMillis(), revision = 0,
+                            var staged: StagedPluginPackage? = null
+                            var loaded: LoadedPlugin? = null
+                            try {
+                                val candidate = withContext(Dispatchers.IO) { catalog.bootstrapCandidate(reference) }
+                                staged = withContext(Dispatchers.IO) { installer.stage(candidate) }
+                                val defaultConfiguration = PluginValidation.installationConfiguration(candidate.item.manifest.configuration, null)
+                                loaded = load(
+                                    staged,
+                                    PluginValidation.grants(candidate.item.manifest, candidate.item.manifest.permissions).toSet(),
+                                    defaultConfiguration,
                                 )
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (error: PluginHostException) {
+                                if (error.code == "PLUGIN_RUNTIME_CLOSED") throw error
+                                if (firstCandidateFailure == null) firstCandidateFailure = catalog.bootstrapFailure(error)
+                                continue
+                            } catch (error: Exception) {
+                                if (firstCandidateFailure == null) firstCandidateFailure = PluginHostException(
+                                    "PLUGIN_INCOMPATIBLE", "PLUGIN_BOOTSTRAP_FAILED: Optional plugin candidate failed (${error.javaClass.simpleName})", 503,
+                                )
+                                continue
                             }
-                            // A concurrently inserted manual record or tombstone always wins over bootstrap.
-                            if (installation.version == staged.item.manifest.version && installation.sha256.equals(staged.item.sha256, ignoreCase = true)) {
-                                metadata[Selection(installation)] = staged
+
+                            try {
+                                val acceptedPackage = checkNotNull(staged)
+                                var createdInstallation: PluginInstallation? = null
+                                val installation = store.getOrCreate(bootstrapId) {
+                                    val values = try {
+                                        initialConfiguration()
+                                    } catch (error: CancellationException) {
+                                        throw error
+                                    } catch (_: Exception) {
+                                        throw PluginHostException("PLUGIN_BOOTSTRAP_CONFIGURATION_UNAVAILABLE", "Initial plugin configuration could not be read", 503)
+                                    }
+                                    val configuration = PluginValidation.installationConfiguration(acceptedPackage.item.manifest.configuration, values)
+                                    checkOpen()
+                                    val proposed = PluginInstallation(
+                                        id = bootstrapId, version = acceptedPackage.item.manifest.version, sha256 = acceptedPackage.item.sha256,
+                                        source = acceptedPackage.item.source, installed = true, desiredEnabled = true,
+                                        approvedPermissions = PluginValidation.grants(acceptedPackage.item.manifest, acceptedPackage.item.manifest.permissions),
+                                        configuration = configuration, updatedAt = System.currentTimeMillis(), revision = 0,
+                                    )
+                                    createdInstallation = proposed
+                                    proposed
+                                }
+                                val wonInsert = createdInstallation === installation
+                                val matchesCandidate = installation.version == acceptedPackage.item.manifest.version &&
+                                    installation.sha256.equals(acceptedPackage.item.sha256, ignoreCase = true)
+                                if (wonInsert && matchesCandidate) metadata[Selection(installation)] = acceptedPackage
+                                if (wonInsert && matchesCandidate && installation.installed && installation.desiredEnabled) {
+                                    try {
+                                        PluginValidation.grants(acceptedPackage.item.manifest, installation.approvedPermissions)
+                                        loaded!!.configuration = configuration(acceptedPackage, installation.configuration)
+                                        pending.add(loaded!!)
+                                        loaded = null
+                                    } catch (error: PluginHostException) {
+                                        loadErrors[Selection(installation)] = error.message ?: "Installed package could not be loaded"
+                                    }
+                                }
+                                loaded?.let(::dispose)
+                                loaded = null
+                                if (!wonInsert) {
+                                    bootstrapErrors.remove(bootstrapId)
+                                    resolved = true
+                                    break
+                                }
+                                bootstrapErrors.remove(bootstrapId)
+                                resolved = true
+                                break
+                            } catch (error: Throwable) {
+                                loaded?.let(::dispose)
+                                throw error
                             }
-                            bootstrapErrors.remove(bootstrapId)
                         }
+                        if (!resolved) throw firstCandidateFailure ?: PluginHostException(
+                            "PLUGIN_BOOTSTRAP_FAILED", "No bundled plugin candidate could be loaded", 503,
+                        )
                     } catch (error: PluginHostException) {
                         if (error.code == "PLUGIN_RUNTIME_CLOSED") throw error
                         // Optional deployment/staging failures must not skip healthy managed installs.
@@ -125,6 +187,7 @@ class PluginRuntime(
                 for (installation in store.list().sortedBy { it.id }) {
                     checkOpen()
                     if (!installation.installed || !installation.desiredEnabled) continue
+                    if (pending.any { sameSelection(installation, it) }) continue
                     val selection = Selection(installation)
                     try {
                         val staged = packageFor(installation)

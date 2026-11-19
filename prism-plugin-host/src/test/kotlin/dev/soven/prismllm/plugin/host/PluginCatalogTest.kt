@@ -231,10 +231,12 @@ internal class PluginCatalogTest : PluginTestSupport() {
             choices: List<String>?,
             required: Boolean = true,
             supportsBatch: Boolean = entry.action.supportsBatch,
+            maxLength: Int? = null,
+            defaultValue: JsonPrimitive? = null,
         ) = entry.copy(action = entry.action.copy(
             supportsBatch = supportsBatch,
             fields = entry.action.fields.filterNot { it.kind == "scope" } + if (choices == null) emptyList() else listOf(
-                PluginField("scope", "Scope", "scope", required = required, options = choices.map { PluginChoice(it, it) }),
+                PluginField("scope", "Scope", "scope", required = required, defaultValue = defaultValue, maxLength = maxLength, options = choices.map { PluginChoice(it, it) }),
             ),
         ))
 
@@ -244,6 +246,9 @@ internal class PluginCatalogTest : PluginTestSupport() {
 
         failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(oauth, listOf("all"))) }
         assertEquals(null, validate(entryWithScope(oauth, listOf("single"))))
+        failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(oauth, listOf("single"), maxLength = 1)) }
+        failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(oauth, listOf("single"), defaultValue = JsonPrimitive("all"))) }
+        assertEquals(null, validate(entryWithScope(oauth, listOf("single"), defaultValue = JsonPrimitive("single"))))
 
         failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(channel, listOf("all"), supportsBatch = false)) }
         failure("PLUGIN_INVALID_PACKAGE") { validate(entryWithScope(channel, listOf("all"))) }

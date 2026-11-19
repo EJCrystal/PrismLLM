@@ -243,6 +243,17 @@ function action(value: unknown): PluginAction {
   }
 }
 
+function scopeValueAvailable(value: string, supportsBatch: boolean, context: PluginContextKind): boolean {
+  if (context === 'oauth-account') return value === 'single'
+  return value === 'single' || (value === 'all' && supportsBatch)
+}
+
+function scopeFieldValueIsValid(field: PluginField, value: string): boolean {
+  const maximum = field.maxLength ?? 256
+  return value.length <= maximum && !value.includes('\u0000') && (!field.required || value.trim().length > 0) &&
+    field.options.some(option => option.value === value)
+}
+
 function entry(value: unknown): PluginUiEntry {
   const data = record(value, ['id', 'label', 'placement', 'contexts', 'action', 'icon'])
   const contexts = unique(array(data.contexts, 2).map(contextKind), item => item)
@@ -256,14 +267,22 @@ function entry(value: unknown): PluginUiEntry {
   requireContract(!parsed.action.supportsBatch || contexts.includes('channel'), '批量范围')
   const scope = parsed.action.fields.find(item => item.kind === 'scope')
   if (scope) {
-    const scopeOptions = scope.options.map(option => option.value)
-    requireContract(!parsed.action.supportsBatch || scopeOptions.includes('single'), '批量范围')
-    requireContract(!scope.required || scopeOptions.includes('single') ||
-      (contexts.includes('channel') && parsed.action.supportsBatch && scopeOptions.includes('all')), '范围')
+    const scopeOptions = scope.options.filter(option => scopeFieldValueIsValid(scope, option.value)).map(option => option.value)
+    requireContract(!parsed.action.supportsBatch || !contexts.includes('channel') || scopeOptions.includes('single'), '批量范围')
+    if (scope.required) {
+      for (const context of contexts) {
+        requireContract(scopeOptions.some(value => scopeValueAvailable(value, parsed.action.supportsBatch, context)), '范围')
+      }
+    }
+    if (scope.defaultValue !== null) {
+      requireContract(typeof scope.defaultValue === 'string' && scopeFieldValueIsValid(scope, scope.defaultValue), '范围默认值')
+      for (const context of contexts) {
+        requireContract(scopeValueAvailable(scope.defaultValue, parsed.action.supportsBatch, context), '范围默认值')
+      }
+    }
   }
   if (contexts.includes('oauth-account')) {
-    requireContract(!parsed.action.supportsBatch && !parsed.action.fields.some(item => item.kind === 'credential'), '账号控件')
-    requireContract(!parsed.action.fields.some(item => item.kind === 'scope' && item.options.some(option => option.value === 'all')), '账号范围')
+    requireContract(!parsed.action.fields.some(item => item.kind === 'credential'), '账号控件')
   }
   return parsed
 }

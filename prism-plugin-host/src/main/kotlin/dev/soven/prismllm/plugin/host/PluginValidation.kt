@@ -139,6 +139,9 @@ internal object PluginValidation {
             requireData(action.fields.any { it.key == "protocol" && it.kind == "protocol" && it.required }, "Actions require a mandatory host-bound protocol field")
             val scope = action.fields.firstOrNull { it.kind == "scope" }
             if (scope != null) {
+                // Validate each declared value against the field schema before considering whether
+                // the value can be used by every context that exposes this action.
+                scope.options.forEach { option -> validateValue(scope, JsonPrimitive(option.value), enforceRequired = false) }
                 val scopeValues = scope.options.map { it.value }.toSet()
                 if ("channel" in entry.contexts) {
                     if (action.supportsBatch) {
@@ -149,12 +152,14 @@ internal object PluginValidation {
                 }
                 if (scope.required) {
                     entry.contexts.forEach { context ->
-                        val valid = when (context) {
-                            "channel" -> if (action.supportsBatch) scopeValues.any { it == "single" || it == "all" } else "single" in scopeValues
-                            "oauth-account" -> "single" in scopeValues
-                            else -> false
-                        }
+                        val valid = scopeValues.any { scopeValueAvailable(it, action, context) }
                         requireData(valid, "Required scope field has no valid value for context $context")
+                    }
+                }
+                scope.defaultValue?.let { default ->
+                    val defaultScope = (default as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    entry.contexts.forEach { context ->
+                        requireData(defaultScope != null && scopeValueAvailable(defaultScope, action, context), "Scope default has no valid value for context $context")
                     }
                 }
             }
@@ -180,6 +185,12 @@ internal object PluginValidation {
             }
         }
         return incompatible
+    }
+
+    private fun scopeValueAvailable(value: String, action: PluginAction, context: String): Boolean = when (context) {
+        "channel" -> value == "single" || (value == "all" && action.supportsBatch)
+        "oauth-account" -> value == "single"
+        else -> false
     }
 
     fun permission(context: String): String = when (context) {

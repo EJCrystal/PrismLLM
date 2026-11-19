@@ -4,6 +4,7 @@ import dev.soven.prismllm.oauth.domain.OAuthProviderConfig
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -96,6 +97,7 @@ suspend fun postTokenRequest(
     headers: Map<String, String> = emptyMap(),
     proxyAllowedHosts: Set<String> = emptySet(),
 ): JsonObject {
+    require(timeoutMs > 0) { "OAuth request timeout must be positive" }
     val proxy = proxyAddress(proxyUrl, proxyAllowedHosts)
     val client = HttpClient.newBuilder()
         .connectTimeout(Duration.ofMillis(minOf(timeoutMs, 10_000)))
@@ -103,18 +105,22 @@ suspend fun postTokenRequest(
         .apply { proxy?.let { this.proxy(ProxySelector.of(it)) } }
         .build()
     try {
-        val builder = HttpRequest.newBuilder(URI(endpoint))
-            .timeout(Duration.ofMillis(timeoutMs))
-            .header("Accept", "application/json")
-            .header("Content-Type", contentType)
-        for ((name, value) in headers) builder.header(name, value)
-        val request = builder
-            .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
-            .build()
-        val response = sendBounded(client, request)
-        val text = response.body().toString(StandardCharsets.UTF_8)
-        if (response.statusCode() !in 200..299) throw httpFailure(response.statusCode(), text)
-        return parseJsonObject(text)
+        var completed: JsonObject? = null
+        withTimeoutOrNull(timeoutMs) {
+            val builder = HttpRequest.newBuilder(URI(endpoint))
+                .timeout(Duration.ofMillis(timeoutMs))
+                .header("Accept", "application/json")
+                .header("Content-Type", contentType)
+            for ((name, value) in headers) builder.header(name, value)
+            val request = builder
+                .POST(HttpRequest.BodyPublishers.ofString(body, StandardCharsets.UTF_8))
+                .build()
+            val response = sendBounded(client, request)
+            val text = response.body().toString(StandardCharsets.UTF_8)
+            if (response.statusCode() !in 200..299) throw httpFailure(response.statusCode(), text)
+            completed = parseJsonObject(text)
+        }
+        return completed ?: throw OAuthRefreshException(false, "timeout", "OAuth 刷新超时")
     } catch (cause: OAuthRefreshException) {
         throw cause
     } catch (cause: CancellationException) {
@@ -125,7 +131,7 @@ suspend fun postTokenRequest(
     } catch (cause: HttpTimeoutException) {
         throw OAuthRefreshException(false, "timeout", "OAuth 刷新超时")
     } catch (cause: Throwable) {
-        if (cause is VirtualMachineError) throw cause
+        if (cause is VirtualMachineError || cause is ThreadDeath || cause is LinkageError) throw cause
         throw OAuthRefreshException(false, "network_error", "无法连接 OAuth 服务")
     } finally {
         client.shutdownNow()

@@ -4,6 +4,7 @@ import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.admin.domain.NewIqTestRun
 import dev.soven.prismllm.channel.persistence.NewChannelKey
+import dev.soven.prismllm.channel.persistence.ChannelKeyUpdate
 import dev.soven.prismllm.proxy.fingerprint.FingerprintAnalysis
 import dev.soven.prismllm.proxy.fingerprint.FingerprintOutput
 import io.ktor.client.HttpClient
@@ -442,6 +443,38 @@ class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
             val detailBody = Json.parseToJsonElement(detail.bodyAsText()).jsonObject
             assertEquals(candyResponse, detailBody["responseText"]?.jsonPrimitive?.content)
             assertEquals(2, detailBody["checks"]?.jsonArray?.size)
+        }
+    }
+
+    @Test
+    fun `candy grades the original answer when redaction changes its numeric value`() = runBlocking {
+        val channel = createChannel("iq-numeric-credential", "iq-json")
+        val key = channel.keys.single()
+        app.channelRepository.update(
+            id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+            authType = channel.authType, enabled = true,
+            keys = listOf(ChannelKeyUpdate(id = key.id, name = key.name,
+                credential = app.credentialCipher.encrypt("21"), models = key.models)),
+        )
+        testApplication {
+            application { app.install(this) }
+            val client = jsonClient()
+            val (sessionCookie, csrf) = client.loginAdmin()
+            val response = client.runIqTestJob(sessionCookie, csrf,
+                """{"channelId":"${channel.id}","model":"gpt-4o-mini","benchmark":"candy"}""")
+            assertEquals(HttpStatusCode.OK, response.status)
+            val body = Json.parseToJsonElement(response.bodyAsText()).jsonObject
+            assertEquals("passed", body["verdict"]!!.jsonPrimitive.content)
+            assertTrue(body["responseText"]!!.jsonPrimitive.content.contains("[REDACTED]"))
+            assertFalse(body["responseText"]!!.jsonPrimitive.content.contains("21"))
+            val detail = client.get("/admin/api/iq-tests/${body["id"]!!.jsonPrimitive.content}") {
+                header(HttpHeaders.Cookie, sessionCookie)
+            }
+            val persisted = Json.parseToJsonElement(detail.bodyAsText()).jsonObject
+            assertEquals("passed", persisted["verdict"]!!.jsonPrimitive.content)
+            assertTrue(persisted["checks"]!!.jsonArray.all { it.jsonObject["passed"]!!.jsonPrimitive.boolean })
+            assertFalse(persisted["responseText"]!!.jsonPrimitive.content.contains("21"))
+            assertTrue(fake.manxueRequests.isEmpty(), "Candy grading must remain local")
         }
     }
 

@@ -24,10 +24,14 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -536,6 +540,14 @@ class ModelConnectivityTestTest {
             GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES -> payload["temperature"]?.jsonPrimitive?.content
             GatewayProtocol.GEMINI -> payload["generationConfig"]?.jsonObject?.get("temperature")?.jsonPrimitive?.content
         })
+        val tokenLimit = when (protocol) {
+            GatewayProtocol.CHAT_COMPLETIONS -> (payload["max_completion_tokens"] ?: payload["max_tokens"])?.jsonPrimitive?.int
+            GatewayProtocol.RESPONSES -> payload["max_output_tokens"]?.jsonPrimitive?.int
+            GatewayProtocol.MESSAGES -> payload["max_tokens"]?.jsonPrimitive?.int
+            GatewayProtocol.GEMINI -> payload["generationConfig"]?.jsonObject?.get("maxOutputTokens")?.jsonPrimitive?.int
+        }
+        assertEquals(if (protocol == GatewayProtocol.GEMINI) 3 else 128, tokenLimit,
+            "Diagnostic limits must cap at 128 while preserving stricter decoding overrides")
         assertEquals("Bearer diagnostic-token", captured.authorization)
         assertEquals("kept-channel-header", captured.channelHeader)
         assertEquals("kept-protocol-header", captured.protocolHeader)
@@ -1019,13 +1031,19 @@ class ModelConnectivityTestTest {
             maxResponseChars = 100,
             failure = IllegalStateException("upstream rejected $credential"),
         )
-        val timeout = fingerprintDiagnosticTransport(
-            credential,
-            body,
-            maxResponseChars = 100,
-            timeoutMs = 10,
-            responseDelayMs = 100,
-        )
+        val entered = CompletableDeferred<Unit>()
+        val timedRequest = async {
+            fingerprintDiagnosticTransport(
+                credential,
+                body,
+                maxResponseChars = 100,
+                timeoutMs = 2_000,
+                responseDelayMs = 10_000,
+                requestEntered = entered,
+            )
+        }
+        withTimeout(5_000) { entered.await() }
+        val timeout = withTimeout(5_000) { timedRequest.await() }
 
         assertFalse(transportFailure.result.success)
         assertNull(transportFailure.rawSample)
@@ -1033,7 +1051,32 @@ class ModelConnectivityTestTest {
         assertFalse(timeout.result.success)
         assertNull(timeout.rawSample)
         assertNull(timeout.result.responseText)
+        assertEquals("测试超时（2 秒）", timeout.result.errorMessage)
         assertFalse(timeout.result.errorMessage.orEmpty().contains(credential))
+    }
+
+    @Test
+    fun incomplete_responses_json_does_not_supply_a_raw_fingerprint_sample() = runBlocking {
+        for (state in listOf("incomplete", "failed", "in_progress")) {
+            val execution = fingerprintDiagnosticTransport(
+                "synthetic-json-secret",
+                """{"status":"$state","error":null,"output":[{"type":"message","content":[{"type":"output_text","text":"partial"}]}]}""",
+                maxResponseChars = 100,
+                protocol = GatewayProtocol.RESPONSES,
+            )
+            assertFalse(execution.result.success, state)
+            assertNull(execution.rawSample, state)
+        }
+        for (state in listOf("\"status\":\"completed\",", "")) {
+            val completed = fingerprintDiagnosticTransport(
+                "synthetic-json-secret",
+                """{${state}"output":[{"type":"message","content":[{"type":"output_text","text":"complete"}]}]}""",
+                maxResponseChars = 100,
+                protocol = GatewayProtocol.RESPONSES,
+            )
+            assertTrue(completed.result.success)
+            assertEquals("complete", completed.rawSample)
+        }
     }
 
     @Test
@@ -1213,6 +1256,7 @@ class ModelConnectivityTestTest {
         timeoutMs: Long = 45_000,
         failure: Throwable? = null,
         responseDelayMs: Long = 0,
+        requestEntered: CompletableDeferred<Unit>? = null,
     ): ModelConnectivityExecution {
         val channel = ChannelRecord(
             id = "fingerprint-channel", name = "fingerprint-channel",
@@ -1231,6 +1275,7 @@ class ModelConnectivityTestTest {
                 addHandler { request ->
                     assertEquals("Bearer $credential", request.headers[HttpHeaders.Authorization])
                     failure?.let { throw it }
+                    requestEntered?.complete(Unit)
                     if (responseDelayMs > 0) delay(responseDelayMs)
                     respond(responseBody, status, headersOf(HttpHeaders.ContentType, responseContentType.toString()))
                 }

@@ -84,7 +84,10 @@ suspend fun testChannelModelConnectivity(
 internal class ModelConnectivityExecution(
     val result: ModelConnectivityTestResult,
     val rawSample: String? = null,
-)
+    private val sanitize: (String) -> String = { it },
+) {
+    fun safeText(text: String?): String? = text?.let(sanitize)
+}
 
 /** The detector sees only a bounded original sample; all returned diagnostic fields are display-safe. */
 internal suspend fun sampleFingerprintModelConnectivity(
@@ -107,7 +110,7 @@ internal suspend fun sampleFingerprintModelConnectivity(
     )
 }
 
-private suspend fun testSavedChannelModelConnectivity(
+internal suspend fun testSavedChannelModelConnectivity(
     channel: ChannelRecord,
     credentialRef: UpstreamCredential,
     model: String,
@@ -238,14 +241,19 @@ private suspend fun runModelConnectivityTest(
                 ?: if (ok && protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(body) else null
             val json = if (ok && envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) CodeAssistEnvelope.unwrap(parsed) else parsed
             // Parse status and usage on the original JSON. Redact only the decoded display values.
-            val streamError = ok && protocol == GatewayProtocol.RESPONSES && json?.get("error") is JsonObject
+            val responseState = (json?.get("status") as? JsonPrimitive)?.contentOrNull
+            val incompleteResponse = protocol == GatewayProtocol.RESPONSES &&
+                responseState in setOf("incomplete", "failed", "cancelled", "queued", "in_progress")
+            val streamError = ok && protocol == GatewayProtocol.RESPONSES &&
+                (json?.get("error") is JsonObject || incompleteResponse)
             val displayText = if (ok) extractModelTestResponseText(protocol, json) else null
             val result = ModelConnectivityTestResult(
                 success = ok && !streamError,
                 statusCode = status,
                 latencyMs = latencyMs,
                 responseText = displayText?.let { redactModelTestCredential(it, credential).take(maxResponseChars) },
-                errorMessage = if (!ok || streamError) extractModelTestError(json, status, credential) {
+                errorMessage = if (ok && incompleteResponse) "上游 Responses 尚未成功完成：$responseState"
+                else if (!ok || streamError) extractModelTestError(json, status, credential) {
                     redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
                 } else null,
                 usage = if (ok && !streamError) extractModelTestUsage(protocol, json) else null,
@@ -254,6 +262,7 @@ private suspend fun runModelConnectivityTest(
             ModelConnectivityExecution(
                 result = result,
                 rawSample = displayText?.take(maxResponseChars).takeIf { captureRawSample && result.success },
+                sanitize = { redactModelTestCredential(it, credential) },
             )
         } ?: ModelConnectivityExecution(
             result = ModelConnectivityTestResult(

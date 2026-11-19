@@ -9,6 +9,7 @@ import dev.soven.prismllm.channel.domain.UpstreamEnvelope
 import dev.soven.prismllm.channel.domain.upstreamEnvelope
 import dev.soven.prismllm.db.DiagnosticPreparationDeadline
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
+import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import dev.soven.prismllm.plugin.host.PluginExecution
 import dev.soven.prismllm.plugin.host.PluginHostException
@@ -36,9 +37,12 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
+import java.net.InetSocketAddress
 
 internal const val CONNECTIVITY_PLUGIN_ID = "prism.connectivity"
 internal const val OAUTH_DIAGNOSTIC_PREPARATION_TIMEOUT_MS = 20_000L
+
+private class ResolvedDiagnosticProxy(val address: InetSocketAddress?)
 
 private fun oauthPreparationTimeout() = GatewayError(
     HttpStatusCode.GatewayTimeout,
@@ -221,14 +225,24 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     }
                     currentAccount = revalidateAccount()
                     if (!token.matches(currentAccount)) throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
-                    val proxy = try {
-                        proxyAddress(currentAccount.proxyUrl, config.oauth.proxyAllowedHosts)
+                    val resolvedProxy = try {
+                        DiagnosticPreparationDeadline.withinSynchronous(preparation) {
+                            ResolvedDiagnosticProxy(proxyAddress(currentAccount.proxyUrl, config.oauth.proxyAllowedHosts))
+                        }
                     } catch (cause: OAuthRefreshException) {
                         throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
                     }
+                    val proxy = (resolvedProxy ?: throw oauthPreparationTimeout()).address
                     channel = revalidateSystemChannel(channelId)
                     val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
-                        codeAssistProjectResolver.contextForDiagnostic(currentAccount, token.accessToken, proxy, preparation).project
+                        try {
+                            codeAssistProjectResolver.contextForDiagnostic(currentAccount, token.accessToken, proxy, preparation).project
+                        } catch (cause: OAuthTokenUnavailableException) {
+                            if (cause.errorCode == "credential_replaced") {
+                                throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
+                            }
+                            throw cause
+                        }
                     } else null
 
                     // Discovery can be slow. Revalidate the exact token snapshot and endpoint request

@@ -251,7 +251,13 @@ describe('bounded declarative plugin contracts', () => {
     ['account batch mode', data => { data.ui.entries[1].action.supportsBatch = true }],
     ['batch scope without single', data => { data.ui.entries[0].action.fields[3].options = [{ value: 'all', label: '全部模型' }]; data.ui.entries[0].action.fields[3].defaultValue = 'all' }],
     ['nonbatch required scope without single', data => { data.ui.entries[0].action.supportsBatch = false; data.ui.entries[0].action.fields[3].required = true; data.ui.entries[0].action.fields[3].options = [{ value: 'all', label: '全部模型' }]; data.ui.entries[0].action.fields[3].defaultValue = 'all' }],
-    ['account all scope', data => { data.ui.entries[1].action.fields.push(channelFields()[3]) }],
+    ['account all-only scope', data => {
+      const scope = channelFields()[3]
+      scope.required = true
+      scope.defaultValue = 'all'
+      scope.options = [{ value: 'all', label: '全部模型' }]
+      data.ui.entries[1].action.fields.push(scope)
+    }],
     ['duplicate UI entry', data => { data.ui.entries.push(structuredClone(data.ui.entries[0])) }],
     ['duplicate fields', data => { data.manifest.configuration.push(structuredClone(data.manifest.configuration[0])) }],
     ['ambiguous shared action', data => { data.ui.entries[2].action.id = 'probe-channel'; data.ui.entries[2].action.label = '不同定义' }],
@@ -268,6 +274,46 @@ describe('bounded declarative plugin contracts', () => {
       assert.throws(() => parsePluginCatalogItem(raw), invalidResponse)
     })
   }
+
+  it('validates scope choices after field length constraints and checks defaults in every context', () => {
+    const makeScopeEntry = () => {
+      const raw = catalog(SECOND_PLUGIN)
+      const item = raw.ui.entries[0]
+      item.placement = 'plugin-page'
+      item.contexts = ['channel', 'oauth-account']
+      item.action.id = 'shared-probe'
+      item.action.supportsBatch = true
+      item.action.fields = item.action.fields.filter(field => field.key !== 'keyId')
+      const scope = item.action.fields.find(field => field.kind === 'scope')
+      scope.maxLength = 6
+      return { raw, item, scope }
+    }
+
+    const { raw, item, scope } = makeScopeEntry()
+    scope.defaultValue = 'all'
+    assert.throws(() => parsePluginCatalogItem(raw), invalidResponse,
+      'batch all remains an available explicit channel choice but cannot default in a shared OAuth context')
+
+    scope.defaultValue = 'single'
+    assert.equal(parsePluginCatalogItem(raw).ui.entries[0].action.fields.find(field => field.kind === 'scope').defaultValue, 'single')
+    scope.defaultValue = null
+    assert.equal(parsePluginCatalogItem(raw).ui.entries[0].action.fields.find(field => field.kind === 'scope').options.some(option => option.value === 'all'), true,
+      'batch channel invocations retain all as an explicit choice')
+
+    const lengthBound = catalog(SECOND_PLUGIN)
+    const channelEntry = lengthBound.ui.entries[0]
+    channelEntry.action.supportsBatch = false
+    const lengthBoundScope = channelEntry.action.fields.find(field => field.kind === 'scope')
+    lengthBoundScope.required = true
+    lengthBoundScope.defaultValue = null
+    lengthBoundScope.options = [{ value: 'single', label: '当前目标' }]
+    lengthBoundScope.maxLength = 5
+    assert.throws(() => parsePluginCatalogItem(lengthBound), invalidResponse,
+      'single is not a usable required option when its value exceeds maxLength')
+
+    lengthBoundScope.maxLength = 6
+    assert.equal(parsePluginCatalogItem(lengthBound).ui.entries[0].action.fields.find(field => field.kind === 'scope').options[0].value, 'single')
+  })
 
   it('permits identical action reuse across placements for the same context', () => {
     const raw = catalog(SECOND_PLUGIN)

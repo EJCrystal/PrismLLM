@@ -3,6 +3,8 @@ package dev.soven.prismllm.proxy.codeassist
 import dev.soven.prismllm.db.DiagnosticPreparationDeadline
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
+import dev.soven.prismllm.oauth.OAuthUnavailableReason
+import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -24,7 +26,6 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import org.slf4j.LoggerFactory
 import java.net.InetSocketAddress
-import dev.soven.prismllm.oauth.infra.proxyAddress
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -76,18 +77,26 @@ class CodeAssistProjectResolver(
      */
     private val negotiated = ConcurrentHashMap<String, Export>()
 
-    private class Export(val egress: String, val project: String?, val tier: String?)
+    private class Export(val account: OAuthAccountRecord, val egress: String, val project: String?, val tier: String?)
+
+    private fun sameSnapshot(first: OAuthAccountRecord, second: OAuthAccountRecord): Boolean =
+        first.id == second.id && first.provider == second.provider && first.authState == second.authState &&
+            first.authorizedAt == second.authorizedAt &&
+            first.refreshTokenCiphertext == second.refreshTokenCiphertext &&
+            first.refreshTokenNonce == second.refreshTokenNonce &&
+            first.refreshTokenKeyVersion == second.refreshTokenKeyVersion &&
+            first.accessTokenCiphertext == second.accessTokenCiphertext &&
+            first.accessTokenNonce == second.accessTokenNonce &&
+            first.accessTokenKeyVersion == second.accessTokenKeyVersion &&
+            first.accessTokenExpiresAt == second.accessTokenExpiresAt && first.tokenType == second.tokenType &&
+            first.scope == second.scope && first.proxyUrl == second.proxyUrl
 
     /**
      * 缓存键 = 账号 + 出口。代理地址（或允许主机白名单）一变，键就变，旧缓存立即失效；
      * 用绝对地址而不是原始字符串，本地端口 80 的两种写法视为同一出口。
      */
-    private fun egressKey(app: OAuthAccountRecord, proxy: InetSocketAddress?): String {
-        val allowed = normalizeProxy(app.proxyUrl)?.let { url ->
-            runCatching { proxyAddress(url, proxyAllowedHosts) }.getOrNull()
-        }
-        return (proxy ?: allowed)?.let { it.hostString + ":" + it.port } ?: DIRECT
-    }
+    private fun egressKey(proxy: InetSocketAddress?): String =
+        proxy?.let { it.hostString + ":" + it.port } ?: DIRECT
 
     /**
      * @param proxy 账号出口代理；与刷新 access token 使用同一个，避免两套 IP。
@@ -108,39 +117,32 @@ class CodeAssistProjectResolver(
         proxy: InetSocketAddress?,
         preparation: DiagnosticPreparationDeadline.Budget?,
     ): Context {
-        val proxyKey = egressKey(account, proxy)
-        val export = negotiated[account.id]
+        val proxyKey = egressKey(proxy)
+        val export = negotiated[account.id]?.takeIf { sameSnapshot(it.account, account) }
         val cached = databaseStep(preparation) { accounts.upstreamContext(account.id) }
-        // 缓存是按某个出口协商出来的：出口一变就必须重新发现，而不是等 TTL 过期。
-        // 进程刚启动、还没有协商记录时也按未知出口处理：持久化的上下文可能来自别的出口。
-        val sameEgress = export?.egress == proxyKey
+        // The memory and DB records must agree before the DB value can be treated as a fast-path hit.
+        // A diagnostic write can commit and then time out during cleanup before memory publication.
+        val cacheMatchesExport = export != null && export.egress == proxyKey &&
+            cached?.project == export.project && cached?.tier == export.tier
         val checkedAt = cached?.checkedAt
         val fresh = cached?.project != null && checkedAt != null && now() - checkedAt < TIER_TTL_MS
-        if (sameEgress && fresh) return Context(cached!!.project, cached.tier)
+        if (cacheMatchesExport && fresh) return Context(export!!.project, export.tier)
+
         val loaded = attempt(account.id, "loadCodeAssist") { loadCodeAssist(account.id, accessToken, proxy) }
-            ?: return Context(
-                // 发现失败时只复用同一出口协商出来的上下文，绝不把旧出口的 project 带过来。
-                if (sameEgress) export?.project else null,
-                if (sameEgress) export?.tier else null,
-            )
+            ?: return if (cacheMatchesExport) Context(export?.project, export?.tier) else Context(null, null)
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
         if (project == null) {
-            // 发现和开通都没拿到 project：沿用本出口已成功的上下文，但不刷新协商状态，
-            // 下一轮请求会再次尝试开通，而不是把失败的结果当成刚协商过。
-            return if (sameEgress) {
-                Context(export?.project, export?.tier)
-            } else {
-                Context(null, null)
-            }
+            // Do not reuse a memory context when the persisted snapshot disagrees with it.
+            return if (cacheMatchesExport) Context(export?.project, export?.tier) else Context(null, null)
         }
-        if (!sameEgress) {
+        if (export?.egress != proxyKey) {
             logger.info("account proxy changed, renegotiated code assist context, accountId={}", account.id)
         }
-        // 只有成功解析出 project 才更新协商状态；下次换出口时只认这条。
-        // 内存与数据库写同一份合并结果，避免重启后读到与本次请求不同的 tier。
-        return recordContext(account.id, proxyKey, project, loaded.catalogTier(), loaded.reportsTier(), preparation)
+        // Publish to memory only after the repository confirms this is still the exact OAuth snapshot.
+        return recordContext(account, proxyKey, project, loaded.catalogTier(), loaded.reportsTier(), preparation)
+            ?: Context(null, null)
     }
 
     /**
@@ -152,17 +154,32 @@ class CodeAssistProjectResolver(
      * 此时必须覆盖成 null，否则套餐降级后还会一直沿用旧的付费档。
      */
     private suspend fun recordContext(
-        accountId: String,
+        account: OAuthAccountRecord,
         egress: String,
         project: String,
         tier: String?,
         tierReported: Boolean = tier != null,
         preparation: DiagnosticPreparationDeadline.Budget? = null,
-    ): Context {
-        val previous = negotiated[accountId]
+    ): Context? {
+        val previous = negotiated[account.id]?.takeIf { sameSnapshot(it.account, account) }
         val merged = if (tierReported) tier else previous?.takeIf { it.egress == egress }?.tier
-        databaseStep(preparation) { accounts.saveUpstreamContext(accountId, project, merged, now()) }
-        negotiated[accountId] = Export(egress, project, merged)
+        val saved = databaseStep(preparation) {
+            accounts.saveUpstreamContextIfSnapshotMatches(account, project, merged, now())
+        }
+        if (!saved) {
+            negotiated[account.id]?.let { current ->
+                if (sameSnapshot(current.account, account)) negotiated.remove(account.id, current)
+            }
+            if (preparation != null) {
+                throw OAuthTokenUnavailableException(
+                    OAuthUnavailableReason.REFRESH_FAILED,
+                    "订阅账号凭据已被替换，请重试",
+                    "credential_replaced",
+                )
+            }
+            return null
+        }
+        negotiated[account.id] = Export(account, egress, project, merged)
         return Context(project, merged)
     }
 
@@ -197,25 +214,23 @@ class CodeAssistProjectResolver(
      * 管理面刷新模型依赖这三项，不应自己访问 oauth_accounts 表拼装。
      */
     suspend fun probe(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Probe {
-        val loaded = loadCodeAssist(account.id, accessToken, proxy)
-        val project = loaded.project ?: attempt(account.id, "onboardUser") {
-            onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
-        } ?: return Probe(
-            accounts.upstreamContext(account.id)?.project,
-            loaded.tier,
-            loaded.allowedTiers,
-            loaded.paidTier,
-        )
-        // 管理面探测同样确定了该出口下的上下文，数据面可以直接复用。
-        val context = recordContext(
-            account.id,
-            egressKey(account, proxy),
-            project,
-            loaded.catalogTier(),
-            loaded.reportsTier(),
-        )
-        return Probe(context.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
-    }
+            val loaded = loadCodeAssist(account.id, accessToken, proxy)
+            val project = loaded.project ?: attempt(account.id, "onboardUser") {
+                onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
+            }
+            return if (project == null) {
+                Probe(null, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+            } else {
+                val context = recordContext(
+                    account,
+                    egressKey(proxy),
+                    project,
+                    loaded.catalogTier(),
+                    loaded.reportsTier(),
+                )
+                Probe(context?.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
+            }
+        }
 
     private suspend fun loadCodeAssist(accountId: String, accessToken: String, proxy: InetSocketAddress?): Loaded {
         val text = call(loadBaseUrl + "/v1internal:loadCodeAssist", accessToken, LOAD_BODY, proxy)

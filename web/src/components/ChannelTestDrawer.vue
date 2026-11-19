@@ -92,14 +92,33 @@ function openRecord(id: number) {
   activeTab.value = 'records'
 }
 
-async function focusIqIfRemoved(focusedTabId: string, focusWasInPanel: boolean, removedTabIds: string[], activeTabWasRemoved: boolean) {
-  if (!removedTabIds.includes(focusedTabId) && !(focusWasInPanel && activeTabWasRemoved)) return
-  activeTab.value = 'iq'
+async function focusIqIfRemoved(
+  focusedTabId: string,
+  focusWasInPanel: boolean,
+  removedTabIds: string[],
+  activeTabWasRemoved: boolean,
+  replacedTabId = '',
+) {
+  const focusWasRemoved = removedTabIds.includes(focusedTabId) || (focusWasInPanel && activeTabWasRemoved)
+  const shouldRestoreReplacedTab = !focusWasRemoved && !!replacedTabId && focusWasInPanel
+  if (!focusWasRemoved && !shouldRestoreReplacedTab) return
+  if (focusWasRemoved) activeTab.value = 'iq'
   await nextTick()
-  if (disposed || activeTab.value !== 'iq') return
-  const iqTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
-    .find((tab) => tab.id === `${tabId}-iq`)
-  iqTab?.focus({ preventScroll: true })
+  if (disposed) return
+  if (focusWasRemoved) {
+    if (activeTab.value !== 'iq') return
+    const iqTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
+      .find((tab) => tab.id === `${tabId}-iq`)
+    iqTab?.focus()
+    iqTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+    return
+  }
+  if (activeTab.value !== replacedTabId) return
+  const currentFocus = typeof document === 'undefined' ? null : document.activeElement
+  if (currentFocus && currentFocus !== document.body && tabPanel.value?.contains(currentFocus)) return
+  const replacementTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
+    .find((tab) => tab.id === `${tabId}-${replacedTabId}`)
+  replacementTab?.focus()
 }
 
 async function load(recheck = false) {
@@ -124,14 +143,20 @@ async function load(recheck = false) {
       invalidContributions.value = new Set()
     }
     contributions.value = result.value
-    const removedTabIds = previousAvailable
-      .filter((item) => !availableContributions.value.some((next) => contributionVersionKey(next) === contributionVersionKey(item)))
-      .map((item) => `${tabId}-${contributionKey(item)}`)
+    const removedContributions = previousAvailable.filter((item) =>
+      !availableContributions.value.some((next) => contributionKey(next) === contributionKey(item)))
+    const removedTabIds = removedContributions.map((item) => `${tabId}-${contributionKey(item)}`)
+    const activeTabWasRemoved = !!previousActiveContribution && removedContributions.some((item) =>
+      contributionKey(item) === contributionKey(previousActiveContribution))
+    const activeContributionReplaced = previousActiveContribution && availableContributions.value.some((item) =>
+      contributionKey(item) === contributionKey(previousActiveContribution) &&
+      contributionVersionKey(item) !== contributionVersionKey(previousActiveContribution))
+      ? contributionKey(previousActiveContribution)
+      : ''
     if (!tabs.value.some((tab) => tab.id === activeTab.value)) activeTab.value = 'iq'
     else if (!initialized && !userSelectedTab) activeTab.value = tabs.value[0]?.id ?? 'iq'
     initialized = true
-    await focusIqIfRemoved(focusedTabId, focusWasInPanel, removedTabIds,
-      !!previousActiveContribution && removedTabIds.includes(`${tabId}-${contributionKey(previousActiveContribution)}`))
+    await focusIqIfRemoved(focusedTabId, focusWasInPanel, removedTabIds, activeTabWasRemoved, activeContributionReplaced)
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
       loadError.value = cause instanceof Error ? cause.message : String(cause)

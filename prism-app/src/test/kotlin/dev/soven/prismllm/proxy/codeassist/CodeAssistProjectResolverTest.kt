@@ -23,6 +23,14 @@ import io.ktor.client.engine.java.Java
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.TestCoroutineScheduler
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.job
+import kotlinx.coroutines.Job
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -272,13 +280,13 @@ class CodeAssistProjectResolverTest {
                 baseUrl = unreachable,
                 loadBaseUrl = unreachable,
             )
-            val account = account()
+            val account = account().copy(proxyUrl = "http://127.0.0.1:$port")
 
-            assertEquals("proj-1", resolver.context(account.copy(proxyUrl = "http://127.0.0.1:$port"), "token", address).project)
-            // 同一个出口的另一种写法（结尾斜杠）命中缓存，不再请求上游。
+            assertEquals("proj-1", resolver.context(account, "token", address).project)
+            // 调用方复用已解析的相同出口，不进行第二次 DNS 解析。
             assertEquals(
                 "proj-1",
-                resolver.context(account.copy(proxyUrl = "http://127.0.0.1:$port/"), "token", null).project,
+                resolver.context(account, "token", address).project,
             )
             assertEquals(1, calls.get())
             // 白名单不接受这个代理：出口变成直连，旧出口的 project 不得沿用。
@@ -425,18 +433,45 @@ class CodeAssistProjectResolverTest {
     }
 
     @Test
+    fun `discovery rejects a replaced authorization and only publishes accepted snapshots`() = runBlocking {
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val accepts = java.util.concurrent.atomic.AtomicBoolean(true)
+        val requests = AtomicInteger()
+        val accounts = FakeAccounts(saved, snapshotMatches = { accepts.get() })
+        HttpClient(MockEngine {
+            val number = requests.incrementAndGet()
+            if (number == 2) accepts.set(false)
+            respond("""{"cloudaicompanionProject":"proj-$number"}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(accounts, client)
+            val original = account()
+            assertEquals("proj-1", resolver.contextForDiagnostic(original, "token", null, DiagnosticPreparationDeadline.start(5_000)).project)
+            assertEquals("proj-1", resolver.contextForDiagnostic(original, "token", null, DiagnosticPreparationDeadline.start(5_000)).project)
+            assertEquals(1, requests.get())
+            saved.set(OAuthAccountRepository.UpstreamContext("different-egress-project", null, System.currentTimeMillis()))
+            val failure = runCatching {
+                resolver.contextForDiagnostic(original, "token", null, DiagnosticPreparationDeadline.start(5_000))
+            }.exceptionOrNull()
+            assertEquals("credential_replaced", (failure as? dev.soven.prismllm.oauth.OAuthTokenUnavailableException)?.errorCode)
+            assertEquals("different-egress-project", saved.get()?.project)
+            accepts.set(true)
+            val replacement = original.copy(authorizedAt = 2, refreshTokenCiphertext = "new-authorization")
+            assertEquals("proj-3", resolver.contextForDiagnostic(replacement, "new-token", null, DiagnosticPreparationDeadline.start(5_000)).project)
+            assertEquals("proj-3", saved.get()?.project)
+        }
+    }
+
+    @Test
     fun `diagnostic context read timeout does not continue discovery after the database returns`() = runBlocking {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
-        val exited = CountDownLatch(1)
+        val worker = AtomicReference<Job>()
+        val scheduler = TestCoroutineScheduler()
         val requests = AtomicInteger()
         val accounts = FakeAccounts(AtomicReference(), beforeRead = {
+            worker.set(currentCoroutineContext().job)
             entered.countDown()
-            try {
-                assertTrue(release.await(5, TimeUnit.SECONDS))
-            } finally {
-                exited.countDown()
-            }
+            assertTrue(release.await(10, TimeUnit.SECONDS))
         })
         HttpClient(MockEngine {
             requests.incrementAndGet()
@@ -444,18 +479,28 @@ class CodeAssistProjectResolverTest {
         }).use { client ->
             val resolver = CodeAssistProjectResolver(accounts, client)
             try {
-                val caller = async(Dispatchers.Default) {
+                val caller = async(StandardTestDispatcher(scheduler)) {
                     runCatching {
-                        resolver.contextForDiagnostic(account(), "token", null, DiagnosticPreparationDeadline.start(500))
+                        resolver.contextForDiagnostic(account(), "token", null,
+                            DiagnosticPreparationDeadline.start(60_000) { scheduler.currentTime * 1_000_000 })
                     }
                 }
-                assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+                scheduler.runCurrent()
+                withTimeout(5_000) {
+                    while (entered.count != 0L) {
+                        scheduler.runCurrent()
+                        kotlinx.coroutines.delay(1)
+                    }
+                }
+                scheduler.advanceTimeBy(60_001)
+                scheduler.runCurrent()
                 val failure = withTimeout(3_000) { caller.await() }.exceptionOrNull()
                 assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
                 assertEquals(0, requests.get())
             } finally {
                 release.countDown()
-                assertTrue(withContext(Dispatchers.IO) { exited.await(5, TimeUnit.SECONDS) })
+                withTimeout(5_000) { assertNotNull(worker.get()).join() }
+                scheduler.runCurrent()
             }
             assertEquals(0, requests.get(), "late database completion must not start discovery")
         }
@@ -465,15 +510,13 @@ class CodeAssistProjectResolverTest {
     fun `diagnostic context write timeout returns while its database worker still owns cleanup`() = runBlocking {
         val entered = CountDownLatch(1)
         val release = CountDownLatch(1)
-        val exited = CountDownLatch(1)
+        val worker = AtomicReference<Job>()
+        val scheduler = TestCoroutineScheduler()
         val requests = AtomicInteger()
         val accounts = FakeAccounts(AtomicReference(), beforeWrite = {
+            worker.set(currentCoroutineContext().job)
             entered.countDown()
-            try {
-                assertTrue(release.await(5, TimeUnit.SECONDS))
-            } finally {
-                exited.countDown()
-            }
+            assertTrue(release.await(10, TimeUnit.SECONDS))
         })
         HttpClient(MockEngine {
             requests.incrementAndGet()
@@ -481,19 +524,30 @@ class CodeAssistProjectResolverTest {
         }).use { client ->
             val resolver = CodeAssistProjectResolver(accounts, client)
             try {
-                val caller = async(Dispatchers.Default) {
+                val caller = async(StandardTestDispatcher(scheduler)) {
                     runCatching {
-                        resolver.contextForDiagnostic(account(), "token", null, DiagnosticPreparationDeadline.start(500))
+                        resolver.contextForDiagnostic(account(), "token", null,
+                            DiagnosticPreparationDeadline.start(60_000) { scheduler.currentTime * 1_000_000 })
                     }
                 }
-                assertTrue(withContext(Dispatchers.IO) { entered.await(5, TimeUnit.SECONDS) })
+                scheduler.runCurrent()
+                withTimeout(5_000) {
+                    while (entered.count != 0L) {
+                        scheduler.runCurrent()
+                        kotlinx.coroutines.delay(1)
+                    }
+                }
+                scheduler.runCurrent()
+                scheduler.advanceTimeBy(60_001)
+                scheduler.runCurrent()
                 val failure = withTimeout(3_000) { caller.await() }.exceptionOrNull()
                 assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
-                assertEquals(1L, exited.count, "the caller must return before the blocked write finishes")
+                assertTrue(!assertNotNull(worker.get()).isCompleted, "the blocked database operation must still be owned")
                 assertEquals(1, requests.get())
             } finally {
                 release.countDown()
-                assertTrue(withContext(Dispatchers.IO) { exited.await(5, TimeUnit.SECONDS) })
+                withTimeout(5_000) { assertNotNull(worker.get()).join() }
+                scheduler.runCurrent()
             }
             assertEquals(1, requests.get())
         }
@@ -520,12 +574,25 @@ class CodeAssistProjectResolverTest {
     /** 测试用内存实现：替换 repository 的缓存读写，不触碰真实数据库。 */
     private class FakeAccounts(
         private val saved: AtomicReference<OAuthAccountRepository.UpstreamContext?>,
-        private val beforeRead: () -> Unit = {},
-        private val beforeWrite: () -> Unit = {},
+        private val beforeRead: suspend () -> Unit = {},
+        private val beforeWrite: suspend () -> Unit = {},
+        private val snapshotMatches: (OAuthAccountRecord) -> Boolean = { true },
     ) : OAuthAccountRepository(unusedDatabase(), ProviderChannelLookup { emptySet() }) {
         override suspend fun loadUpstreamContext(accountId: String): OAuthAccountRepository.UpstreamContext? {
             beforeRead()
             return saved.get()
+        }
+
+        override suspend fun saveUpstreamContextIfSnapshotMatches(
+            expectedAccount: OAuthAccountRecord,
+            project: String?,
+            tier: String?,
+            checkedAt: Long,
+        ): Boolean {
+            beforeWrite()
+            if (!snapshotMatches(expectedAccount)) return false
+            saved.set(OAuthAccountRepository.UpstreamContext(project, tier, checkedAt))
+            return true
         }
 
         override suspend fun persistUpstreamContext(
