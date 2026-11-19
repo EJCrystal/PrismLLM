@@ -801,6 +801,7 @@ class GatewayApplication internal constructor(
         }
         app.install(MicrometerMetrics) {
             registry = metrics.registry
+            metrics.ownBinders(meterBinders)
         }
 
         app.routing {
@@ -924,7 +925,11 @@ class GatewayApplication internal constructor(
         searchHttpClient.close()
         channelQuotaService.close()
         channelQuotaProviderRegistry.close()
-        databaseFactory.close()
+        try {
+            metrics.close()
+        } finally {
+            databaseFactory.close()
+        }
     }
 
     companion object {

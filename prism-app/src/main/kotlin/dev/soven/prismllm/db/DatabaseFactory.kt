@@ -9,6 +9,7 @@ import org.flywaydb.core.api.callback.Callback
 import org.flywaydb.core.api.callback.Context
 import org.flywaydb.core.api.callback.Event
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.ThreadPoolExecutor
@@ -97,7 +98,12 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
     }.isSuccess
 
     override fun close() {
-        diagnosticConnectionAcquisition.shutdown()
-        dataSource.close()
+        try {
+            TransactionManager.closeAndUnregister(database)
+        } finally {
+            migrationCallbacks.clear()
+            diagnosticConnectionAcquisition.shutdown()
+            dataSource.close()
+        }
     }
 }

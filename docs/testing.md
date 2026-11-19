@@ -38,6 +38,8 @@ PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
 
 `-DskipTests` 只跳过执行，不跳过测试编译。直接调用 `surefire:test` 不会编译；**源码或测试发生变更后必须重新编译，不能复用其他提交或其他 job 的 target 目录**。CI 只缓存 Maven 依赖，不缓存测试编译产物。扩展仍通过独立 POM 的 `verify` 验证。
 
+`prism-app` 的 Surefire 测试子 JVM 默认通过 `argLine=-Xmx3g` 限定最大堆，本地与 CI 使用同一配置；Maven 自身的 `MAVEN_OPTS` 不会为这个子进程设置堆大小。需要额外 JVM 参数或调整内存时，使用 `-DargLine='-Xmx3g ...'` 覆盖完整参数并保留合适的堆上限。堆耗尽或子进程异常退出仍判定为失败，不能以退出前已完成测试的零失败计数替代 Maven 成功退出。
+
 共享网关集成夹具与停机测试的子 JVM 显式关闭 `MODEL_PRICE_CATALOG_ENABLED`，避免后台预热或管理页惰性查询访问真实 models.dev；需要目录行为的用例使用 MockEngine 或本机 HTTP 夹具。运行时该项默认开启，关闭不影响内置官方基准价。OAuth、模型与其他上游同样仅使用合成凭据和模拟端点。
 
 ## 迁移资源与测试归属
