@@ -328,6 +328,7 @@ watch(contextKey, () => {
   if (!active) contextChangedWhileDeactivated = true
   stopWaiting()
   rows.value = []
+  runError.value = ''
   selectedTargetKey.value = ''
   void load()
 })

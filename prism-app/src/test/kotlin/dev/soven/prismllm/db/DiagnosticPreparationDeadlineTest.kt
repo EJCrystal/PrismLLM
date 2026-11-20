@@ -5,8 +5,11 @@ import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.testsupport.db.SharedPostgres
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
@@ -215,6 +218,120 @@ class DiagnosticPreparationDeadlineTest {
             allowAcquisitionToReturn.countDown()
             executor.shutdownNow()
             assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS), "acquisition executor did not terminate")
+        }
+    }
+
+    @Test
+    fun `cancellation during connection handoff returns the lease before Exposed receives it`() = runBlocking {
+        for (phase in listOf("read", "write")) {
+            val executor = acquisitionExecutor()
+            val ownerJob = AtomicReference<Job>()
+            val ownerThread = AtomicReference<Thread>()
+            val acquisitionThread = AtomicReference<Thread>()
+            val cancellation = CancellationException("cancel during timeout $phase")
+            val jdbc = StatementJdbc(
+                blockRead = false,
+                beforeNetworkTimeoutRead = { if (phase == "read") ownerJob.get().cancel(cancellation) },
+                afterNetworkTimeoutWrite = { if (phase == "write") ownerJob.get().cancel(cancellation) },
+            )
+            val consumers = AtomicInteger()
+
+            try {
+                val waiter = async(Dispatchers.Default) {
+                    ownerJob.set(currentCoroutineContext().job)
+                    DiagnosticPreparationDeadline.within(5_000) {
+                        ownerThread.set(Thread.currentThread())
+                        val acquired = DiagnosticPreparationDeadline.acquireConnection(executor) {
+                            acquisitionThread.set(Thread.currentThread())
+                            jdbc.connection
+                        }
+                        DiagnosticPreparationDeadline.diagnosticConnection(acquired) { jdbc.discards.incrementAndGet() }.use {
+                            consumers.incrementAndGet()
+                            true
+                        }
+                    }
+                }
+                val failure = assertFailsWith<CancellationException> { withTimeout(3_000) { waiter.await() } }
+
+                assertEquals(cancellation.message, failure.message)
+                assertTrue(waiter.isCancelled)
+                assertEquals(0, consumers.get(), "$phase cancellation must not hand a proxy to Exposed")
+                assertEquals(1, jdbc.closes.get(), "$phase cancellation must return the acquired lease exactly once")
+                assertEquals(jdbc.originalTimeout, jdbc.timeoutAtClose.get())
+                assertEquals(0, jdbc.aborts.get(), "cancellation does not invalidate a healthy lease")
+                assertEquals(0, jdbc.discards.get())
+                assertSame(ownerThread.get(), jdbc.closeThread.get(), "cleanup stays on the diagnostic owner")
+                assertTrue(acquisitionThread.get() !== ownerThread.get())
+            } finally {
+                executor.shutdownNow()
+                assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS), "acquisition executor did not terminate")
+            }
+        }
+    }
+
+    @Test
+    fun `expiry during connection handoff returns the lease before Exposed receives it`() = runBlocking {
+        for (phase in listOf("read", "write")) {
+            val executor = acquisitionExecutor()
+            val clock = AtomicLong()
+            val budget = DiagnosticPreparationDeadline.start(5_000, clock::get)
+            val expire = { clock.set(TimeUnit.MILLISECONDS.toNanos(5_001)) }
+            val jdbc = StatementJdbc(
+                blockRead = false,
+                beforeNetworkTimeoutRead = { if (phase == "read") expire() },
+                afterNetworkTimeoutWrite = { if (phase == "write") expire() },
+            )
+            val consumers = AtomicInteger()
+            val ownerThread = Thread.currentThread()
+
+            try {
+                val result = DiagnosticPreparationDeadline.within(budget) {
+                    val acquired = DiagnosticPreparationDeadline.acquireConnection(executor) { jdbc.connection }
+                    DiagnosticPreparationDeadline.diagnosticConnection(acquired) { jdbc.discards.incrementAndGet() }.use {
+                        consumers.incrementAndGet()
+                        true
+                    }
+                }
+
+                assertNull(result)
+                assertEquals(0, consumers.get(), "$phase expiry must not hand a proxy to Exposed")
+                assertEquals(1, jdbc.closes.get(), "$phase expiry must return the acquired lease exactly once")
+                assertEquals(jdbc.originalTimeout, jdbc.timeoutAtClose.get())
+                assertEquals(0, jdbc.aborts.get())
+                assertEquals(0, jdbc.discards.get())
+                assertSame(ownerThread, jdbc.closeThread.get())
+            } finally {
+                executor.shutdownNow()
+                assertTrue(executor.awaitTermination(3, TimeUnit.SECONDS), "acquisition executor did not terminate")
+            }
+        }
+    }
+
+    @Test
+    fun `connection handoff JDBC initialization failure evicts and closes exactly once`() = runBlocking {
+        for (phase in listOf("read", "write")) {
+            val failure = SQLException("timeout $phase failed", "08006")
+            val jdbc = StatementJdbc(
+                blockRead = false,
+                beforeNetworkTimeoutRead = { if (phase == "read") throw failure },
+                afterNetworkTimeoutWrite = { if (phase == "write") throw failure },
+            )
+            val consumers = AtomicInteger()
+            val thrown = assertFailsWith<SQLException> {
+                DiagnosticPreparationDeadline.within(5_000) {
+                    DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use {
+                        consumers.incrementAndGet()
+                        true
+                    }
+                }
+            }
+
+            assertSame(failure, thrown)
+            assertEquals(0, consumers.get())
+            assertEquals(1, jdbc.aborts.get())
+            assertEquals(1, jdbc.discards.get())
+            assertEquals(1, jdbc.closes.get())
+            assertSame(Thread.currentThread(), jdbc.closeThread.get())
         }
     }
 
@@ -499,7 +616,12 @@ class DiagnosticPreparationDeadlineTest {
         }
     }
 
-    private inner class StatementJdbc(blockRead: Boolean, private val executeFailure: SQLException? = null) {
+    private inner class StatementJdbc(
+        blockRead: Boolean,
+        private val executeFailure: SQLException? = null,
+        private val beforeNetworkTimeoutRead: () -> Unit = {},
+        private val afterNetworkTimeoutWrite: () -> Unit = {},
+    ) {
         val originalTimeout = 9_000
         val networkTimeout = AtomicInteger(originalTimeout)
         val timeoutAtExecute = AtomicInteger()
@@ -512,6 +634,7 @@ class DiagnosticPreparationDeadlineTest {
         val aborts = AtomicInteger()
         val discards = AtomicInteger()
         val closes = AtomicInteger()
+        val closeThread = AtomicReference<Thread>()
         val readEntered = CountDownLatch(1)
         val allowRead = CountDownLatch(if (blockRead) 1 else 0)
         private val blockedRead = blockRead
@@ -521,8 +644,15 @@ class DiagnosticPreparationDeadlineTest {
             arrayOf(Connection::class.java),
         ) { proxy, method, args ->
             when (method.name) {
-                "getNetworkTimeout" -> networkTimeout.get()
-                "setNetworkTimeout" -> { networkTimeout.set(args!![1] as Int); null }
+                "getNetworkTimeout" -> {
+                    beforeNetworkTimeoutRead()
+                    networkTimeout.get()
+                }
+                "setNetworkTimeout" -> {
+                    networkTimeout.set(args!![1] as Int)
+                    afterNetworkTimeoutWrite()
+                    null
+                }
                 "getTransactionIsolation" -> {
                     initializations.incrementAndGet()
                     timeoutAtInitialization.set(networkTimeout.get())
@@ -536,6 +666,7 @@ class DiagnosticPreparationDeadlineTest {
                 }
                 "abort" -> { aborts.incrementAndGet(); null }
                 "close" -> {
+                    closeThread.set(Thread.currentThread())
                     timeoutAtClose.set(networkTimeout.get())
                     closes.incrementAndGet()
                     null

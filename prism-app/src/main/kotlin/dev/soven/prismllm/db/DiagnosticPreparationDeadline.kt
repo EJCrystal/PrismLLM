@@ -256,50 +256,61 @@ internal class DiagnosticPreparationDeadline private constructor(
             fun setRemainingNetworkTimeout() =
                 setTimeout(deadline.remainingMillis().coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
 
-            setRemainingNetworkTimeout()
-            return Proxy.newProxyInstance(
-                Connection::class.java.classLoader,
-                arrayOf(Connection::class.java),
-            ) { proxy, method, args ->
-                when {
-                    method.declaringClass == Any::class.java -> when (method.name) {
-                        "equals" -> proxy === args?.get(0)
-                        "hashCode" -> System.identityHashCode(proxy)
-                        "toString" -> "DiagnosticConnection($connection)"
-                        else -> invoke(connection, method, args)
-                    }
-                    method.name == "isClosed" && terminal.get() -> true
-                    method.name == "close" -> {
-                        if (!terminal.get()) {
-                            // Restore before Hikari can recycle the lease.
-                            setTimeout(originalNetworkTimeout)
-                            if (terminal.compareAndSet(false, true)) invoke(connection, method, args) else null
-                        } else null
-                    }
-                    terminal.get() -> throw SQLException("Diagnostic connection is closed")
-                    method.name == "commit" -> {
-                        setRemainingNetworkTimeout()
-                        invoke(connection, method, args)
-                    }
-                    method.name == "rollback" -> {
-                        // Cleanup has its own bounded budget after caller expiry/cancellation.
-                        setTimeout(CLEANUP_TIMEOUT_MS.toInt())
-                        invoke(connection, method, args)
-                    }
-                    method.name == "setNetworkTimeout" -> {
-                        try {
+            fun close() {
+                if (!terminal.get()) {
+                    // Restore before Hikari can recycle the lease.
+                    setTimeout(originalNetworkTimeout)
+                    if (terminal.compareAndSet(false, true)) connection.close()
+                }
+            }
+
+            return try {
+                setRemainingNetworkTimeout()
+                val proxy = Proxy.newProxyInstance(
+                    Connection::class.java.classLoader,
+                    arrayOf(Connection::class.java),
+                ) { proxy, method, args ->
+                    when {
+                        method.declaringClass == Any::class.java -> when (method.name) {
+                            "equals" -> proxy === args?.get(0)
+                            "hashCode" -> System.identityHashCode(proxy)
+                            "toString" -> "DiagnosticConnection($connection)"
+                            else -> invoke(connection, method, args)
+                        }
+                        method.name == "isClosed" && terminal.get() -> true
+                        method.name == "close" -> close()
+                        terminal.get() -> throw SQLException("Diagnostic connection is closed")
+                        method.name == "commit" -> {
+                            setRemainingNetworkTimeout()
                             invoke(connection, method, args)
-                        } catch (cause: Throwable) {
-                            poison(cause)
-                            throw cause
+                        }
+                        method.name == "rollback" -> {
+                            // Cleanup has its own bounded budget after caller expiry/cancellation.
+                            setTimeout(CLEANUP_TIMEOUT_MS.toInt())
+                            invoke(connection, method, args)
+                        }
+                        method.name == "setNetworkTimeout" -> {
+                            try {
+                                invoke(connection, method, args)
+                            } catch (cause: Throwable) {
+                                poison(cause)
+                                throw cause
+                            }
+                        }
+                        else -> {
+                            setRemainingNetworkTimeout()
+                            wrapJdbcValue(invoke(connection, method, args), ::setRemainingNetworkTimeout, ::poison)
                         }
                     }
-                    else -> {
-                        setRemainingNetworkTimeout()
-                        wrapJdbcValue(invoke(connection, method, args), ::setRemainingNetworkTimeout, ::poison)
-                    }
+                } as Connection
+                deadline.remainingMillis()
+                proxy
+            } catch (cause: Throwable) {
+                runCatching { close() }.exceptionOrNull()?.let {
+                    if (it !== cause) cause.addSuppressed(it)
                 }
-            } as Connection
+                throw cause
+            }
         }
 
         private fun invoke(target: Any, method: Method, args: Array<out Any?>?): Any? =

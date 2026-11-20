@@ -71,6 +71,10 @@ function selectTab(id: string) {
   if (id === 'records') recordsKey.value += 1
   activeTab.value = id
 }
+function findTab(id: string) {
+  return [...(tabList.value?.querySelectorAll<HTMLButtonElement>('[role="tab"]') ?? [])]
+    .find((tab) => tab.id === `${tabId}-${id}`)
+}
 
 async function navigateTabs(event: KeyboardEvent, index: number) {
   if (event.altKey || event.ctrlKey || event.metaKey) return
@@ -83,9 +87,11 @@ async function navigateTabs(event: KeyboardEvent, index: number) {
     default: return
   }
   event.preventDefault()
-  selectTab(tabs.value[targetIndex]!.id)
+  const targetId = tabs.value[targetIndex]!.id
+  selectTab(targetId)
   await nextTick()
-  tabList.value?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[targetIndex]?.focus()
+  if (disposed || activeTab.value !== targetId) return
+  findTab(targetId)?.focus()
 }
 
 /** 智商 / 指纹视图只回传记录 id，这里补上当前页签的类型。 */
@@ -105,7 +111,7 @@ async function focusIqIfRemoved(
   activeTabWasRemoved: boolean,
   replacedTabId = '',
 ) {
-  const focusWasRemoved = removedTabIds.includes(focusedTabId) || (focusWasInPanel && activeTabWasRemoved)
+  const focusWasRemoved = removedTabIds.includes(focusedTabId) || (activeTabWasRemoved && (!!focusedTabId || focusWasInPanel))
   const shouldRestoreReplacedTab = !focusWasRemoved && !!replacedTabId && focusWasInPanel
   if (!focusWasRemoved && !shouldRestoreReplacedTab) return
   const fallbackTabId = activeTabWasRemoved ? 'iq' : activeTab.value
@@ -114,8 +120,7 @@ async function focusIqIfRemoved(
   if (disposed) return
   if (focusWasRemoved) {
     if (activeTab.value !== fallbackTabId) return
-    const fallbackTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
-      .find((tab) => tab.id === `${tabId}-${fallbackTabId}`)
+    const fallbackTab = findTab(fallbackTabId)
     fallbackTab?.focus()
     fallbackTab?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
     return
@@ -123,9 +128,7 @@ async function focusIqIfRemoved(
   if (activeTab.value !== replacedTabId) return
   const currentFocus = typeof document === 'undefined' ? null : document.activeElement
   if (currentFocus && currentFocus !== document.body && tabPanel.value?.contains(currentFocus)) return
-  const replacementTab = [...(tabList.value?.querySelectorAll<HTMLElement>('[role="tab"]') ?? [])]
-    .find((tab) => tab.id === `${tabId}-${replacedTabId}`)
-  replacementTab?.focus()
+  findTab(replacedTabId)?.focus()
 }
 
 async function load(recheck = false) {

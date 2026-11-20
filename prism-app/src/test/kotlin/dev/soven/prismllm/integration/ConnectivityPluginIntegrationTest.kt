@@ -67,6 +67,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -1561,10 +1562,119 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun channelOAuthPreparationRechecksModelBindingCredentialAndPluginBeforeSending() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val model = "gpt-6-luna"
+            for (mutation in listOf("models", "binding", "credential", "plugin")) {
+                val channel = directOAuthChannel("late-channel-$mutation")
+                val account = oauthAccount("late-channel-$mutation", OAuthProvider.CHATGPT, listOf(model), listOf(channel.id))
+                assertTrue(client.invokePlugin(session, "channel", channel.id, values(model, GatewayProtocol.RESPONSES, keyId = account.id))
+                    .decoded<PluginExecution>().outcome.success)
+                val sent = probes.size
+                val entered = CompletableDeferred<Unit>()
+                val release = CompletableDeferred<Unit>()
+                val tokens = app.oauthTokenService
+                mockkObject(tokens)
+                coEvery { tokens.accessTokenWithSnapshot(account.id) } coAnswers {
+                    val bound = callOriginal()
+                    entered.complete(Unit)
+                    release.await()
+                    bound
+                }
+                try {
+                    coroutineScope {
+                        val response = async { client.invokePlugin(session, "channel", channel.id, values(model, GatewayProtocol.RESPONSES, keyId = account.id)) }
+                        val expected = try {
+                            withTimeout(5_000) { entered.await() }
+                            assertFalse(response.isCompleted)
+                            when (mutation) {
+                                "models" -> {
+                                    assertNotNull(app.oauthAccountRepository.setModels(account.id, listOf("other-model")))
+                                    HttpStatusCode.BadRequest to "model_not_authorized"
+                                }
+                                "binding" -> {
+                                    assertNotNull(app.oauthAccountRepository.setChannels(account.id, emptyList()))
+                                    HttpStatusCode.NotFound to "channel_key_not_found"
+                                }
+                                "credential" -> {
+                                    assertNotNull(app.oauthAccountRepository.saveRefreshed(
+                                        accountId = account.id, accessToken = app.credentialCipher.encrypt("late-replacement"),
+                                        expiresAt = System.currentTimeMillis() + 86_400_000, tokenType = "Bearer", scope = null,
+                                        expectedRefreshCiphertext = account.refreshTokenCiphertext,
+                                    ))
+                                    HttpStatusCode.BadRequest to "channel_key_unavailable"
+                                }
+                                else -> {
+                                    assertFalse(app.pluginRuntime.disable(PLUGIN_ID).admissionEnabled)
+                                    HttpStatusCode.Conflict to "PLUGIN_DISABLED"
+                                }
+                            }
+                        } finally { release.complete(Unit) }
+                        withTimeout(5_000) { response.await() }.assertError(expected.first, expected.second)
+                    }
+                    assertEquals(sent, probes.size, "$mutation during OAuth preparation must not send model HTTP")
+                } finally {
+                    release.complete(Unit)
+                    unmockkObject(tokens)
+                }
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun channelStaticCredentialReplacementDuringSettingsPreparationCannotSend() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val channel = directChannel("late-settings-credential", GatewayProtocol.CHAT_COMPLETIONS)
+            assertTrue(client.invokePlugin(session, "channel", channel.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS))
+                .decoded<PluginExecution>().outcome.success)
+            val sent = probes.size
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val settings = app.upstreamRequestSettingsRepository
+            mockkObject(settings)
+            coEvery { settings.load() } coAnswers {
+                val loaded = callOriginal()
+                entered.complete(Unit)
+                release.await()
+                loaded
+            }
+            try {
+                coroutineScope {
+                    val response = async { client.invokePlugin(session, "channel", channel.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS)) }
+                    try {
+                        withTimeout(5_000) { entered.await() }
+                        assertFalse(response.isCompleted)
+                        assertNotNull(app.channelRepository.update(
+                            id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+                            keys = channel.keys.map { key -> ChannelKeyUpdate(
+                                id = key.id, name = key.name, priority = key.priority, models = key.models, state = key.state, stateVersion = key.stateVersion,
+                                credential = app.credentialCipher.encrypt("changed-after-settings-read"),
+                            ) }, authType = channel.authType, protocols = channel.protocols, enabled = channel.enabled,
+                        ))
+                    } finally { release.complete(Unit) }
+                    withTimeout(5_000) { response.await() }.assertError(HttpStatusCode.BadRequest, "channel_key_unavailable")
+                }
+                assertEquals(sent, probes.size)
+            } finally {
+                release.complete(Unit)
+                unmockkObject(settings)
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `failed stop writes block HTTP probes during persistence and restore confirmed enabled admission`() = runBlocking {
         val repository = app.pluginInstallationRepository
         val runtime = app.pluginRuntime
-        mockkObject(repository, runtime)
+        val mutex = runtime.javaClass.getDeclaredField("mutex").apply { isAccessible = true }.get(runtime) as Mutex
+        val queuedPermits = mutex.javaClass.superclass.getDeclaredField("_availablePermits\$volatile").apply { isAccessible = true }
+        mockkObject(repository)
         try {
             testApplication {
                 application { app.install(this) }
@@ -1573,7 +1683,6 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 for (uninstall in listOf(false, true)) {
                     val entered = CompletableDeferred<Unit>()
                     val release = CompletableDeferred<Unit>()
-                    val arrived = CompletableDeferred<Unit>()
                     val before = assertNotNull(repository.find(PLUGIN_ID))
                     val sent = probes.size
                     coEvery { repository.save(any(), any()) } coAnswers {
@@ -1581,7 +1690,6 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                         release.await()
                         throw PluginHostException("TEST_STOP_SAVE_FAILED", "synthetic persistence rejection", 409)
                     }
-                    coEvery { runtime.contributions() } coAnswers { arrived.complete(Unit); callOriginal() }
                     coroutineScope {
                         val stop = async {
                             if (uninstall) client.api(HttpMethod.Delete, "/admin/api/plugins/$PLUGIN_ID", session)
@@ -1590,7 +1698,11 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                         try {
                             withTimeout(5_000) { entered.await() }
                             val probe = async { client.invokePlugin(session, "channel", channel.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS)) }
-                            withTimeout(5_000) { arrived.await() }
+                            awaitCondition("HTTP probe is queued at the held runtime admission mutex", timeoutMs = 5_000) {
+                                queuedPermits.getInt(mutex) < 0
+                            }
+                            assertFalse(probe.isCompleted)
+                            assertFalse(release.isCompleted)
                             assertEquals(sent, probes.size, "A held stop write must not send model HTTP")
                             probe.cancel()
                             withTimeout(5_000) { probe.join() }
@@ -1606,7 +1718,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                     assertEquals(sent + 1, probes.size)
                 }
             }
-        } finally { unmockkObject(repository, runtime) }
+        } finally { unmockkObject(repository) }
         assertNoDiagnosticSettlement()
     }
 
@@ -2173,8 +2285,8 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     private suspend fun directChannel(name: String, protocol: GatewayProtocol, model: String = MODEL, scenario: String = "ok") =
         createChannelWithBaseUrl(name, "${fake.baseUrl}/$scenario/v1", listOf(protocol), mappingsOf(model))
 
-    private suspend fun directOAuthChannel() = app.channelRepository.create(
-        name = "oauth-needs-preparation", baseUrl = "${fake.baseUrl}/ok/v1", keys = emptyList(), authType = "bearer",
+    private suspend fun directOAuthChannel(name: String = "oauth-needs-preparation") = app.channelRepository.create(
+        name = name, baseUrl = "${fake.baseUrl}/ok/v1", keys = emptyList(), authType = "bearer",
         protocols = listOf(GatewayProtocol.RESPONSES), enabled = true, modelMappings = mappingsOf("gpt-6-luna"),
     )
 

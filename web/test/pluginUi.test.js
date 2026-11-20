@@ -331,32 +331,45 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(calls.fetch.length, 0)
   })
 
-  it('uses the complete generic API parsers over mocked fetch for the unknown plugin', async () => {
-    const fixture = makePluginFixture()
-    setFixtures(fixture)
-    for (const name of ['getPlugin', 'listPluginTargets', 'invokePlugin']) api[name] = originals[name]
-    const requests = []
-    globalThis.fetch = window.fetch = async (input, init = {}) => {
-      const url = new URL(String(input), window.location.origin)
-      const method = init.method ?? 'GET'
-      requests.push({ method, path: url.pathname })
-      let value
-      if (method === 'GET' && url.pathname === `/admin/api/plugins/${fixture.manifest.id}`) value = fixture.state
-      else if (method === 'GET' && url.pathname.endsWith('/resources/model-test-targets')) value = mock.targets
-      else if (method === 'POST' && url.pathname.endsWith('/invocations')) {
-        const payload = JSON.parse(init.body)
-        value = makeExecution({ pluginId: fixture.manifest.id, activeVersion: payload.expectedActiveVersion, context: payload.context, values: payload.values, target: mock.targets[0] })
-      } else assert.fail(`Unexpected mock request ${method} ${url.pathname}`)
-      return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
-    }
-    const entry = await mount('PluginDiagnosticHost', { contribution: fixture.contribution, context: { kind: 'channel', id: channel.id } })
-    await waitFor(() => !entry.state.loading.value)
-    assert.equal(entry.state.loadError.value, '')
-    await entry.state.run(); await settle()
-    assert.equal(entry.state.rows.value[0].error, '')
-    assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
-    assert.ok(requests.some(request => request.method === 'POST' && request.path.includes('/acme.synthetic/invocations')))
-  })
+  for (const surface of ['channel', 'oauth-account', 'global page']) {
+    it(`uses the complete generic API parsers with exact plugin and ${surface} resource URLs`, async () => {
+      const fixture = makePluginFixture()
+      const context = surface === 'global page' ? undefined : { kind: surface, id: `${surface} /one+?&#目标` }
+      const contribution = surface === 'channel' ? fixture.contribution : surface === 'oauth-account' ? fixture.accountContribution : fixture.pageContribution
+      setFixtures(fixture)
+      mock.targets = [makeTarget({ channelId: context?.id ?? channel.id, ...(surface === 'oauth-account'
+        ? { credentials: [{ id: context.id, name: '账号原生授权', priority: 1 }] } : {}) })]
+      for (const name of ['getPlugin', 'listPluginTargets', 'invokePlugin']) api[name] = originals[name]
+      const pluginUrl = `/admin/api/plugins/${encodeURIComponent(fixture.manifest.id)}`
+      const resourceUrl = `${pluginUrl}/resources/model-test-targets${context ? '?' + new URLSearchParams({ contextKind: context.kind, contextId: context.id }) : ''}`
+      const requests = []
+      globalThis.fetch = window.fetch = async (input, init = {}) => {
+        const url = new URL(String(input), window.location.origin)
+        const method = init.method ?? 'GET'
+        const path = url.pathname + url.search
+        requests.push({ method, path })
+        let value
+        if (method === 'GET' && path === pluginUrl) value = fixture.state
+        else if (method === 'GET' && path === resourceUrl) value = mock.targets
+        else if (method === 'POST' && path === `${pluginUrl}/invocations`) {
+          const payload = JSON.parse(init.body)
+          assert.deepEqual(payload.context, context ?? { kind: 'channel', id: channel.id })
+          value = makeExecution({ pluginId: fixture.manifest.id, activeVersion: payload.expectedActiveVersion, context: payload.context, values: payload.values, target: mock.targets[0] })
+        } else assert.fail(`Unexpected mock request ${method} ${path}`)
+        return new Response(JSON.stringify(value), { headers: { 'Content-Type': 'application/json' } })
+      }
+      const entry = await mount('PluginDiagnosticHost', { contribution, context })
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.state.loadError.value, '')
+      await entry.state.run(); await settle()
+      assert.equal(entry.state.rows.value[0].error, '')
+      assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
+      assert.deepEqual(requests, [
+        { method: 'GET', path: pluginUrl }, { method: 'GET', path: resourceUrl },
+        { method: 'GET', path: pluginUrl }, { method: 'POST', path: `${pluginUrl}/invocations` },
+      ])
+    })
+  }
 
   it('keeps scalar zero false and empty-number null and resets text to the active configuration', async () => {
     const numberEvents = []
@@ -1817,6 +1830,73 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
+  for (const discovery of ['arrival', 'removal']) {
+    for (const [key, from, target] of [
+      ['ArrowRight', '智商', '指纹'], ['ArrowLeft', '智商', '记录'],
+      ['Home', '记录', '智商'], ['End', '智商', '记录'],
+    ]) {
+      it(`focuses the selected tab by ID when contribution ${discovery} interleaves with ${key}`, async () => {
+        const fixture = makeOfficialPluginFixture()
+        setFixtures(fixture)
+        const pending = deferred()
+        if (discovery === 'arrival') mock.listContributions = () => pending.promise
+        const entry = await mount('ChannelTestDrawer', { channel })
+        const source = button(entry.container, from)
+        source.click(); await settle()
+        source.focus()
+        const previousOrder = [...entry.container.querySelectorAll('[role=tab]')].map(tab => tab.id)
+        let refresh
+        if (discovery === 'removal') {
+          mock.listContributions = () => pending.promise
+          refresh = entry.state.load()
+        }
+        pending.resolve(discovery === 'arrival' ? clonePluginData(fixture.contributions) : [])
+        await Promise.resolve()
+        assert.deepEqual([...entry.container.querySelectorAll('[role=tab]')].map(tab => tab.id), previousOrder)
+        source.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
+        const targetRemoved = discovery === 'removal' && ['ArrowLeft', 'Home'].includes(key)
+        const selected = button(entry.container, targetRemoved ? fixture.contribution.entry.label : target)
+        assert.equal(`${entry.state.tabId}-${entry.state.activeTab.value}`, selected.id)
+        await refresh; await settle()
+        assert.notDeepEqual([...entry.container.querySelectorAll('[role=tab]')].map(tab => tab.id), previousOrder)
+        const destination = targetRemoved ? button(entry.container, '智商') : selected
+        assert.equal(entry.container.querySelector('[role=tab][aria-selected=true]'), destination)
+        assert.equal(document.activeElement, destination)
+        assert.equal(destination.tabIndex, 0)
+        if (targetRemoved) assert.equal(selected.isConnected, false)
+      })
+    }
+  }
+
+  it('does not focus a superseded keyboard navigation target after the render tick', async () => {
+    const entry = await mount('ChannelTestDrawer', { channel })
+    const source = button(entry.container, '智商')
+    source.click(); await settle()
+    source.focus()
+    const focused = []
+    for (const tab of entry.container.querySelectorAll('[role=tab]')) {
+      const focus = tab.focus.bind(tab)
+      tab.focus = () => { focused.push(tab.id); focus() }
+    }
+    source.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))
+    source.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    await settle()
+    const selected = button(entry.container, '记录')
+    assert.equal(entry.container.querySelector('[role=tab][aria-selected=true]'), selected)
+    assert.deepEqual(focused, [selected.id])
+    assert.equal(document.activeElement, selected)
+  })
+
+  it('does not focus a keyboard navigation target after the drawer unmounts', async () => {
+    const entry = await mount('ChannelTestDrawer', { channel })
+    let focusCalls = 0
+    for (const tab of entry.container.querySelectorAll('[role=tab]')) tab.focus = () => { focusCalls++ }
+    button(entry.container, '智商').dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }))
+    entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+    await settle()
+    assert.equal(focusCalls, 0)
+  })
+
   it('keeps first-discovery interactions scoped to their own drawer', async () => {
     const fixture = makeOfficialPluginFixture()
     setFixtures(fixture)
@@ -2063,6 +2143,99 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       assert.equal(toasts.length, 0)
       assert.equal(unavailable.length, 0)
       assert.doesNotMatch(text(entry.container), /PRIVATE_STALE_ERROR/)
+    })
+  }
+
+  for (const changeKind of ['plugin', 'version', 'entry', 'context kind', 'context ID', 'account models', 'account protocols', 'initial model']) {
+    it(`clears the previous run error while a changed ${changeKind} loads new diagnostic resources`, async () => {
+      const fixture = makePluginFixture()
+      const context = { kind: 'oauth-account', id: 'account-1' }
+      const accountTargets = id => ['test-model', 'other-model'].map(model => makeTarget({
+        channelId: id, model, credentials: [{ id, name: '账号原生授权', priority: 1 }],
+      }))
+      mock.targets = accountTargets(context.id)
+      const entry = await hostFor(fixture, { contribution: fixture.accountContribution, context,
+        accountModels: ['test-model', 'other-model'], accountProtocols: ['responses', 'chat_completions'], initialModel: 'test-model' })
+      mock.getState = () => Promise.reject(new Error('previous context preflight failed'))
+      await entry.state.run(); await settle()
+      assert.equal(entry.state.runError.value, 'previous context preflight failed')
+      assert.match(text(entry.container.querySelector('[role=alert]')), /previous context preflight failed/)
+      assert.equal(calls.invocations.length, 0)
+      assert.equal(toasts.length, 1)
+      mock.getState = undefined
+      const patch = {}
+      if (['plugin', 'version', 'entry'].includes(changeKind)) {
+        const next = makePluginFixture({ id: changeKind === 'plugin' ? 'acme.other' : fixture.manifest.id,
+          version: changeKind === 'version' ? '2.0.0' : fixture.manifest.version })
+        if (changeKind === 'entry') {
+          next.accountContribution.entry.id = 'replacement-account-entry'
+          next.state.activeUi.entries[1].id = 'replacement-account-entry'
+        }
+        mock.states.set(next.manifest.id, clonePluginData(next.state))
+        patch.contribution = next.accountContribution
+      }
+      if (changeKind === 'context kind') {
+        patch.context = { ...context, kind: 'channel' }
+        patch.contribution = fixture.contribution
+      }
+      if (changeKind === 'context ID') patch.context = { ...context, id: 'account-2' }
+      if (changeKind === 'account models') patch.accountModels = ['other-model']
+      if (changeKind === 'account protocols') patch.accountProtocols = ['responses']
+      if (changeKind === 'initial model') patch.initialModel = 'other-model'
+      const resources = deferred()
+      mock.getTargets = () => resources.promise
+      await entry.setProps(patch)
+      assert.equal(entry.state.loading.value, true)
+      assert.equal(entry.state.runError.value, '')
+      assert.equal(entry.state.rows.value.length, 0)
+      assert.equal(entry.state.selectedTargetKey.value, '')
+      resources.resolve(accountTargets(patch.context?.id ?? context.id))
+      await waitFor(() => !entry.state.loading.value)
+      assert.equal(entry.state.loadError.value, '')
+      assert.equal(entry.state.runError.value, '')
+      assert.equal(entry.state.canRun.value, true)
+      assert.equal(entry.state.form.model, ['account models', 'initial model'].includes(changeKind) ? 'other-model' : 'test-model')
+      assert.doesNotMatch(text(entry.container), /previous context preflight failed/)
+      assert.equal(toasts.length, 1, 'changing context does not emit another failure')
+    })
+  }
+
+  for (const changed of [false, true]) {
+    it(`${changed ? 'clears' : 'retains'} a previous run error when KeepAlive reactivates ${changed ? 'a changed' : 'the same'} context`, async () => {
+      const fixture = makePluginFixture()
+      setFixtures(fixture)
+      const container = document.createElement('div')
+      document.body.append(container)
+      const visible = ref(true)
+      const context = ref({ kind: 'channel', id: channel.id })
+      const app = createApp({ render: () => h(runtime.KeepAlive, null, {
+        default: () => visible.value ? h(components.get('PluginDiagnosticHost'), { contribution: fixture.contribution, context: context.value }) : null,
+      }) })
+      app.provide(ssrContextKey, { modules: new Set() })
+      app.mount(container)
+      const entry = { app, container, state: captures.get('PluginDiagnosticHost'), unmount() { app.unmount(); container.remove() } }
+      mounted.push(entry)
+      await waitFor(() => !entry.state.loading.value)
+      mock.getState = () => Promise.reject(new Error('previous activation preflight failed'))
+      await entry.state.run(); await settle()
+      assert.equal(entry.state.runError.value, 'previous activation preflight failed')
+      mock.getState = undefined
+      visible.value = false; await settle()
+      const reads = calls.state.length
+      if (changed) {
+        context.value = { kind: 'channel', id: 'channel-2' }
+        mock.targets = [makeTarget({ channelId: 'channel-2', model: 'new-context-model' })]
+      }
+      await settle()
+      assert.equal(calls.state.length, reads, 'hidden hosts do not reload on a prop change')
+      visible.value = true
+      await waitFor(() => calls.state.length > reads && !entry.state.loading.value)
+      assert.equal(entry.state.runError.value, changed ? '' : 'previous activation preflight failed')
+      assert.equal(entry.state.form.model, changed ? 'new-context-model' : 'test-model')
+      assert.equal(entry.state.canRun.value, true)
+      if (changed) assert.doesNotMatch(text(container), /previous activation preflight failed/)
+      else assert.match(text(container.querySelector('[role=alert]')), /previous activation preflight failed/)
+      assert.equal(toasts.length, 1)
     })
   }
 
@@ -2988,6 +3161,110 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await waitFor(() => calls.uninstall.length === 1 && !entry.state.busy.value)
   })
 
+  for (const remaining of ['catalogue', 'installation record', 'empty']) {
+    for (const firstResponse of ['catalogue', 'installation state']) {
+      it(`reconciles a removed catalogue-only selection to ${remaining} after ${firstResponse} resolves first`, async () => {
+        const removed = makePluginFixture()
+        const replacement = makePluginFixture({ id: 'acme.remaining' })
+        setFixtures(removed)
+        mock.states.clear()
+        const entry = await mount('PluginMarketplaceView')
+        await waitFor(() => !entry.state.loading.value)
+        assert.equal(entry.state.selectedId.value, removed.manifest.id)
+        assert.equal(entry.state.selectedState.value, undefined)
+        const catalogue = deferred()
+        const installations = deferred()
+        mock.listCatalog = () => catalogue.promise
+        mock.listPlugins = () => installations.promise
+        const refresh = entry.state.load()
+        const nextCatalog = remaining === 'catalogue' ? [replacement.catalog] : []
+        const nextStates = remaining === 'installation record' ? [replacement.state] : []
+        if (firstResponse === 'catalogue') catalogue.resolve(nextCatalog)
+        else installations.resolve(nextStates)
+        await settle()
+        assert.equal(entry.state.loading.value, true)
+        assert.equal(entry.state.selectedId.value, removed.manifest.id, 'one response cannot prove the selection disappeared')
+        if (firstResponse === 'catalogue') installations.resolve(nextStates)
+        else catalogue.resolve(nextCatalog)
+        await refresh; await settle()
+        assert.equal(entry.state.selectedId.value, remaining === 'empty' ? '' : replacement.manifest.id)
+        assert.equal(entry.state.installationStateKnown.value, true)
+        if (remaining !== 'installation record') assert.doesNotMatch(text(entry.container), /安装记录仍在.*当前可信目录没有这个插件包/)
+        if (remaining === 'empty') {
+          assert.equal(entry.container.querySelector('.plugin-market-detail'), null)
+          assert.match(text(entry.container), /选择一个插件/)
+        } else {
+          assert.equal(entry.container.querySelector('.plugin-market-detail-head code').textContent, replacement.manifest.id)
+          assert.equal(pluginItem(entry.container, replacement.manifest.id).getAttribute('aria-pressed'), 'true')
+          assert.equal(entry.state.selectedState.value?.id, remaining === 'installation record' ? replacement.manifest.id : undefined)
+        }
+      })
+    }
+  }
+
+  for (const survivingSource of ['catalogue', 'installation record']) {
+    it(`retains a search-hidden selection still present in the ${survivingSource}`, async () => {
+      const selected = makePluginFixture()
+      const other = makePluginFixture({ id: 'acme.other' })
+      setFixtures(selected, other)
+      if (survivingSource === 'catalogue') mock.states.delete(selected.manifest.id)
+      const entry = await mount('PluginMarketplaceView')
+      await waitFor(() => !entry.state.loading.value)
+      await change(entry.container.querySelector('input[type=search]'), other.manifest.id)
+      assert.equal(entry.container.querySelectorAll('.plugin-market-item').length, 1)
+      if (survivingSource === 'installation record') mock.catalog = [other.catalog]
+      await entry.state.load(); await settle()
+      assert.equal(entry.state.selectedId.value, selected.manifest.id)
+      assert.equal(entry.container.querySelector('.plugin-market-detail-head code').textContent, selected.manifest.id)
+      assert.equal(entry.container.querySelectorAll('.plugin-market-item').length, 1)
+    })
+  }
+
+  for (const failedSource of ['catalogue', 'installation state']) {
+    it(`does not discard a missing selection on ${failedSource} failure before a complete refresh`, async () => {
+      const selected = makePluginFixture()
+      const replacement = makePluginFixture({ id: 'acme.remaining' })
+      setFixtures(selected)
+      mock.states.clear()
+      const entry = await mount('PluginMarketplaceView')
+      await waitFor(() => !entry.state.loading.value)
+      mock.catalog = [replacement.catalog]
+      mock.states.set(replacement.manifest.id, replacement.state)
+      if (failedSource === 'catalogue') mock.listCatalog = () => Promise.reject(new Error('catalogue offline'))
+      else mock.listPlugins = () => Promise.reject(new Error('installation state offline'))
+      await entry.state.load(); await settle()
+      assert.equal(entry.state.selectedId.value, selected.manifest.id)
+      mock.listCatalog = undefined
+      mock.listPlugins = undefined
+      await entry.state.load(); await settle()
+      assert.equal(entry.state.selectedId.value, replacement.manifest.id)
+    })
+  }
+
+  it('ignores a superseded refresh that would remove the current marketplace selection', async () => {
+    const selected = makePluginFixture()
+    setFixtures(selected)
+    mock.states.clear()
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    const oldCatalog = deferred()
+    const oldStates = deferred()
+    mock.listCatalog = () => oldCatalog.promise
+    mock.listPlugins = () => oldStates.promise
+    const stale = entry.state.load()
+    const staleOptions = calls.catalog.at(-1)
+    mock.listCatalog = undefined
+    mock.listPlugins = undefined
+    await entry.state.load(); await settle()
+    assert.equal(staleOptions.signal.aborted, true)
+    oldCatalog.resolve([])
+    oldStates.resolve([])
+    assert.equal(await stale, false)
+    await settle()
+    assert.equal(entry.state.selectedId.value, selected.manifest.id)
+    assert.equal(pluginItem(entry.container, selected.manifest.id).getAttribute('aria-pressed'), 'true')
+  })
+
   it('loads installed state on the first render even when catalogue loading fails', async () => {
     mock.listCatalog = () => Promise.reject(new Error('initial catalogue failure'))
     const entry = await mount('PluginMarketplaceView')
@@ -3127,24 +3404,37 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(confirmCalls.length, 0)
   })
 
-  it('suppresses late marketplace mutation notifications and state-change events after unmount', async () => {
-    const entry = await mount('PluginMarketplaceView')
-    await waitFor(() => !entry.state.loading.value)
-    await change(field(entry.container, '默认提示词'), 'unmounted configuration')
-    const pending = deferred()
-    mock.configure = () => pending.promise
-    button(entry.container, '保存配置').click(); await settle()
-    const changes = []
-    const listener = () => changes.push(true)
-    window.addEventListener(PLUGIN_STATE_CHANGED, listener)
-    try {
-      entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
-      pending.resolve(stateFor('acme.synthetic'))
-      await settle()
-      assert.equal(toasts.length, 0)
-      assert.equal(changes.length, 0)
-    } finally { window.removeEventListener(PLUGIN_STATE_CHANGED, listener) }
-  })
+  for (const completion of ['response', 'error']) {
+    it(`suppresses late marketplace mutation ${completion} notifications and state-change events after unmount`, async () => {
+      const entry = await mount('PluginMarketplaceView')
+      await waitFor(() => !entry.state.loading.value)
+      await change(field(entry.container, '默认提示词'), 'unmounted configuration')
+      const pending = deferred()
+      let configurationSettled = false
+      mock.configure = async () => {
+        try { return await pending.promise }
+        finally { configurationSettled = true }
+      }
+      button(entry.container, '保存配置').click()
+      await waitFor(() => calls.configuration.length === 1 && entry.state.busy.value, 'pending configuration request before unmount')
+      assert.deepEqual(calls.configuration[0], { id: 'acme.synthetic', payload: {
+        values: { ...entry.state.configuration }, expectedRevision: 0, installedVersion: '1.0.0',
+      } })
+      assert.equal(configurationSettled, false)
+      assert.equal(button(entry.container, '保存配置').disabled, true)
+      const changes = []
+      const listener = () => changes.push(true)
+      window.addEventListener(PLUGIN_STATE_CHANGED, listener)
+      try {
+        entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+        if (completion === 'response') pending.resolve(stateFor('acme.synthetic'))
+        else pending.reject(new Error('unmounted save failed'))
+        await waitFor(() => configurationSettled, 'late configuration completion')
+        assert.equal(toasts.length, 0)
+        assert.equal(changes.length, 0)
+      } finally { window.removeEventListener(PLUGIN_STATE_CHANGED, listener) }
+    })
+  }
 
   it('blocks leaving while configuration save is pending and preserves drafts on a failed save', async () => {
     const entry = await mount('PluginMarketplaceView')

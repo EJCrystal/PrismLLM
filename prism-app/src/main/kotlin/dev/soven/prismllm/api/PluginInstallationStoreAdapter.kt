@@ -45,11 +45,11 @@ internal class PluginInstallationStoreAdapter(
 
     private fun PluginInstallationRecord.toRuntime() = PluginInstallation(
         id, version, sha256, source, installed, desiredEnabled,
-        approvedPermissions, configuration, updatedAt, revision,
+        approvedPermissions, configuration, updatedAt, revision, disableGeneration,
     )
 
     private fun PluginInstallation.toRecord() = PluginInstallationRecord(
         id, version, sha256, source, installed, desiredEnabled,
-        approvedPermissions, configuration, updatedAt, revision,
+        approvedPermissions, configuration, updatedAt, revision, disableGeneration,
     )
 }

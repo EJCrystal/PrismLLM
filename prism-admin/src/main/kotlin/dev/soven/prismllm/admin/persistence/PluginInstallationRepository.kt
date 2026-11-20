@@ -26,6 +26,7 @@ object PluginInstallations : Table("plugin_installations") {
     val approvedPermissionsJson = text("approved_permissions_json")
     val configurationJson = text("configuration_json")
     val revision = long("revision")
+    val disableGeneration = long("disable_generation")
     val updatedAt = long("updated_at")
     override val primaryKey = PrimaryKey(id)
 }
@@ -74,6 +75,7 @@ class PluginInstallationRepository(private val database: Database) {
         statement[PluginInstallations.approvedPermissionsJson] = Json.encodeToString(item.approvedPermissions)
         statement[PluginInstallations.configurationJson] = item.configuration.toString()
         statement[PluginInstallations.revision] = item.revision
+        statement[PluginInstallations.disableGeneration] = item.disableGeneration
         statement[PluginInstallations.updatedAt] = item.updatedAt
     }
 
@@ -88,5 +90,6 @@ class PluginInstallationRepository(private val database: Database) {
         configuration = Json.decodeFromString<JsonObject>(row[PluginInstallations.configurationJson]),
         updatedAt = row[PluginInstallations.updatedAt],
         revision = row[PluginInstallations.revision],
+        disableGeneration = row[PluginInstallations.disableGeneration],
     )
 }

@@ -135,7 +135,6 @@ class CodeAssistProjectResolver(
         }
         // Publish to memory only after the repository confirms this is still the exact OAuth snapshot.
         return recordContext(account, proxyKey, project, loaded.catalogTier(), loaded.reportsTier(), preparation)
-            ?: Context(null, null)
     }
 
     private suspend fun confirmedContext(
@@ -182,7 +181,7 @@ class CodeAssistProjectResolver(
         tier: String?,
         tierReported: Boolean = tier != null,
         preparation: DiagnosticPreparationDeadline.Budget? = null,
-    ): Context? {
+    ): Context {
         val previous = negotiated[account.id]?.takeIf { it.account.matchesCredentialSnapshot(account) }
         val merged = if (tierReported) tier else previous?.takeIf { it.egress == egress }?.tier
         bounded(project, MAX_PROJECT_LENGTH, "project")
@@ -194,8 +193,7 @@ class CodeAssistProjectResolver(
             negotiated[account.id]?.let { current ->
                 if (current.account.matchesCredentialSnapshot(account)) negotiated.remove(account.id, current)
             }
-            if (preparation != null) throw credentialReplaced()
-            return null
+            throw credentialReplaced()
         }
         negotiated[account.id] = Export(account, egress, project, merged)
         return Context(project, merged)
@@ -246,7 +244,6 @@ class CodeAssistProjectResolver(
         }
 
         val context = recordContext(account, egressKey(proxy), project, loaded.catalogTier(), loaded.reportsTier())
-            ?: throw credentialReplaced()
         return Probe(context.project, loaded.tier, loaded.allowedTiers, loaded.paidTier)
     }
 

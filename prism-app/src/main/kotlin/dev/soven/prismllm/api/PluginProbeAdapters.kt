@@ -21,9 +21,11 @@ import dev.soven.prismllm.plugin.sdk.PluginApi
 import dev.soven.prismllm.plugin.sdk.ProbeOutcome
 import dev.soven.prismllm.proxy.ModelConnectivityTestResult
 import dev.soven.prismllm.proxy.prepareOAuthAccountModelConnectivity
+import dev.soven.prismllm.proxy.resolveSavedCredential
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.KeyCredentialResolver
+import dev.soven.prismllm.shared.domain.UpstreamCredential
 import dev.soven.prismllm.shared.error.GatewayError
 import dev.soven.prismllm.shared.error.badRequest
 import dev.soven.prismllm.shared.error.notFound
@@ -140,38 +142,56 @@ internal suspend fun GatewayApplication.executePluginProbe(
                 "model" to JsonPrimitive(model), "protocol" to JsonPrimitive(protocol.value),
             ) + credentialBinding))
             pluginRuntime.execute(id, expectedActiveVersion, normalized, target) { plan ->
-                val currentChannel = channelRepository.find(target.id)?.let { channelWithCredentials(this, it) }
-                    ?: throw notFound("channel_not_found", "渠道不存在")
-                if (model !in currentChannel.models) throw badRequest("model_not_authorized", "渠道「${currentChannel.name}」尚未授权模型「$model」")
-                if (protocol !in currentChannel.protocols) {
-                    throw badRequest("model_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
+                suspend fun currentBinding(): Pair<ChannelRecord, UpstreamCredential> {
+                    val currentChannel = channelRepository.find(target.id)?.let { channelWithCredentials(this, it) }
+                        ?: throw notFound("channel_not_found", "渠道不存在")
+                    if (model !in currentChannel.models) throw badRequest("model_not_authorized", "渠道「${currentChannel.name}」尚未授权模型「$model」")
+                    if (protocol !in currentChannel.protocols) {
+                        throw badRequest("model_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
+                    }
+                    val currentCredential = resolveChannelCredentialForModel(currentChannel, model, target.credentialId)
+                    val sameCredential = when (credential) {
+                        is ChannelKeyRecord -> currentCredential is ChannelKeyRecord &&
+                            currentCredential.credentialCiphertext == credential.credentialCiphertext &&
+                            currentCredential.credentialNonce == credential.credentialNonce &&
+                            currentCredential.credentialKeyVersion == credential.credentialKeyVersion
+                        is OAuthAccountRecord -> currentCredential is OAuthAccountRecord && oauthTokenService.acceptsSnapshot(credential, currentCredential)
+                        else -> false
+                    }
+                    if (!sameCredential || !sameDiagnosticEndpoint(channel, currentChannel, protocol)) {
+                        throw badRequest("channel_key_unavailable", "所选渠道凭据或请求配置已变化，请刷新后重试")
+                    }
+                    return currentChannel to currentCredential
                 }
-                val currentCredential = resolveChannelCredentialForModel(currentChannel, model, target.credentialId)
-                val sameCredential = when (credential) {
-                    is ChannelKeyRecord -> currentCredential is ChannelKeyRecord &&
-                        currentCredential.credentialCiphertext == credential.credentialCiphertext &&
-                        currentCredential.credentialNonce == credential.credentialNonce &&
-                        currentCredential.credentialKeyVersion == credential.credentialKeyVersion
-                    is OAuthAccountRecord -> currentCredential is OAuthAccountRecord && oauthTokenService.acceptsSnapshot(credential, currentCredential)
-                    else -> false
+                val (_, selectedCredential) = currentBinding()
+                val globalOverrides = upstreamRequestSettingsRepository.load().overrides
+                val headerProfiles = upstreamHeaderCatalogService.profiles()
+                var preparedAccount: OAuthAccountRecord? = null
+                val preparedCredential = resolveSavedCredential(KeyCredentialResolver { candidate ->
+                    if (candidate is OAuthAccountRecord) {
+                        val bound = oauthTokenService.accessTokenWithSnapshot(candidate.id)
+                            ?: throw badRequest("channel_key_unavailable", "所选订阅账号已不可用")
+                        if (!oauthTokenService.acceptsSnapshot(candidate, bound.account)) {
+                            throw badRequest("channel_key_unavailable", "所选订阅账号凭据已变化，请刷新后重试")
+                        }
+                        preparedAccount = bound.account
+                        bound.token.accessToken
+                    } else {
+                        oauthTokenService.resolveCredential(candidate)
+                    }
+                }, selectedCredential)
+                val (currentChannel, currentCredential) = currentBinding()
+                val preparedSnapshot = preparedAccount
+                if (preparedSnapshot != null && (currentCredential !is OAuthAccountRecord || !oauthTokenService.acceptsSnapshot(preparedSnapshot, currentCredential))) {
+                    throw badRequest("channel_key_unavailable", "所选订阅账号凭据已变化，请刷新后重试")
                 }
-                if (!sameCredential || !sameDiagnosticEndpoint(channel, currentChannel, protocol)) {
-                    throw badRequest("channel_key_unavailable", "所选渠道凭据或请求配置已变化，请刷新后重试")
-                }
+                pluginRuntime.requireActivePermission(id, expectedActiveVersion, PluginApi.CHANNEL_PROBE)
+                currentCoroutineContext().ensureActive()
                 testChannelModelConnectivity(
-                    currentChannel, currentCredential, model, protocol, plan.prompt, KeyCredentialResolver { candidate ->
-                        if (candidate is OAuthAccountRecord && credential is OAuthAccountRecord) {
-                            val bound = oauthTokenService.accessTokenWithSnapshot(candidate.id)
-                                ?: throw badRequest("channel_key_unavailable", "所选订阅账号已不可用")
-                            if (!oauthTokenService.acceptsSnapshot(credential, bound.account)) {
-                                throw badRequest("channel_key_unavailable", "所选订阅账号凭据已变化，请刷新后重试")
-                            }
-                            bound.token.accessToken
-                        } else oauthTokenService.resolveCredential(candidate)
-                    }, httpClient,
+                    currentChannel, currentCredential, model, protocol, plan.prompt, KeyCredentialResolver { preparedCredential }, httpClient,
                     timeoutMs = plan.timeoutMs, maxOutputTokens = plan.maxOutputTokens,
-                    globalOverrides = upstreamRequestSettingsRepository.load().overrides,
-                    headerProfiles = upstreamHeaderCatalogService.profiles(),
+                    globalOverrides = globalOverrides,
+                    headerProfiles = headerProfiles,
                 ).toPluginOutcome()
             }
         }

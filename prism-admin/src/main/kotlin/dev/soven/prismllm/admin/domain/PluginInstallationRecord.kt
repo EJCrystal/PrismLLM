@@ -14,4 +14,5 @@ data class PluginInstallationRecord(
     val configuration: JsonObject,
     val updatedAt: Long,
     val revision: Long = 0,
+    val disableGeneration: Long = 0,
 )

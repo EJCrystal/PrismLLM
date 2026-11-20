@@ -33,6 +33,7 @@ data class PluginInstallation(
     val configuration: JsonObject,
     val updatedAt: Long,
     val revision: Long = 0,
+    val disableGeneration: Long = 0,
 )
 
 interface PluginInstallationStore {

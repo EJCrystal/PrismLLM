@@ -375,7 +375,7 @@ describe('channel test workspace', () => {
     const iqIndex = ids.indexOf('iq')
     state.selectTab(officialId)
     const focused = []
-    state.tabList.value = { querySelectorAll: () => state.tabs.value.map(tab => ({ focus: () => focused.push(tab.id) })) }
+    state.tabList.value = { querySelectorAll: () => state.tabs.value.map(tab => ({ id: `${state.tabId}-${tab.id}`, focus: () => focused.push(tab.id) })) }
     let prevented = 0
     const press = (key, index) => state.navigateTabs({ key, preventDefault: () => prevented++ }, index)
     await press('ArrowLeft', 0)

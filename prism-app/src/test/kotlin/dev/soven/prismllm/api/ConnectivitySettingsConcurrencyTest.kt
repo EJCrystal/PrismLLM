@@ -282,6 +282,42 @@ internal class ConnectivitySettingsConcurrencyTest {
     }
 
     @Test
+    fun sharedPostgresDisableGenerationSurvivesMissedStopsAndPreservesImmediateConfiguration() = runBlocking {
+        withFixture {
+            val installed = first.runtime.install(CONNECTIVITY_PLUGIN_ID, VERSION, emptyList()) { configuration(OLD_PROMPT) }
+            first.runtime.enable(CONNECTIVITY_PLUGIN_ID, installed.revision, VERSION)
+            val initial = assertNotNull(second.adapter.find(CONNECTIVITY_PLUGIN_ID))
+            assertEquals(0L, initial.disableGeneration)
+            PluginRuntime(PluginCatalog(catalogDirectory), Files.createTempDirectory(root, "loaded-observer-"), second.adapter).use { observerRuntime ->
+                observerRuntime.initialize()
+                assertTrue(observerRuntime.state(CONNECTIVITY_PLUGIN_ID).admissionEnabled)
+                first.runtime.configureFields(CONNECTIVITY_PLUGIN_ID, configuration(PUT_PROMPT))
+                assertEquals(configuration(PUT_PROMPT), observerRuntime.state(CONNECTIVITY_PLUGIN_ID).activeConfiguration)
+                assertEquals(0L, assertNotNull(second.adapter.find(CONNECTIVITY_PLUGIN_ID)).disableGeneration)
+                first.runtime.disable(CONNECTIVITY_PLUGIN_ID)
+                val disabled = assertNotNull(second.adapter.find(CONNECTIVITY_PLUGIN_ID))
+                assertEquals(1L, disabled.disableGeneration)
+                second.runtime.enable(CONNECTIVITY_PLUGIN_ID, disabled.revision, VERSION)
+                val after = observerRuntime.state(CONNECTIVITY_PLUGIN_ID)
+                assertFalse(after.admissionEnabled)
+                assertTrue(after.requiresRestart)
+                assertEquals(1, observer.scalarInt("SELECT disable_generation FROM plugin_installations"))
+                PluginRuntime(PluginCatalog(catalogDirectory), Files.createTempDirectory(root, "loaded-restart-"), first.adapter).use { restarted ->
+                    restarted.initialize()
+                    assertTrue(restarted.state(CONNECTIVITY_PLUGIN_ID).admissionEnabled)
+                    first.runtime.uninstall(CONNECTIVITY_PLUGIN_ID)
+                    val restored = second.runtime.install(CONNECTIVITY_PLUGIN_ID, VERSION, emptyList())
+                    second.runtime.enable(CONNECTIVITY_PLUGIN_ID, restored.revision, VERSION)
+                    assertEquals(2L, assertNotNull(first.adapter.find(CONNECTIVITY_PLUGIN_ID)).disableGeneration)
+                    assertFalse(restarted.state(CONNECTIVITY_PLUGIN_ID).admissionEnabled)
+                    assertTrue(restarted.state(CONNECTIVITY_PLUGIN_ID).requiresRestart)
+                }
+            }
+            assertNoConnectivityLocks()
+        }
+    }
+
+    @Test
     fun `getOrCreate preserves an independently inserted concurrent winner`() = runBlocking {
         assertConcurrentWinnerSurvives(tombstone = false)
     }
@@ -296,7 +332,7 @@ internal class ConnectivitySettingsConcurrencyTest {
         val finishCallback = CompletableDeferred<Unit>()
         val calls = AtomicInteger()
         val winner = installation("concurrent winner", "winner label").copy(
-            installed = !tombstone, desiredEnabled = false, revision = 7, updatedAt = 7_000,
+            installed = !tombstone, desiredEnabled = false, revision = 7, updatedAt = 7_000, disableGeneration = 3,
         )
         coroutineScope {
             val creation = async(Dispatchers.IO) {

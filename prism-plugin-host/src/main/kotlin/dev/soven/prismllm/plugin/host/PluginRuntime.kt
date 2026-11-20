@@ -189,7 +189,7 @@ class PluginRuntime(
                     checkOpen()
                     val enabled = installation.installed && installation.desiredEnabled
                     val previous = pending[installation.id]
-                    if (enabled && previous != null && sameSelection(installation, previous)) continue
+                    if (enabled && previous != null && sameSelection(installation, previous) && installation.disableGeneration == previous.disableGeneration) continue
                     // The listed decision supersedes an unpublished owner, even if it disables loading.
                     pending.remove(installation.id)?.let(::dispose)
                     if (!enabled) continue
@@ -198,7 +198,7 @@ class PluginRuntime(
                         val staged = packageFor(installation)
                         val grants = PluginValidation.grants(staged.item.manifest, installation.approvedPermissions).toSet()
                         val configuration = configuration(staged, installation.configuration)
-                        pending[installation.id] = load(staged, grants, configuration)
+                        pending[installation.id] = load(staged, grants, configuration, installation.disableGeneration)
                     } catch (error: PluginHostException) {
                         loadErrors[selection] = error.message ?: "Plugin could not be loaded"
                     }
@@ -314,6 +314,7 @@ class PluginRuntime(
             approvedPermissions = grants,
             configuration = PluginValidation.installationConfiguration(staged.item.manifest.configuration, values),
             updatedAt = now(previous), revision = nextRevision(previous),
+            disableGeneration = previous?.disableGeneration ?: 0,
         )
         val next = if (previous == null) {
             store.getOrCreate(id) {
@@ -400,7 +401,10 @@ class PluginRuntime(
             PluginValidation.grants(staged.item.manifest, approvedPermissions ?: previous.approvedPermissions)
         } else previous.approvedPermissions
         if (previous.desiredEnabled == enabled && previous.approvedPermissions == grants) return@withLock render(previous)
-        val next = previous.copy(desiredEnabled = enabled, approvedPermissions = grants.toList(), updatedAt = now(previous), revision = nextRevision(previous))
+        val next = previous.copy(
+            desiredEnabled = enabled, approvedPermissions = grants.toList(), updatedAt = now(previous), revision = nextRevision(previous),
+            disableGeneration = if (enabled) previous.disableGeneration else nextDisableGeneration(previous),
+        )
         persist(next, previous)
         // Enabling never changes the process's admission latch, even when this class is loaded.
         render(next)
@@ -452,7 +456,10 @@ class PluginRuntime(
             checkReady()
             val previous = find(id)
             if (!previous.installed && !previous.desiredEnabled) return@withLock render(previous)
-            val next = previous.copy(installed = false, desiredEnabled = false, updatedAt = now(previous), revision = nextRevision(previous))
+            val next = previous.copy(
+                installed = false, desiredEnabled = false, updatedAt = now(previous), revision = nextRevision(previous),
+                disableGeneration = nextDisableGeneration(previous),
+            )
             persist(next, previous)
             // No deletion: both restoration data and bootstrap suppression survive a restart.
             render(next)
@@ -472,7 +479,7 @@ class PluginRuntime(
         if (!executions.tryAcquire()) throw PluginHostException("PLUGIN_BUSY", "Plugin invocation capacity is full", 503)
         try {
             val boundedLimits = limits(limits)
-            val snapshot = mutex.withLock {
+            val snapshot = withTimeoutOrNull(minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs)) { mutex.withLock {
                 checkReady()
                 val installation = find(id)
                 observe(installation)
@@ -498,7 +505,7 @@ class PluginRuntime(
                     throw PluginHostException("PLUGIN_INVALID_INPUT", error.message ?: "Invalid invocation values")
                 }
                 ExecutionSnapshot(loaded, DiagnosticInput(input.actionId, values), DiagnosticContext(target.copy(), configuration, actionLimits))
-            }
+            } } ?: throw PluginHostException("PLUGIN_BUSY", "Timed out admitting diagnostic execution", 503)
             val rawPlan = runCode("plan", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader, owner = snapshot.loaded) { snapshot.loaded.plugin.plan(snapshot.input, snapshot.context) }
             val plan = plan(rawPlan, snapshot.context.limits)
             val boundedOutcome = withProbePermit(plan.timeoutMs) {
@@ -536,7 +543,7 @@ class PluginRuntime(
         }
     }
 
-    private suspend fun load(staged: StagedPluginPackage, grants: Set<String>, configuration: JsonObject): LoadedPlugin {
+    private suspend fun load(staged: StagedPluginPackage, grants: Set<String>, configuration: JsonObject, disableGeneration: Long = 0): LoadedPlugin {
         val configurationSnapshot = PluginValidation.snapshot(configuration)
         val loader = PackageClassLoader(staged.jarPath.toUri().toURL(), parentClassLoader)
         val loaderClaimed = AtomicBoolean(false)
@@ -558,7 +565,7 @@ class PluginRuntime(
                         try { instance.close() } catch (_: Exception) { /* Keep the original admission failure. */ }
                         throw error
                     }
-                    LoadedPlugin(staged, instance, loader, grants.toSet(), configurationSnapshot)
+                    LoadedPlugin(staged, instance, loader, grants.toSet(), configurationSnapshot, disableGeneration)
                 } catch (error: Throwable) {
                     closeLoader(loader)
                     throw error
@@ -625,7 +632,7 @@ class PluginRuntime(
 
     private fun observe(installation: PluginInstallation) {
         val loaded = active[installation.id] ?: return
-        if (!installation.installed || !installation.desiredEnabled) loaded.admission.set(false)
+        if (!installation.installed || !installation.desiredEnabled || installation.disableGeneration != loaded.disableGeneration) loaded.admission.set(false)
         if (sameSelection(installation, loaded)) {
             if (!installation.approvedPermissions.containsAll(loaded.staged.item.manifest.permissions)) loaded.admission.set(false)
             // Shared-store configuration changes are immediate only for the same immutable version.
@@ -649,7 +656,7 @@ class PluginRuntime(
         }
     }
 
-    private fun admitted(installation: PluginInstallation, loaded: LoadedPlugin): Boolean = !closed.get() && installation.installed && installation.desiredEnabled && loaded.admissionOpen()
+    private fun admitted(installation: PluginInstallation, loaded: LoadedPlugin): Boolean = !closed.get() && installation.installed && installation.desiredEnabled && installation.disableGeneration == loaded.disableGeneration && loaded.admissionOpen()
 
     private fun requireAdmission(installation: PluginInstallation, loaded: LoadedPlugin, expectedVersion: String) {
         if (!admitted(installation, loaded)) throw PluginHostException("PLUGIN_DISABLED", "Plugin admission is disabled", 409)
@@ -886,6 +893,13 @@ class PluginRuntime(
         return previous.revision + 1
     }
 
+    private fun nextDisableGeneration(previous: PluginInstallation): Long {
+        if (previous.disableGeneration < 0 || previous.disableGeneration == Long.MAX_VALUE) {
+            throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Invalid plugin disable generation", 409)
+        }
+        return previous.disableGeneration + 1
+    }
+
     private fun now(previous: PluginInstallation?): Long = maxOf(System.currentTimeMillis(), (previous?.updatedAt ?: 0).let { if (it == Long.MAX_VALUE) it else it + 1 })
     private fun elapsed(started: Long): Long = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started).coerceAtLeast(0)
 
@@ -898,7 +912,7 @@ class PluginRuntime(
 
     private class LoadedPlugin(
         val staged: StagedPluginPackage, val plugin: DiagnosticPlugin, val loader: PackageClassLoader,
-        val grants: Set<String>, var configuration: JsonObject, val admission: AtomicBoolean = AtomicBoolean(true),
+        val grants: Set<String>, var configuration: JsonObject, val disableGeneration: Long, val admission: AtomicBoolean = AtomicBoolean(true),
     ) {
         val pendingStops = AtomicInteger()
         fun admissionOpen(): Boolean = pendingStops.get() == 0 && admission.get()

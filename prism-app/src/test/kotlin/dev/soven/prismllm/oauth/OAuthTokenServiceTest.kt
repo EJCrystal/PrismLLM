@@ -640,6 +640,583 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun fullRetainedCapacityRecoversDisabledAccountsWithoutAnotherProviderExchange() = runBlocking {
+        val retainedId = createAccount("capacity-disabled", accountEmail = email("capacity-disabled"))
+        accounts.updateSettings(retainedId, enabled = false)
+        val original = assertNotNull(accounts.find(retainedId))
+        val target = createAccount("capacity-recovered", accountEmail = email("capacity-recovered"))
+        val fixtures = mutableMapOf<String, OAuthAccountRecord>()
+        val repository = object : OAuthAccountRepository(factory.database, OAuthProviderChannelLookup()) {
+            override suspend fun find(id: String): OAuthAccountRecord? {
+                if (id == retainedId) delay(50)
+                return fixtures[id] ?: super.find(id)
+            }
+        }
+        val calls = AtomicInteger()
+        val provider = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        }
+        val service = OAuthTokenService(repository, cipher, OAuthTokenProviderRegistry(listOf(provider)))
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            .get(service) as MutableMap<String, Any>
+        try {
+            withRejectedRefreshWrites(listOf(retainedId)) {
+                val failure = assertFailsWith<OAuthTokenUnavailableException> {
+                    service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(5_000))
+                }
+                assertEquals("refresh_save_pending", failure.errorCode)
+                awaitRefreshTasksEnded(service)
+            }
+            assertEquals(setOf(retainedId), synchronized(monitor) { retained.keys.toSet() })
+            repeat(511) { index ->
+                val id = "recoverable-capacity-$index"
+                val account = original.copy(id = id)
+                fixtures[id] = account
+                val pending = retainedRefreshResult(account, "fixture-access-$index", "fixture-refresh-$index")
+                synchronized(monitor) { retained[id] = pending }
+            }
+            assertEquals(512, synchronized(monitor) { retained.size })
+
+            val access = assertNotNull(withTimeout(5_000) { service.accessToken(target) })
+            assertEquals("access-capacity-recovered", access.accessToken)
+            val recovered = assertNotNull(accounts.find(retainedId))
+            assertFalse(recovered.enabled)
+            assertEquals(OAuthAuthState.ACTIVE, recovered.authState)
+            assertEquals("access-capacity-disabled", cipher.decrypt(recovered.accessTokenCiphertext!!, recovered.accessTokenNonce!!))
+            val context = assertNotNull(accounts.loadRefreshContext(retainedId))
+            assertEquals("rotated-capacity-disabled", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+            assertTrue(service.acceptsSnapshot(original, recovered))
+            assertEquals(fixtures.keys, synchronized(monitor) { retained.keys.toSet() })
+            assertEquals(2, calls.get(), "Capacity recovery saves the disabled account without exchanging its credential again")
+        } finally {
+            awaitRefreshTasksEnded(service)
+            synchronized(monitor) { fixtures.keys.forEach(retained::remove) }
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun fullCapacityRecoveryReachesHealthyAccountAfterFirstLockedSaveExhaustsAPass() = runBlocking {
+        val first = createAccount("capacity-locked-first", accountEmail = email("capacity-locked-first"))
+        val second = createAccount("capacity-healthy-second", accountEmail = email("capacity-healthy-second"))
+        accounts.updateSettings(first, enabled = false)
+        accounts.updateSettings(second, enabled = false)
+        val originals = listOf(first, second).map { assertNotNull(accounts.find(it)) }
+        val target = createAccount("capacity-fair-target", accountEmail = email("capacity-fair-target"))
+        val fixtures = mutableMapOf<String, OAuthAccountRecord>()
+        val repository = object : OAuthAccountRepository(factory.database, OAuthProviderChannelLookup()) {
+            override suspend fun find(id: String): OAuthAccountRecord? {
+                if (id == second) delay(50)
+                return fixtures[id] ?: super.find(id)
+            }
+        }
+        val calls = AtomicInteger()
+        val provider = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        }
+        val service = OAuthTokenService(repository, cipher, OAuthTokenProviderRegistry(listOf(provider)))
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            .get(service) as MutableMap<String, Any>
+        try {
+            withRejectedRefreshWrites(listOf(first, second)) {
+                for (account in originals) {
+                    val failure = assertFailsWith<OAuthTokenUnavailableException> {
+                        service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(5_000))
+                    }
+                    assertEquals("refresh_save_pending", failure.errorCode)
+                    awaitRefreshTasksEnded(service)
+                }
+            }
+            assertEquals(listOf(first, second), synchronized(monitor) { retained.keys.toList() })
+            val firstPending = assertNotNull(synchronized(monitor) { retained[first] })
+            repeat(510) { index ->
+                val id = "fair-capacity-$index"
+                val account = originals.last().copy(id = id)
+                fixtures[id] = account
+                val pending = retainedRefreshResult(account, "fair-fixture-access-$index", "fair-fixture-refresh-$index")
+                synchronized(monitor) { retained[id] = pending }
+            }
+            assertEquals(512, synchronized(monitor) { retained.size })
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                try {
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                        statement.setString(1, first)
+                        statement.executeQuery().close()
+                    }
+                    val pid = lock.createStatement().use { statement ->
+                        statement.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) }
+                    }
+                    val firstAttempt = async { runCatching { service.accessToken(target) } }
+                    try {
+                        awaitBlockedAccountSave(pid)
+                        val firstResult = withTimeout(15_000) { firstAttempt.await() }
+                        val failure = firstResult.exceptionOrNull()
+                        if (failure != null) assertEquals("refresh_busy", assertIs<OAuthTokenUnavailableException>(failure).errorCode)
+                        val access = assertNotNull(if (failure == null) firstResult.getOrThrow()
+                            else withTimeout(5_000) { service.accessToken(target) })
+                        assertEquals("access-capacity-fair-target", access.accessToken)
+                        val recovered = assertNotNull(accounts.find(second))
+                        assertFalse(recovered.enabled)
+                        assertEquals("access-capacity-healthy-second", cipher.decrypt(recovered.accessTokenCiphertext!!, recovered.accessTokenNonce!!))
+                        val context = assertNotNull(accounts.loadRefreshContext(second))
+                        assertEquals("rotated-capacity-healthy-second", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+                        assertTrue(service.acceptsSnapshot(originals.last(), recovered))
+                        assertFalse(accounts.find(first)!!.hasAccessToken)
+                        assertTrue(synchronized(monitor) { retained[first] === firstPending })
+                        assertEquals(fixtures.keys + first, synchronized(monitor) { retained.keys.toSet() })
+                        assertEquals(3, calls.get(), "A locked retained account cannot starve another account or cause a repeated exchange")
+                    } finally {
+                        firstAttempt.cancelAndJoin()
+                    }
+                } finally {
+                    lock.rollback()
+                }
+            }
+        } finally {
+            awaitRefreshTasksEnded(service)
+            synchronized(monitor) { fixtures.keys.forEach(retained::remove) }
+            assertTrue(withTimeout(10_000) { service.drainRefreshes() })
+        }
+        val savedFirst = assertNotNull(accounts.loadRefreshContext(first))
+        assertEquals("rotated-capacity-locked-first", cipher.decrypt(savedFirst.refreshTokenCiphertext, savedFirst.refreshTokenNonce))
+        assertEquals(3, calls.get())
+    }
+
+    @Test
+    fun joinedCapacityRecoveryNormalizesSaveFailuresAndPreservesReplacementAndCancellation() = runBlocking {
+        for (failureKind in listOf("sql", "replacement", "cancellation")) {
+            val id = createAccount("joined-recovery-$failureKind", accountEmail = email("joined-recovery-$failureKind"))
+            val original = assertNotNull(accounts.find(id))
+            val target = createAccount("joined-target-$failureKind", accountEmail = email("joined-target-$failureKind"))
+            val fixtures = mutableMapOf<String, OAuthAccountRecord>()
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val readGate = AtomicReference<Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>?>()
+            val repository = object : OAuthAccountRepository(factory.database, OAuthProviderChannelLookup()) {
+                override suspend fun find(accountId: String): OAuthAccountRecord? {
+                    if (accountId == id) readGate.getAndSet(null)?.let { gate ->
+                        gate.first.complete(Unit)
+                        withTimeout(10_000) { gate.second.await() }
+                        if (failureKind == "cancellation") throw CancellationException("synthetic recovery cancellation")
+                    }
+                    return fixtures[accountId] ?: super.find(accountId)
+                }
+            }
+            val calls = AtomicInteger()
+            val provider = object : OAuthTokenProvider {
+                override val provider = OAuthProvider.CHATGPT
+                override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                    calls.incrementAndGet()
+                    return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+                }
+            }
+            val service = OAuthTokenService(repository, cipher, OAuthTokenProviderRegistry(listOf(provider)))
+            val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+            val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+                .get(service) as MutableMap<String, Any>
+            val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+                .get(service) as Map<*, *>
+            try {
+                withRejectedRefreshWrites(listOf(id)) {
+                    val initialFailure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+                    assertEquals("refresh_save_pending", initialFailure.errorCode)
+                    awaitRefreshTasksEnded(service)
+                    val pending = assertNotNull(synchronized(monitor) { retained[id] })
+                    repeat(511) { index ->
+                        val fixtureId = "joined-capacity-$failureKind-$index"
+                        val account = original.copy(id = fixtureId)
+                        fixtures[fixtureId] = account
+                        val result = retainedRefreshResult(account, "joined-access-$index", "joined-refresh-$index")
+                        synchronized(monitor) { retained[fixtureId] = result }
+                    }
+                    assertEquals(512, synchronized(monitor) { retained.size })
+                    readGate.set(entered to release)
+                    val capacityRequest = async { runCatching { service.accessToken(target) } }
+                    try {
+                        withTimeout(5_000) { entered.await() }
+                        val task = assertNotNull(synchronized(monitor) { tasks[id] })
+                        val waiters = task.javaClass.getDeclaredField("waiters").apply { isAccessible = true }
+                        val ordinary = async { runCatching { service.accessToken(id) } }
+                        val manual = async { runCatching { service.refreshNow(id) } }
+                        try {
+                            withTimeout(5_000) {
+                                while (synchronized(monitor) { (waiters.get(task) as List<*>).size != 2 }) delay(1)
+                            }
+                            capacityRequest.cancelAndJoin()
+                            assertTrue(synchronized(monitor) { tasks[id] === task })
+                            val replacement = if (failureKind == "replacement") {
+                                accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                                    provider = original.provider, refreshToken = cipher.encrypt("joined-admin-replacement"),
+                                ))
+                                assertNotNull(accounts.find(id))
+                            } else null
+                            release.complete(Unit)
+                            val ordinaryResult = withTimeout(5_000) { ordinary.await() }
+                            val manualResult = withTimeout(5_000) { manual.await() }
+                            if (failureKind == "cancellation") {
+                                assertIs<CancellationException>(ordinaryResult.exceptionOrNull())
+                                assertIs<CancellationException>(manualResult.exceptionOrNull())
+                            } else {
+                                val expected = if (failureKind == "replacement") "credential_replaced" else "refresh_save_pending"
+                                val ordinaryFailure = assertIs<OAuthTokenUnavailableException>(ordinaryResult.exceptionOrNull())
+                                assertEquals(OAuthUnavailableReason.REFRESH_FAILED, ordinaryFailure.reason)
+                                assertEquals(expected, ordinaryFailure.errorCode)
+                                val manualFailure = assertIs<OAuthRefreshResult.Failed>(manualResult.getOrThrow())
+                                assertEquals(OAuthUnavailableReason.REFRESH_FAILED, manualFailure.reason)
+                                assertEquals(expected, manualFailure.errorCode)
+                            }
+                            awaitRefreshTasksEnded(service)
+                            if (replacement == null) assertTrue(synchronized(monitor) { retained[id] === pending })
+                            else {
+                                assertFalse(synchronized(monitor) { retained.containsKey(id) })
+                                assertEquals(replacement, accounts.find(id))
+                            }
+                            assertFalse(accounts.find(target)!!.hasAccessToken)
+                            assertEquals(1, calls.get(), "Joined recovery waiters must not restart an exchange after a save failure")
+                        } finally {
+                            release.complete(Unit)
+                            ordinary.cancelAndJoin()
+                            manual.cancelAndJoin()
+                        }
+                    } finally {
+                        release.complete(Unit)
+                        capacityRequest.cancelAndJoin()
+                    }
+                }
+            } finally {
+                release.complete(Unit)
+                awaitRefreshTasksEnded(service)
+                synchronized(monitor) { fixtures.keys.forEach(retained::remove) }
+                assertTrue(service.drainRefreshes())
+            }
+            assertEquals(1, calls.get())
+        }
+    }
+
+    @Test
+    fun shutdownFirstLockedSaveStillAllowsAnotherRetainedAccountToPersist() = runBlocking {
+        val first = createAccount("locked-drain-first", accountEmail = email("locked-drain-first"))
+        val second = createAccount("locked-drain-second", accountEmail = email("locked-drain-second"))
+        val originalSecond = assertNotNull(accounts.find(second))
+        val calls = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        })
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            .get(service) as Map<*, *>
+        try {
+            withRejectedRefreshWrites(listOf(first, second)) {
+                for (id in listOf(first, second)) {
+                    val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+                    assertEquals("refresh_save_pending", failure.errorCode)
+                    awaitRefreshTasksEnded(service)
+                }
+            }
+            assertEquals(listOf(first, second), synchronized(monitor) { retained.keys.toList() })
+            val firstPending = assertNotNull(synchronized(monitor) { retained[first] })
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                try {
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                        statement.setString(1, first)
+                        statement.executeQuery().close()
+                    }
+                    val pid = lock.createStatement().use { statement ->
+                        statement.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) }
+                    }
+                    val started = System.nanoTime()
+                    val drain = async { service.drainRefreshes(timeoutMs = 2_000) }
+                    try {
+                        awaitBlockedAccountSave(pid)
+                        assertFalse(withTimeout(5_000) { drain.await() })
+                    } finally {
+                        drain.cancelAndJoin()
+                    }
+                    assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started) < 5_000)
+                    val saved = assertNotNull(accounts.find(second))
+                    assertEquals("access-locked-drain-second", cipher.decrypt(saved.accessTokenCiphertext!!, saved.accessTokenNonce!!))
+                    val context = assertNotNull(accounts.loadRefreshContext(second))
+                    assertEquals("rotated-locked-drain-second", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+                    assertTrue(service.acceptsSnapshot(originalSecond, saved))
+                    assertFalse(accounts.find(first)!!.hasAccessToken)
+                    assertEquals(setOf(first), synchronized(monitor) { retained.keys.toSet() })
+                    assertTrue(synchronized(monitor) { retained[first] === firstPending })
+                    assertEquals(2, calls.get())
+                } finally {
+                    lock.rollback()
+                }
+            }
+        } finally {
+            assertTrue(withTimeout(10_000) { service.drainRefreshes() })
+        }
+        val recovered = assertNotNull(accounts.loadRefreshContext(first))
+        assertEquals("rotated-locked-drain-first", cipher.decrypt(recovered.refreshTokenCiphertext, recovered.refreshTokenNonce))
+        assertEquals(2, calls.get(), "Each retained result receives one shutdown save without another provider exchange")
+    }
+
+    @Test
+    fun cancelledShutdownRecoveryKeepsOwnershipUntilTheLockedSaveDrains() = runBlocking {
+        val id = createAccount("cancelled-retained-save", accountEmail = email("cancelled-retained-save"))
+        val calls = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        })
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            .get(service) as Map<*, *>
+        val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+            .get(service) as Map<*, *>
+        val locks = OAuthTokenService::class.java.getDeclaredField("accountLocks").apply { isAccessible = true }
+            .get(service) as Map<*, *>
+        try {
+            withRejectedRefreshWrites(listOf(id)) {
+                val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+                assertEquals("refresh_save_pending", failure.errorCode)
+                awaitRefreshTasksEnded(service)
+            }
+            val pending = assertNotNull(synchronized(monitor) { retained[id] })
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                try {
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                        statement.setString(1, id)
+                        statement.executeQuery().close()
+                    }
+                    val pid = lock.createStatement().use { statement ->
+                        statement.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) }
+                    }
+                    val drain = async { service.drainRefreshes(timeoutMs = 2_000) }
+                    try {
+                        awaitBlockedAccountSave(pid)
+                        assertEquals(setOf(id), synchronized(monitor) { tasks.keys.toSet() })
+                        assertEquals(setOf(id), synchronized(monitor) { locks.keys.toSet() })
+                        withTimeout(5_000) { drain.cancelAndJoin() }
+                        assertTrue(synchronized(monitor) { tasks.isEmpty() && locks.isEmpty() })
+                        assertTrue(synchronized(monitor) { retained[id] === pending })
+                        assertFalse(accounts.find(id)!!.hasAccessToken)
+                        assertEquals(1, calls.get())
+                    } finally {
+                        drain.cancelAndJoin()
+                    }
+                } finally {
+                    lock.rollback()
+                }
+            }
+        } finally {
+            assertTrue(withTimeout(10_000) { service.drainRefreshes() })
+        }
+        val context = assertNotNull(accounts.loadRefreshContext(id))
+        assertEquals("rotated-cancelled-retained-save", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+        assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun committedSaveSettlesRotationWhenTheDatabaseDeadlineDropsItsReturnValue() = runBlocking {
+        val id = createAccount("deadline-return", accountEmail = email("deadline-return"))
+        val original = assertNotNull(accounts.find(id))
+        val calls = AtomicInteger()
+        val writes = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        })
+        suspend fun dropWriteReturn(operation: suspend () -> Any): Any? {
+            val result = operation()
+            if (result.javaClass.simpleName != "RefreshWrite") return result
+            writes.incrementAndGet()
+            return null
+        }
+        mockkObject(DiagnosticPreparationDeadline)
+        coEvery { DiagnosticPreparationDeadline.withinSynchronousAndDrain<Any>(any<Long>(), any()) } coAnswers {
+            dropWriteReturn(secondArg())
+        }
+        coEvery {
+            DiagnosticPreparationDeadline.withinSynchronousAndDrain<Any>(any<DiagnosticPreparationDeadline.Budget>(), any())
+        } coAnswers {
+            dropWriteReturn(secondArg())
+        }
+        try {
+            val access = assertNotNull(withTimeout(5_000) { service.accessToken(id) })
+            assertEquals("access-deadline-return", access.accessToken)
+            awaitRefreshTasksEnded(service)
+            val saved = assertNotNull(accounts.find(id))
+            assertTrue(service.acceptsSnapshot(original, saved))
+            val context = assertNotNull(accounts.loadRefreshContext(id))
+            assertEquals("rotated-deadline-return", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+            val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+            val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            assertTrue(synchronized(monitor) { (retained.get(service) as Map<*, *>).isEmpty() })
+            assertEquals(1, calls.get())
+            assertEquals(1, writes.get(), "A known committed result is settled even when its deadline wrapper loses the return")
+        } finally {
+            unmockkObject(DiagnosticPreparationDeadline)
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun retainedRecoveryPreservesAdministratorFencesAndProxyOnlyRefreshRotation() = runBlocking {
+        for (edit in listOf("authorization", "access", "proxy")) {
+            val id = createAccount("retained-fence-$edit", accountEmail = email("retained-fence-$edit"))
+            val original = assertNotNull(accounts.find(id))
+            val calls = AtomicInteger()
+            val service = serviceWithProvider(object : OAuthTokenProvider {
+                override val provider = OAuthProvider.CHATGPT
+                override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                    calls.incrementAndGet()
+                    return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+                }
+            })
+            try {
+                withRejectedRefreshWrites(listOf(id)) {
+                    val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+                    assertEquals("refresh_save_pending", failure.errorCode)
+                    awaitRefreshTasksEnded(service)
+                }
+                if (edit == "proxy") accounts.updateSettings(id, proxyUrl = "http://127.0.0.1:8181")
+                else accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                    provider = original.provider,
+                    refreshToken = if (edit == "authorization") cipher.encrypt("admin-refresh-$edit") else null,
+                    accessToken = cipher.encrypt("admin-access-$edit"),
+                    accessTokenExpiresAt = System.currentTimeMillis() + 3_600_000,
+                ))
+                val replacement = assertNotNull(accounts.find(id))
+                assertTrue(withTimeout(5_000) { service.drainRefreshes() })
+                val saved = assertNotNull(accounts.find(id))
+                if (edit == "proxy") {
+                    assertEquals(replacement.proxyUrl, saved.proxyUrl)
+                    assertFalse(saved.hasAccessToken)
+                    val context = assertNotNull(accounts.loadRefreshContext(id))
+                    assertEquals("rotated-retained-fence-proxy", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+                } else assertEquals(replacement, saved)
+                assertFalse(service.acceptsSnapshot(original, saved))
+                assertEquals(OAuthAuthState.ACTIVE, saved.authState)
+                assertEquals(0, saved.refreshFailureCount)
+                assertEquals(1, calls.get(), "Recovery must not exchange an administrator replacement or repeat the old exchange")
+            } finally {
+                assertTrue(service.drainRefreshes())
+            }
+        }
+    }
+
+    @Test
+    fun delayedWaitersAcceptIntermediateServiceRotationsButRejectAdministratorReplacement() = runBlocking {
+        val id = createAccount("intermediate-original", accountEmail = email("intermediate"))
+        val original = assertNotNull(accounts.find(id))
+        val delayedSnapshot = AtomicReference<OAuthAccountRecord?>()
+        val repository = object : OAuthAccountRepository(factory.database, OAuthProviderChannelLookup()) {
+            override suspend fun find(accountId: String): OAuthAccountRecord? =
+                delayedSnapshot.getAndSet(null) ?: super.find(accountId)
+        }
+        val calls = AtomicInteger()
+        val provider = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                val sequence = calls.incrementAndGet()
+                return OAuthTokenResponse("intermediate-access-$sequence", "intermediate-refresh-$sequence")
+            }
+        }
+        val service = OAuthTokenService(repository, cipher, OAuthTokenProviderRegistry(listOf(provider)))
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+            .get(service) as MutableMap<String, Any>
+        try {
+            val intermediate = assertNotNull(service.accessTokenWithSnapshot(id)).account
+            awaitRefreshTasksEnded(service)
+            val latest = assertNotNull(service.accessTokenWithSnapshot(id, forceRefresh = true)).account
+            awaitRefreshTasksEnded(service)
+            assertTrue(service.acceptsSnapshot(original, latest))
+            assertTrue(service.acceptsSnapshot(intermediate, latest))
+            assertFalse(service.acceptsSnapshot(latest, intermediate))
+            val taskType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshTask" }
+            val outcomeType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshOutcome" }
+            val outcome = outcomeType.getDeclaredConstructor(OAuthAccountRecord::class.java, Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }.newInstance(intermediate, true)
+            for (kind in listOf("ordinary", "forced", "manual", "diagnostic")) {
+                val task = taskType.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+                val work = CompletableDeferred<Any>()
+                taskType.getDeclaredField("work").apply { isAccessible = true }.set(task, work)
+                synchronized(monitor) { tasks[id] = task }
+                if (kind != "diagnostic") delayedSnapshot.set(original)
+                val waiting = async {
+                    runCatching {
+                        when (kind) {
+                            "manual" -> service.refreshNow(id)
+                            "diagnostic" -> service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(5_000))
+                            else -> service.accessTokenWithSnapshot(id, forceRefresh = kind == "forced")
+                        }
+                    }
+                }
+                try {
+                    val waiters = taskType.getDeclaredField("waiters").apply { isAccessible = true }
+                    withTimeout(5_000) {
+                        while (synchronized(monitor) { (waiters.get(task) as List<*>).isEmpty() }) delay(1)
+                    }
+                    work.complete(outcome)
+                    val result = withTimeout(5_000) { waiting.await() }.getOrThrow()
+                    when (kind) {
+                        "manual" -> assertTrue(assertIs<OAuthRefreshResult.Refreshed>(result).account.matchesCredentialSnapshot(latest))
+                        "diagnostic" -> {
+                            val access = assertIs<DiagnosticOAuthAccess>(result)
+                            assertEquals("intermediate-access-1", access.accessToken)
+                            assertTrue(access.matches(intermediate))
+                        }
+                        else -> {
+                            val access = assertIs<OAuthAccountAccess>(result)
+                            assertEquals("intermediate-access-1", access.token.accessToken)
+                            assertTrue(access.account.matchesCredentialSnapshot(intermediate))
+                        }
+                    }
+                    assertEquals(2, calls.get())
+                } finally {
+                    work.complete(outcome)
+                    waiting.cancelAndJoin()
+                    delayedSnapshot.set(null)
+                    synchronized(monitor) { tasks.remove(id, task) }
+                }
+            }
+            assertTrue(service.acceptsSnapshot(original, intermediate))
+            accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                provider = original.provider, refreshToken = cipher.encrypt("intermediate-admin-replacement"),
+            ))
+            val replacement = assertNotNull(accounts.find(id))
+            assertFalse(service.acceptsSnapshot(original, replacement))
+            assertFalse(service.acceptsSnapshot(intermediate, replacement))
+            val failure = assertFailsWith<OAuthTokenUnavailableException> {
+                service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(5_000))
+            }
+            assertEquals("credential_replaced", failure.errorCode)
+            assertEquals(replacement, accounts.find(id))
+            assertEquals(2, calls.get())
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
     fun ordinaryAndForcedWaitersRejectACompletedResultFromReplacedAuthorization() = runBlocking {
         val id = createAccount("late-result-old", accountEmail = email("late-result"))
         val service = service()
@@ -758,6 +1335,7 @@ class OAuthTokenServiceTest {
         } finally {
             finishScan.complete(Unit)
             first.cancelAndJoin()
+            awaitRefreshTasksEnded(service)
             synchronized(monitor) { retained.clear() }
             assertTrue(service.drainRefreshes())
         }
@@ -1887,6 +2465,40 @@ class OAuthTokenServiceTest {
 
         val account = assertNotNull(accounts.find(keyId))
         assertEquals(Long.MAX_VALUE, account.accessTokenExpiresAt)
+    }
+
+    private suspend fun withRejectedRefreshWrites(ids: List<String>, block: suspend () -> Unit) {
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val function = "retained_save_$suffix"
+        val trigger = "retained_save_trigger_$suffix"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                val selected = ids.joinToString(",") { "'$it'" }
+                statement.execute("CREATE FUNCTION $function() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id IN ($selected) AND NEW.access_token_ciphertext IS NOT NULL THEN RAISE EXCEPTION 'synthetic retained save failure' USING ERRCODE = '42501'; END IF; RETURN NEW; END $$")
+                statement.execute("CREATE TRIGGER $trigger BEFORE UPDATE ON oauth_accounts FOR EACH ROW EXECUTE FUNCTION $function()")
+            }
+        }
+        try {
+            block()
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER IF EXISTS $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION IF EXISTS $function()")
+                }
+            }
+        }
+    }
+
+    private fun retainedRefreshResult(account: OAuthAccountRecord, accessToken: String, refreshToken: String): Any {
+        val context = dev.soven.prismllm.oauth.persistence.OAuthRefreshContext(
+            account, account.refreshTokenCiphertext!!, account.refreshTokenNonce!!, account.refreshTokenKeyVersion!!,
+        )
+        val type = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "PendingRefresh" }
+        return type.declaredConstructors.single().apply { isAccessible = true }.newInstance(
+            context, cipher.encrypt(accessToken), cipher.encrypt(refreshToken),
+            System.currentTimeMillis() + 3_600_000, "Bearer", null,
+        )
     }
 
     private suspend fun awaitRefreshTasksEnded(service: OAuthTokenService) = withTimeout(5_000) {

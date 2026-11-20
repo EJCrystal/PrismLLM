@@ -218,7 +218,11 @@ async function load(preserveDraft = true): Promise<boolean> {
       installationStateKnown.value = false
       loadError.value = errorMessage(statesResult.reason)
     }
-    if (!selectedId.value) selectedId.value = items.value[0]?.id ?? ''
+    const selectionExists = catalog.value.some((item) => item.manifest.id === selectedId.value) ||
+      states.value.some((state) => state.id === selectedId.value)
+    if (!selectedId.value || (catalogResult.status === 'fulfilled' && statesResult.status === 'fulfilled' && !selectionExists)) {
+      selectedId.value = items.value[0]?.id ?? ''
+    }
     if (statesResult.status === 'fulfilled' && !hadDraft) syncVersion()
     settled = true
     return statesResult.status === 'fulfilled'

@@ -31,9 +31,11 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -119,7 +121,7 @@ class OAuthTokenService(
     private val refreshSupervisor = SupervisorJob()
     private val refreshScope = CoroutineScope(Dispatchers.IO + refreshSupervisor)
     private val refreshTasks = mutableMapOf<String, RefreshTask>()
-    private val pendingRefreshes = mutableMapOf<String, PendingRefresh>()
+    private val pendingRefreshes = linkedMapOf<String, PendingRefresh>()
     // Guarded by refreshLifecycleLock; only admitted tasks register a mutex, until completion.
     private val accountLocks = mutableMapOf<String, Mutex>()
     private val rotations = linkedMapOf<String, ArrayDeque<Rotation>>()
@@ -232,24 +234,13 @@ class OAuthTokenService(
                     if (existing != null && existing.work.isCancelled && !existing.work.isCompleted) {
                         return@synchronized existing to false
                     }
-                    val selected = existing?.takeUnless { it.work.isCompleted } ?: RefreshTask().also { created ->
+                    val selected = existing?.takeUnless { it.work.isCompleted } ?: run {
                         if (existing == null && (refreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS ||
                                 (account.id !in pendingRefreshes && (pendingRefreshes.keys + refreshTasks.keys).size >= MAX_PENDING_REFRESH_RESULTS))) {
                             throw OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED, "账号刷新繁忙，请稍后重试", "refresh_busy")
                         }
-                        val mutex = lockFor(account.id)
-                        created.work = refreshScope.async(start = CoroutineStart.LAZY) { runRefresh(account.id, created, mutex) }
-                        refreshTasks[account.id] = created
-                        created.work.invokeOnCompletion { cause ->
-                            synchronized(refreshLifecycleLock) {
-                                if (refreshTasks[account.id] === created) {
-                                    refreshTasks.remove(account.id)
-                                    accountLocks.remove(account.id)
-                                }
-                            }
-                            if (cause != null && cause !is CancellationException) {
-                                logger.warn("oauth refresh failed, accountId={}, error={}", account.id, cause::class.simpleName)
-                            }
+                        createRefreshTask(account.id, refreshScope) { created, mutex ->
+                            runRefresh(account.id, created, mutex)
                         }
                     }
                     selected.waiters += waiter
@@ -309,6 +300,29 @@ class OAuthTokenService(
             "账号刷新尚未完成，请稍后重试",
             "refresh_save_pending",
         )
+    }
+
+    private fun createRefreshTask(
+        accountId: String,
+        scope: CoroutineScope,
+        refresh: suspend (RefreshTask, Mutex) -> RefreshOutcome,
+    ): RefreshTask {
+        val created = RefreshTask()
+        val mutex = lockFor(accountId)
+        created.work = scope.async(start = CoroutineStart.LAZY) { refresh(created, mutex) }
+        refreshTasks[accountId] = created
+        created.work.invokeOnCompletion { cause ->
+            synchronized(refreshLifecycleLock) {
+                if (refreshTasks[accountId] === created) {
+                    refreshTasks.remove(accountId)
+                    accountLocks.remove(accountId)
+                }
+            }
+            if (cause != null && cause !is CancellationException) {
+                logger.warn("oauth refresh failed, accountId={}, error={}", accountId, cause::class.simpleName)
+            }
+        }
+        return created
     }
 
     private suspend fun runRefresh(accountId: String, task: RefreshTask, mutex: Mutex): RefreshOutcome =
@@ -429,9 +443,12 @@ class OAuthTokenService(
         return synchronized(refreshLifecycleLock) {
             var current = before
             rotations[before.id]?.forEach { rotation ->
-                if (sameSnapshot(current, rotation.before)) current = rotation.after
+                if (sameSnapshot(current, rotation.before)) {
+                    current = rotation.after
+                    if (sameSnapshot(current, after)) return@synchronized true
+                }
             }
-            sameSnapshot(current, after)
+            false
         }
     }
 
@@ -539,28 +556,7 @@ class OAuthTokenService(
             } == true
             if (!completed) logger.warn("OAuth refresh shutdown still has an in-flight provider or JDBC operation")
         }
-        val idlePending = synchronized(refreshLifecycleLock) {
-            pendingRefreshes.filterKeys { id -> refreshTasks[id]?.work?.isCompleted != false }.toMap()
-        }
-        val shutdownBudget = DiagnosticPreparationDeadline.start(timeoutMs.coerceAtLeast(1))
-        for ((id, pending) in idlePending) {
-            val write = try {
-                DiagnosticPreparationDeadline.withinSynchronousAndDrain(shutdownBudget) {
-                    RefreshWrite(repository.saveRefreshed(
-                        accountId = id, accessToken = pending.accessToken, expiresAt = pending.expiresAt,
-                        tokenType = pending.tokenType, scope = pending.scope, rotatedRefreshToken = pending.rotatedRefreshToken,
-                        expectedRefreshCiphertext = pending.context.refreshTokenCiphertext,
-                        expectedAccount = pending.context.account, now = now(),
-                    ))
-                }
-            } catch (cause: CancellationException) {
-                throw cause
-            } catch (_: Exception) {
-                continue
-            }
-            if (write == null) break
-            synchronized(refreshLifecycleLock) { pendingRefreshes.remove(id, pending) }
-        }
+        recoverPendingResults(timeoutMs.coerceAtLeast(1), shutdown = true)
         val unsaved = synchronized(refreshLifecycleLock) { pendingRefreshes.size }
         if (unsaved != 0) logger.warn("OAuth shutdown retains {} unsaved encrypted rotation results", unsaved)
         refreshSupervisor.cancel()
@@ -653,19 +649,7 @@ class OAuthTokenService(
             val write = try {
                 // Wait for the real transaction cleanup before a retry. An unknown commit is
                 // identified under saveRefreshed's row lock using these same encrypted values.
-                DiagnosticPreparationDeadline.withinSynchronousAndDrain(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS) {
-                    RefreshWrite(repository.saveRefreshed(
-                        accountId = context.account.id,
-                        accessToken = pending.accessToken,
-                        expiresAt = pending.expiresAt,
-                        tokenType = pending.tokenType,
-                        scope = pending.scope,
-                        rotatedRefreshToken = pending.rotatedRefreshToken,
-                        expectedRefreshCiphertext = context.refreshTokenCiphertext,
-                        expectedAccount = context.account,
-                        now = now(),
-                    ))
-                }
+                saveRefresh(pending, DiagnosticPreparationDeadline.start(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS))
             } catch (cause: Exception) {
                 permanentFailure = permanentRefreshWriteFailure(cause)
                 if (!retryReported) {
@@ -675,15 +659,12 @@ class OAuthTokenService(
                 null
             }
             if (write != null) {
-                synchronized(refreshLifecycleLock) { pendingRefreshes.remove(context.account.id, pending) }
                 val saved = write.account ?: throw credentialReplaced()
-                if (saved.hasAccessToken) rememberRotation(context.account, saved)
                 logger.debug("oauth token refreshed, accountId={}, provider={}, expiresAt={}",
                     saved.id, saved.provider.value, pending.expiresAt)
                 return saved
             }
-            val unavailable = OAuthTokenUnavailableException(OAuthUnavailableReason.REFRESH_FAILED,
-                "账号刷新结果尚未保存，请稍后重试", "refresh_save_pending")
+            val unavailable = pendingSaveUnavailable()
             task.persistenceFailure.complete(unavailable)
             if (stopPersistenceRetries || permanentFailure || attempts >= MAX_REFRESH_SAVE_ATTEMPTS) {
                 // Keep only the encrypted response for a later same-account recovery call. The
@@ -697,6 +678,40 @@ class OAuthTokenService(
             delay(REFRESH_SAVE_RETRY_DELAY_MS)
         }
     }
+
+    private suspend fun saveRefresh(
+        pending: PendingRefresh,
+        budget: DiagnosticPreparationDeadline.Budget,
+    ): RefreshWrite? {
+        val completed = AtomicReference<RefreshWrite?>()
+        DiagnosticPreparationDeadline.withinSynchronousAndDrain(budget) {
+            val write = RefreshWrite(repository.saveRefreshed(
+                accountId = pending.context.account.id,
+                accessToken = pending.accessToken,
+                expiresAt = pending.expiresAt,
+                tokenType = pending.tokenType,
+                scope = pending.scope,
+                rotatedRefreshToken = pending.rotatedRefreshToken,
+                expectedRefreshCiphertext = pending.context.refreshTokenCiphertext,
+                expectedAccount = pending.context.account,
+                now = now(),
+            ))
+            settleRefresh(pending, write)
+            completed.set(write)
+            write
+        }
+        return completed.get()
+    }
+
+    private fun settleRefresh(pending: PendingRefresh, write: RefreshWrite) = synchronized(refreshLifecycleLock) {
+        if (pendingRefreshes.remove(pending.context.account.id, pending)) {
+            write.account?.takeIf { it.hasAccessToken }?.let { rememberRotation(pending.context.account, it) }
+        }
+    }
+
+    private fun pendingSaveUnavailable() = OAuthTokenUnavailableException(
+        OAuthUnavailableReason.REFRESH_FAILED, "账号刷新结果尚未保存，请稍后重试", "refresh_save_pending",
+    )
 
     private fun discardReplacedPending(account: OAuthAccountRecord, observedPending: PendingRefresh?) = synchronized(refreshLifecycleLock) {
         val pending = observedPending ?: return@synchronized
@@ -723,18 +738,68 @@ class OAuthTokenService(
         // A concurrent capacity request rechecks admission instead of starting the same DB scan.
         if (!pendingPruneMutex.tryLock()) return
         try {
-            val retained = synchronized(refreshLifecycleLock) { pendingRefreshes.toMap() }
-            val budget = DiagnosticPreparationDeadline.start(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS)
-            for ((id, pending) in retained) {
-                val current = DiagnosticPreparationDeadline.withinSynchronous(budget) {
-                    PendingAccount(repository.find(id))
-                } ?: return
-                if (current.account == null) synchronized(refreshLifecycleLock) {
-                    if (refreshTasks[id]?.work?.isCompleted != false) pendingRefreshes.remove(id, pending)
-                } else discardReplacedPending(current.account, pending)
-            }
+            recoverPendingResults(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS)
         } finally {
             pendingPruneMutex.unlock()
+        }
+    }
+
+    private suspend fun recoverPendingResults(timeoutMs: Long, shutdown: Boolean = false) = supervisorScope {
+        val retained = synchronized(refreshLifecycleLock) {
+            pendingRefreshes.filterKeys { id -> refreshTasks[id]?.work?.isCompleted != false }.toList()
+        }
+        val budget = DiagnosticPreparationDeadline.start(timeoutMs)
+        val scope = if (shutdown) this else refreshScope
+        for ((index, entry) in retained.withIndex()) {
+            val remaining = try {
+                budget.remainingMillis(currentCoroutineContext().job)
+            } catch (cause: Exception) {
+                if (!DiagnosticPreparationDeadline.isTimeout(cause)) throw cause
+                break
+            }
+            val accountBudget = DiagnosticPreparationDeadline.start(
+                (if (shutdown) remaining / (retained.size - index) else remaining)
+                    .coerceIn(1, DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS),
+            )
+            val (id, pending) = entry
+            val task = synchronized(refreshLifecycleLock) {
+                if (!shutdown && (refreshAdmissionClosed ||
+                        (pendingRefreshes.keys + refreshTasks.keys).size < MAX_PENDING_REFRESH_RESULTS)) return@supervisorScope
+                if (pendingRefreshes[id] !== pending || refreshTasks[id]?.work?.isCompleted == false ||
+                    refreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS) null
+                else createRefreshTask(id, scope) { _, mutex ->
+                    mutex.withLock {
+                        withContext(NonCancellable) {
+                            try {
+                                val current = DiagnosticPreparationDeadline.withinSynchronousAndDrain(accountBudget) {
+                                    PendingAccount(repository.find(id))
+                                } ?: throw pendingSaveUnavailable()
+                                val write = if (current.account == null) {
+                                    RefreshWrite(null).also { settleRefresh(pending, it) }
+                                } else saveRefresh(pending, accountBudget) ?: throw pendingSaveUnavailable()
+                                RefreshOutcome(write.account ?: throw credentialReplaced(), exchanged = true)
+                            } catch (cause: Exception) {
+                                if (cause is CancellationException || cause is OAuthTokenUnavailableException) throw cause
+                                throw pendingSaveUnavailable()
+                            }
+                        }
+                    }
+                }.also {
+                    if (!shutdown) {
+                        pendingRefreshes.remove(id, pending)
+                        pendingRefreshes[id] = pending
+                    }
+                    it.exchangeStarted = true
+                    it.work.start()
+                }
+            } ?: continue
+            try {
+                task.work.await()
+            } catch (cause: CancellationException) {
+                currentCoroutineContext().ensureActive()
+            } catch (_: Exception) {
+                Unit
+            }
         }
     }
 

@@ -465,6 +465,79 @@ class CodeAssistProjectResolverTest {
     }
 
     @Test
+    fun `ordinary context rejects credentials replaced during load without publishing stale discovery`() = runBlocking {
+        val original = account()
+        val replacements = listOf(
+            original.copy(authorizedAt = 2),
+            original.copy(refreshTokenCiphertext = "replacement-refresh"),
+            original.copy(accessTokenCiphertext = "replacement-access"),
+            original.copy(proxyUrl = "http://replacement-proxy:3128"),
+        )
+        for (replacement in replacements) {
+            for (warm in listOf(false, true)) {
+                val current = AtomicReference(original)
+                val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+                val clock = AtomicReference(0L)
+                val mode = AtomicInteger()
+                val calls = AtomicInteger()
+                val accounts = FakeAccounts(saved, snapshotMatches = { it.matchesCredentialSnapshot(current.get()) })
+                HttpClient(MockEngine { request ->
+                    assertTrue(request.url.encodedPath.endsWith("loadCodeAssist"))
+                    calls.incrementAndGet()
+                    val body = when (mode.get()) {
+                        0 -> """{"cloudaicompanionProject":"confirmed-project","paidTier":{"id":"paid-tier"}}"""
+                        1 -> {
+                            current.set(replacement)
+                            """{"cloudaicompanionProject":"stale-project","paidTier":{"id":"stale-tier"}}"""
+                        }
+                        else -> """{"cloudaicompanionProject":"replacement-project","paidTier":{"id":"replacement-tier"}}"""
+                    }
+                    respond(body, headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                }).use { client ->
+                    val resolver = CodeAssistProjectResolver(accounts, client, now = { clock.get() })
+                    if (warm) assertEquals("confirmed-project", resolver.context(original, "captured-token").project)
+                    val before = saved.get()
+                    clock.set(7_200_000)
+                    mode.set(1)
+
+                    val failure = runCatching { resolver.context(original, "captured-token") }.exceptionOrNull()
+
+                    assertEquals("credential_replaced", (failure as? OAuthTokenUnavailableException)?.errorCode)
+                    assertEquals(before, saved.get(), "a rejected snapshot must not update the persisted project or tier")
+                    assertEquals(if (warm) 2 else 1, calls.get())
+                    mode.set(2)
+                    val expected = CodeAssistProjectResolver.Context("replacement-project", "replacement-tier")
+                    assertEquals(expected, resolver.context(replacement, "replacement-token"))
+                    assertEquals(expected.project, saved.get()?.project)
+                    assertEquals(expected.tier, saved.get()?.tier)
+                    val afterReplacement = calls.get()
+                    assertEquals(expected, resolver.context(replacement, "replacement-token"))
+                    assertEquals(afterReplacement, calls.get(), "only the replacement snapshot may use its new cache")
+                    val staleFailure = runCatching { resolver.context(original, "captured-token") }.exceptionOrNull()
+                    assertEquals("credential_replaced", (staleFailure as? OAuthTokenUnavailableException)?.errorCode)
+                    assertEquals(afterReplacement, calls.get())
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `ordinary context preserves empty fallback for unchanged credentials after discovery failure`() = runBlocking {
+        val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
+        val calls = AtomicInteger()
+        HttpClient(MockEngine {
+            calls.incrementAndGet()
+            respond("unavailable", io.ktor.http.HttpStatusCode.ServiceUnavailable)
+        }).use { client ->
+            val resolver = CodeAssistProjectResolver(FakeAccounts(saved), client)
+
+            assertEquals(CodeAssistProjectResolver.Context(null, null), resolver.context(account(), "captured-token"))
+            assertEquals(1, calls.get())
+            assertNull(saved.get())
+        }
+    }
+
+    @Test
     fun `discovery rejects a replaced authorization and only publishes accepted snapshots`() = runBlocking {
         val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
         val accepts = java.util.concurrent.atomic.AtomicBoolean(true)

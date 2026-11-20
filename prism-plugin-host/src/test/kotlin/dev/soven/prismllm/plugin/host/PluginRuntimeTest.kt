@@ -877,6 +877,107 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun missedCrossInstanceStopsCloseAdmissionUntilRestartWithoutBlockingConfigurationUpdates(): Unit = runBlocking {
+        for (uninstall in listOf(false, true)) {
+            val packaged = fixture(id = if (uninstall) "missed.uninstall" else "missed.disable")
+            publish(packaged)
+            val decisions = MemoryInstallationStore()
+            val writer = runtime(decisions)
+            writer.initialize(packaged.manifest.id)
+            val observer = runtime(decisions)
+            observer.initialize()
+            assertTrue(invoke(observer, id = packaged.manifest.id).outcome.success)
+            writer.configure(packaged.manifest.id, config("shared configuration"))
+            assertEquals("shared configuration", invoke(observer, id = packaged.manifest.id).plan.prompt)
+            assertEquals(0L, assertNotNull(decisions.find(packaged.manifest.id)).disableGeneration)
+            if (uninstall) {
+                writer.uninstall(packaged.manifest.id)
+                writer.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+            } else {
+                writer.disable(packaged.manifest.id)
+                writer.disable(packaged.manifest.id)
+            }
+            val stopped = assertNotNull(decisions.find(packaged.manifest.id))
+            assertEquals(1L, stopped.disableGeneration)
+            writer.enable(packaged.manifest.id, stopped.revision, "1.0.0", packaged.manifest.permissions)
+            assertEquals(1L, assertNotNull(decisions.find(packaged.manifest.id)).disableGeneration)
+            failure("PLUGIN_DISABLED") { invoke(observer, id = packaged.manifest.id) }
+            assertTrue(observer.contributions().isEmpty())
+            assertTrue(observer.state(packaged.manifest.id).requiresRestart)
+            val restarted = runtime(decisions)
+            restarted.initialize()
+            assertEquals("shared configuration", invoke(restarted, id = packaged.manifest.id).plan.prompt)
+            assertTrue(restarted.state(packaged.manifest.id).admissionEnabled)
+            observer.close()
+            writer.close()
+            restarted.close()
+        }
+    }
+
+    @Test
+    fun stopCycleDuringBootstrapReloadsTheCurrentDisableGeneration(): Unit = runBlocking {
+        val packaged = ownedFixture()
+        publish(packaged)
+        val host = initializeWithConcurrentBootstrapUpdate(packaged) { writer ->
+            writer.disable(packaged.manifest.id)
+            val stopped = writer.state(packaged.manifest.id)
+            writer.enable(packaged.manifest.id, stopped.revision, "1.0.0", packaged.manifest.permissions)
+        }
+        assertTrue(invoke(host).outcome.success)
+        assertTrue(host.state(packaged.manifest.id).admissionEnabled)
+        assertEquals(2, packaged.count("constructed"))
+        awaitProperty("${packaged.property}.closed", "1")
+        host.close()
+    }
+
+    @Test
+    fun initialAdmissionTimeoutReturnsAllExecutionSlotsWithoutPlanningOrSending(): Unit = runBlocking {
+        for (blockedStore in listOf(false, true)) {
+            val packaged = fixture(id = if (blockedStore) "initial.storage" else "initial.mutex")
+            publish(packaged)
+            val decisions = MemoryInstallationStore()
+            var holdRead = false
+            val host = runtime(object : PluginInstallationStore by decisions {
+                override suspend fun find(id: String): PluginInstallation? {
+                    if (holdRead) awaitCancellation()
+                    return decisions.find(id)
+                }
+            })
+            host.initialize(packaged.manifest.id)
+            val mutex = host.javaClass.getDeclaredField("mutex").apply { isAccessible = true }.get(host) as Mutex
+            val executions = host.javaClass.getDeclaredField("executions").apply { isAccessible = true }.get(host) as Semaphore
+            val owner = Any()
+            val probes = AtomicInteger()
+            if (blockedStore) holdRead = true else mutex.lock(owner)
+            try {
+                coroutineScope {
+                    val invocations = (1..32).map {
+                        async(start = CoroutineStart.UNDISPATCHED) {
+                            failure("PLUGIN_BUSY") {
+                                host.execute(packaged.manifest.id, "1.0.0", input, target, ProbeLimits(timeoutMs = 500)) {
+                                    probes.incrementAndGet()
+                                    ok
+                                }
+                            }
+                        }
+                    }
+                    assertEquals(0, executions.availablePermits)
+                    withTimeout(3_000) { invocations.forEach { it.await() } }
+                    assertEquals(32, executions.availablePermits)
+                    assertEquals(0, probes.get())
+                    assertEquals(0, packaged.count("planned"))
+                    assertEquals(0, packaged.count("reported"))
+                }
+            } finally {
+                holdRead = false
+                if (mutex.holdsLock(owner)) mutex.unlock(owner)
+            }
+            assertTrue(invoke(host, id = packaged.manifest.id).outcome.success)
+            host.close()
+        }
+    }
+
+    @Test
     fun `final admission timeout releases both probe slots without calling transport or report`(): Unit = runBlocking {
         for (blockedStore in listOf(false, true)) {
             val packaged = fixture(id = if (blockedStore) "timeout.storage" else "timeout.mutex", planPrefix = { property -> """
