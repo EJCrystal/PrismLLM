@@ -11,12 +11,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -238,6 +240,18 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             while (loader(packaged).findResource("fixture/owned-resource.txt") != null) delay(5)
         }
         assertEquals(1, packaged.count("closed"))
+    }
+
+    private suspend fun closeBeforeConstructorRelease(host: PluginRuntime, packaged: PackageFixture) = withContext(NonCancellable) {
+        coroutineScope {
+            val closing = async(Dispatchers.IO) { host.close() }
+            try {
+                withTimeout(3_000) { closing.await() }
+                assertEquals(0, packaged.count("load-returned"), "Close must finish before the delayed constructor is released")
+            } finally {
+                System.setProperty("${packaged.property}.release", "true")
+            }
+        }
     }
 
     private suspend fun initializeWithConcurrentBootstrapUpdate(
@@ -1530,15 +1544,24 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val inFlight = AtomicInteger()
         val peak = AtomicInteger()
         val probes = AtomicInteger()
+        val bothEntered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
         coroutineScope {
-            List(8) { async(Dispatchers.Default) {
+            val callbacks = List(8) { async(Dispatchers.Default) {
                 host.execute(packaged.manifest.id, "1.0.0", input, target) {
                     val count = inFlight.incrementAndGet()
                     peak.accumulateAndGet(count, ::maxOf)
-                    probes.incrementAndGet()
-                    try { delay(40); ok } finally { inFlight.decrementAndGet() }
+                    if (probes.incrementAndGet() == 2) bothEntered.complete(Unit)
+                    try { release.await(); ok } finally { inFlight.decrementAndGet() }
                 }
-            } }.forEach { assertTrue(it.await().outcome.success) }
+            } }
+            try {
+                withTimeout(5_000) { bothEntered.await() }
+                assertEquals(2, inFlight.get())
+            } finally {
+                release.complete(Unit)
+            }
+            withTimeout(10_000) { callbacks.forEach { assertTrue(it.await().outcome.success) } }
         }
         assertEquals(2, peak.get())
         assertEquals(8, probes.get())
@@ -1585,8 +1608,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                 assertNull(state.activeVersion)
                 assertEquals(0, packaged.count("closed"))
             } finally {
-                host.close()
-                System.setProperty("${packaged.property}.release", "true")
+                closeBeforeConstructorRelease(host, packaged)
             }
         }
         assertDisposed(packaged)
@@ -1610,8 +1632,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                 assertEquals(0, packaged.count("closed"))
                 failure("PLUGIN_RUNTIME_NOT_INITIALIZED") { host.states() }
             } finally {
-                host.close()
-                System.setProperty("${packaged.property}.release", "true")
+                closeBeforeConstructorRelease(host, packaged)
             }
         }
         assertDisposed(packaged)

@@ -189,7 +189,7 @@ export const api = {
   getPlugin: (id: string, options: PluginRequestOptions = {}) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}`, pluginRequestOptions(options)).then(parsePluginRuntimeState),
   getPluginContributions: (options: PluginRequestOptions = {}) =>
-    request<unknown>('/plugins/ui', pluginRequestOptions(options)).then(parsePluginContributions),
+    request<unknown>('/plugin-ui-contributions', pluginRequestOptions(options)).then(parsePluginContributions),
   installPlugin: (id: string, payload: { version: string; approvedPermissions: string[]; expectedSha256: string }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/installation`, {
       method: 'PUT', body: JSON.stringify(payload),
@@ -211,10 +211,12 @@ export const api = {
     return request<unknown>(`/plugins/${encodeURIComponent(id)}/resources/model-test-targets${query}`, pluginRequestOptions(options))
       .then(data => parsePluginTargets(data, context))
   },
-  invokePlugin: (id: string, payload: PluginInvocationRequest, options: PluginRequestOptions = {}) =>
-    request<unknown>(`/plugins/${encodeURIComponent(id)}/invocations`, {
-      ...pluginRequestOptions(options), method: 'POST', body: JSON.stringify(payload),
-    }).then(parsePluginExecution),
+  invokePlugin: (id: string, payload: PluginInvocationRequest, options: PluginRequestOptions = {}) => {
+    const binding = { pluginId: id, request: { ...payload, context: { ...payload.context }, values: { ...payload.values } } }
+    return request<unknown>(`/plugins/${encodeURIComponent(id)}/invocations`, {
+      ...pluginRequestOptions(options), method: 'POST', body: JSON.stringify(binding.request),
+    }).then(data => parsePluginExecution(data, binding))
+  },
 
   listModelRoutes: (options: ModelRouteListOptions = {}) => {
     const params = new URLSearchParams({ offset: String(options.offset ?? 0), limit: String(options.limit ?? 100) })

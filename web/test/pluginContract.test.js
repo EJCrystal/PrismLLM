@@ -190,6 +190,44 @@ describe('bounded declarative plugin contracts', () => {
     }
   })
 
+  for (const section of ['manifest', 'ui']) {
+    it(`bounds incompatible ${section} traversal across nested arrays before visiting later data`, () => {
+      const raw = catalog(SECOND_PLUGIN)
+      raw.compatible = false
+      let laterVisits = 0
+      const later = new Proxy({}, { getPrototypeOf() { laterVisits++; throw new Error('budget was checked too late') } })
+      raw[section].future = [Array(4096).fill(null), later]
+      assert.throws(() => parsePluginCatalogItem(raw), invalidResponse)
+      assert.equal(laterVisits, 0)
+    })
+
+    it(`bounds incompatible ${section} UTF-8 bytes before copying later metadata`, () => {
+      const raw = catalog(SECOND_PLUGIN)
+      raw.compatible = false
+      let laterVisits = 0
+      const later = new Proxy({}, { getPrototypeOf() { laterVisits++; throw new Error('byte budget was checked too late') } })
+      raw[section].future = [Array(20).fill('界'.repeat(8000)), later]
+      assert.throws(() => parsePluginCatalogItem(raw), invalidResponse)
+      assert.equal(laterVisits, 0)
+    })
+
+    it(`accepts the exact incompatible ${section} JSON byte cap including escaped keys and Unicode`, () => {
+      const raw = catalog(SECOND_PLUGIN)
+      raw.compatible = false
+      const key = String.fromCharCode(0xd800, 0, 10, 34, 92) + '界😀'
+      raw[section].future = { [key]: [null, true, false, 1.25, -0, '界😀'], padding: '' }
+      const bytes = value => new TextEncoder().encode(JSON.stringify(value)).length
+      raw[section].future.padding = 'x'.repeat(256 * 1024 - bytes(raw[section]))
+      assert.equal(bytes(raw[section]), 256 * 1024)
+      const parsed = parsePluginCatalogItem(raw)
+      assert.equal(parsed.compatible, false)
+      assert.deepEqual(parsed.manifest.configuration, [])
+      assert.deepEqual(parsed.ui.entries, [])
+      raw[section].future.padding += 'x'
+      assert.throws(() => parsePluginCatalogItem(raw), invalidResponse)
+    })
+  }
+
   it('enforces plugin ID80/version64 independently of entry/action/field ID64', () => {
     const raw = catalog('x'.repeat(80))
     raw.manifest.version = '1.0.0-' + 'x'.repeat(58)
@@ -711,6 +749,7 @@ describe('generic plugin API paths and existing session semantics', () => {
     const invoke = invocation(context)
     const hostExecution = execution()
     hostExecution.target.id = context.id
+    hostExecution.target.credentialId = invoke.values.keyId
     const contribution = { pluginId: SECOND_PLUGIN, activeVersion: '1.0.0', entry: catalog(SECOND_PLUGIN).ui.entries[0] }
     const responses = [
       [catalog(SECOND_PLUGIN)], [runtime()], runtime(), [contribution],
@@ -737,10 +776,10 @@ describe('generic plugin API paths and existing session semantics', () => {
     assert.equal(tombstone.installedVersion, '1.0.0')
     assert.deepEqual(tombstone.configuration, configure.values)
     await api.listPluginTargets(unsafeLookingId, context, readOptions)
-    await api.invokePlugin(unsafeLookingId, invoke, { ...readOptions, method: 'DELETE' })
+    await assert.rejects(api.invokePlugin(unsafeLookingId, invoke, { ...readOptions, method: 'DELETE' }), invalidResponse)
     assert.deepEqual(calls.map(call => [call.method, call.url]), [
       ['GET', '/admin/api/plugin-catalog'], ['GET', '/admin/api/plugins'],
-      ['GET', `/admin/api/plugins/${encodedId}`], ['GET', '/admin/api/plugins/ui'],
+      ['GET', `/admin/api/plugins/${encodedId}`], ['GET', '/admin/api/plugin-ui-contributions'],
       ['PUT', `/admin/api/plugins/${encodedId}/installation`], ['PUT', `/admin/api/plugins/${encodedId}/enabled`],
       ['PUT', `/admin/api/plugins/${encodedId}/configuration`], ['DELETE', `/admin/api/plugins/${encodedId}`],
       ['GET', `/admin/api/plugins/${encodedId}/resources/model-test-targets?${new URLSearchParams({ contextKind: context.kind, contextId: context.id })}`],
@@ -768,6 +807,73 @@ describe('generic plugin API paths and existing session semantics', () => {
     assert.equal(responses.length, 0)
   })
 
+  it('keeps legal plugin ui detail and contribution requests distinct', async t => {
+    const calls = []
+    const contribution = { pluginId: 'ui', activeVersion: '1.0.0', entry: catalog('ui').ui.entries[0] }
+    replaceGlobals(t, {
+      document: { cookie: '' },
+      fetch: async input => {
+        calls.push(String(input))
+        return json(String(input).endsWith('/plugin-ui-contributions') ? [contribution] : runtime({ id: 'ui' }))
+      },
+    })
+    assert.equal(parsePluginCatalogItem(catalog('ui')).manifest.id, 'ui')
+    assert.equal((await api.getPlugin('ui')).id, 'ui')
+    assert.equal((await api.getPluginContributions())[0].pluginId, 'ui')
+    assert.deepEqual(calls, ['/admin/api/plugins/ui', '/admin/api/plugin-ui-contributions'])
+  })
+
+  for (const [label, mutate] of [
+    ['plugin', data => { data.pluginId = 'another.plugin' }],
+    ['version', data => { data.activeVersion = '2.0.0' }],
+    ['context kind', data => { data.target.kind = 'oauth-account' }],
+    ['context ID', data => { data.target.id = 'another-channel' }],
+    ['model', data => { data.target.model = 'another-model' }],
+    ['protocol', data => { data.target.protocol = 'gemini' }],
+    ['credential', data => { data.target.credentialId = 'another-key' }],
+    ['missing credential', data => { delete data.target.credentialId }],
+  ]) {
+    it(`rejects a structurally valid invocation response with a mismatched ${label}`, async t => {
+      const response = execution()
+      response.target.credentialId = 'key/one'
+      mutate(response)
+      parsePluginExecution(response)
+      replaceGlobals(t, { document: { cookie: '' }, fetch: async () => json(response) })
+      await assert.rejects(api.invokePlugin(SECOND_PLUGIN, invocation()), invalidResponse)
+    })
+  }
+
+  it('binds account results to the selected account rather than a channel key', async t => {
+    const request = invocation({ kind: 'oauth-account', id: 'account/one' })
+    delete request.values.keyId
+    const response = execution()
+    response.target = { ...response.target, ...request.context, credentialId: request.context.id }
+    const responses = [response, { ...response, target: { ...response.target, credentialId: 'another-account' } }]
+    replaceGlobals(t, { document: { cookie: '' }, fetch: async () => json(responses.shift()) })
+    assert.equal((await api.invokePlugin(SECOND_PLUGIN, request)).target.credentialId, request.context.id)
+    await assert.rejects(api.invokePlugin(SECOND_PLUGIN, request), invalidResponse)
+  })
+
+  it('accepts trimmed target values and host-selected default credentials using the sent request snapshot', async t => {
+    const request = invocation()
+    request.values.model = ' vendor/model '
+    request.values.protocol = ' responses '
+    request.values.keyId = ' '
+    const response = execution()
+    response.target.credentialId = 'host-selected-default-key'
+    replaceGlobals(t, {
+      document: { cookie: '' },
+      fetch: async (input, init) => {
+        assert.equal(JSON.parse(init.body).context.id, 'channel/one')
+        request.context.id = 'mutated-context'
+        request.values.model = 'mutated-model'
+        request.expectedActiveVersion = '2.0.0'
+        return json(response)
+      },
+    })
+    assert.equal((await api.invokePlugin(SECOND_PLUGIN, request)).target.credentialId, 'host-selected-default-key')
+  })
+
   it('works for a second compatible plugin with omitted enable permissions and an unscoped resource query', async t => {
     const calls = []
     replaceGlobals(t, {
@@ -775,7 +881,11 @@ describe('generic plugin API paths and existing session semantics', () => {
       fetch: async (input, init = {}) => {
         calls.push({ url: String(input), ...init })
         if (String(input).endsWith('/resources/model-test-targets')) return json([target()])
-        if (String(input).endsWith('/invocations')) return json(execution())
+        if (String(input).endsWith('/invocations')) {
+          const response = execution()
+          response.target.credentialId = 'key/one'
+          return json(response)
+        }
         return json(runtime())
       },
     })
@@ -791,6 +901,7 @@ describe('generic plugin API paths and existing session semantics', () => {
     const events = []
     const upstream = execution()
     upstream.outcome.statusCode = 401
+    upstream.target.credentialId = 'key/one'
     const responses = [json({ error: { code: 'admin_session_expired', message: 'session expired' } }, 401), json(upstream)]
     replaceGlobals(t, {
       document: { cookie: '' },

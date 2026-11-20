@@ -2,7 +2,7 @@ import { ApiError } from '../types/api'
 import type { ChannelModelTestResult, ChannelModelTestUsage, ModelTestTarget, ProtocolId } from '../types/api'
 import type {
   PluginAction, PluginCatalogItem, PluginChoice, PluginContextKind, PluginExecution, PluginField,
-  PluginFieldKind, PluginInvocationContext, PluginManifest, PluginRuntimeState, PluginUiContribution,
+  PluginFieldKind, PluginInvocationContext, PluginInvocationRequest, PluginManifest, PluginRuntimeState, PluginUiContribution,
   PluginUiDescriptor, PluginUiEntry, PluginValue, PluginValues,
 } from '../types/plugin'
 
@@ -330,22 +330,55 @@ function manifest(value: unknown): PluginManifest {
 }
 
 type JsonData = PluginValue | JsonData[] | { [key: string]: JsonData }
+type MetadataBudget = { items: number; bytes: number }
+
+function metadataBytes(budget: MetadataBudget, count: number): void {
+  budget.bytes += count
+  requireContract(budget.bytes <= MAX_METADATA_BYTES, '数据大小')
+}
+
+function inertString(value: string, budget: MetadataBudget): string {
+  requireContract(value.length <= MAX_METADATA_BYTES, '文本')
+  metadataBytes(budget, 2)
+  for (const character of value) {
+    const codepoint = character.codePointAt(0)!
+    const bytes = codepoint === 34 || codepoint === 92 || [8, 9, 10, 12, 13].includes(codepoint) ? 2
+      : codepoint < 32 || (codepoint >= 0xd800 && codepoint <= 0xdfff) ? 6
+        : codepoint <= 0x7f ? 1 : codepoint <= 0x7ff ? 2 : codepoint <= 0xffff ? 3 : 4
+    metadataBytes(budget, bytes)
+  }
+  return value
+}
 
 /** Unknown-version metadata is bounded inert JSON, never an executable descriptor or a cast. */
-function inertData(value: unknown, depth = 0, budget = { keys: 0 }): JsonData {
+function inertData(value: unknown, depth = 0, budget: MetadataBudget = { items: 0, bytes: 0 }): JsonData {
   requireContract(depth < 32, '数据深度')
-  if (value === null || typeof value === 'boolean') return value
-  if (typeof value === 'string') return text(value, MAX_METADATA_BYTES)
-  if (typeof value === 'number') {
-    requireContract(Number.isFinite(value), '数值')
+  if (value === null || typeof value === 'boolean') {
+    metadataBytes(budget, value === null ? 4 : value ? 4 : 5)
     return value
   }
-  if (Array.isArray(value)) return array(value, 4_096).map(item => inertData(item, depth + 1, budget))
-  const data = record(value, undefined, 4_096)
-  budget.keys += Object.keys(data).length
-  requireContract(budget.keys <= 4_096, '字段数量')
+  if (typeof value === 'string') return inertString(text(value, MAX_METADATA_BYTES), budget)
+  if (typeof value === 'number') {
+    requireContract(Number.isFinite(value), '数值')
+    metadataBytes(budget, JSON.stringify(value).length)
+    return value
+  }
+  if (Array.isArray(value)) {
+    const items = array(value, 4_096 - budget.items)
+    budget.items += items.length
+    metadataBytes(budget, 2 + Math.max(0, items.length - 1))
+    return items.map(item => inertData(item, depth + 1, budget))
+  }
+  const data = record(value, undefined, 4_096 - budget.items)
+  const entries = Object.entries(data)
+  budget.items += entries.length
+  metadataBytes(budget, 2 + Math.max(0, entries.length - 1))
   const parsed: { [key: string]: JsonData } = {}
-  for (const [key, item] of Object.entries(data)) parsed[key] = inertData(item, depth + 1, budget)
+  for (const [key, item] of entries) {
+    inertString(key, budget)
+    metadataBytes(budget, 1)
+    parsed[key] = inertData(item, depth + 1, budget)
+  }
   return parsed
 }
 
@@ -447,13 +480,13 @@ function usage(value: unknown): ChannelModelTestUsage | null {
   }
 }
 
-export function parsePluginExecution(value: unknown): PluginExecution {
+export function parsePluginExecution(value: unknown, binding?: { pluginId: string; request: PluginInvocationRequest }): PluginExecution {
   const data = record(value, ['pluginId', 'activeVersion', 'target', 'plan', 'outcome', 'report'])
   const target = record(data.target, ['kind', 'id', 'model', 'protocol', 'displayName', 'credentialId', 'credentialName'])
   const plan = record(data.plan, ['prompt', 'maxOutputTokens', 'timeoutMs'])
   const outcome = record(data.outcome, ['success', 'statusCode', 'latencyMs', 'responseText', 'errorMessage', 'usage', 'upstreamReportedModel'])
   const report = record(data.report, ['success', 'title', 'metrics', 'notices', 'text'])
-  return {
+  const parsed: PluginExecution = {
     pluginId: id(data.pluginId), activeVersion: version(data.activeVersion),
     target: {
       kind: contextKind(target.kind), id: text(target.id, 256, true), model: text(target.model, 256, true),
@@ -480,6 +513,19 @@ export function parsePluginExecution(value: unknown): PluginExecution {
       notices: array(report.notices, 16, true).map(item => text(item, 2_000)), text: nullableText(report.text, 16_000),
     },
   }
+  if (binding) {
+    const { context, values, expectedActiveVersion } = binding.request
+    requireContract(parsed.pluginId === binding.pluginId && parsed.activeVersion === expectedActiveVersion, '执行版本绑定')
+    requireContract(parsed.target.kind === context.kind && parsed.target.id === context.id, '执行上下文绑定')
+    requireContract(typeof values.model === 'string' && parsed.target.model === values.model.trim(), '执行模型绑定')
+    requireContract(typeof values.protocol === 'string' && parsed.target.protocol === values.protocol.trim(), '执行协议绑定')
+    if (context.kind === 'oauth-account') {
+      requireContract(parsed.target.credentialId === context.id, '执行账号绑定')
+    } else if (typeof values.keyId === 'string' && values.keyId.trim()) {
+      requireContract(parsed.target.credentialId === values.keyId.trim(), '执行凭据绑定')
+    }
+  }
+  return parsed
 }
 
 export function parsePluginTargets(value: unknown, context?: PluginInvocationContext): ModelTestTarget[] {

@@ -64,13 +64,17 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 
 安装新版本不会在本进程切换代码或执行元数据：`installedVersion` 是期望版本，`activeVersion` 是已加载版本。升级等待重启时，仍显示并使用当前活动版本的 UI。调用携带 `expectedActiveVersion`，陈旧界面不会悄悄执行另一版本。
 
+管理台只接受与已发送请求匹配的执行结果：插件 ID、活动版本、上下文类型和 ID、模型与协议都必须一致；显式选择的渠道凭据或原生 OAuth 账号也必须一致。留空渠道凭据仍由宿主选择默认值，不把展示报告当作探测结论。
+
+不兼容版本的元数据只作惰性展示，遍历时累计限制为每份文档 4096 个字段／数组元素、32 层深度与 256 KiB JSON UTF-8 字节；超限立即拒绝，不先复制完整递归内容再检查。未知 UI 与配置不进入执行路径。
+
 所有以下接口都要求现有管理员会话；写操作还要求现有 `X-CSRF-Token`，不会接受数据面 Bearer 密钥。
 
 | 方法与路径 | 用途 |
 |---|---|
 | `GET /admin/api/plugin-catalog` | 只读本地可信包的 manifest、UI、摘要、兼容性 |
 | `GET /admin/api/plugins`、`GET /admin/api/plugins/{id}` | 期望状态、活动版本、准入、重启与错误状态 |
-| `GET /admin/api/plugins/ui` | 仅返回当前活动且准入的通用 UI 贡献 |
+| `GET /admin/api/plugin-ui-contributions` | 仅返回当前活动且准入的通用 UI 贡献；独立于插件 ID 路径，`ui` 仍是合法插件 ID |
 | `PUT /admin/api/plugins/{id}/installation` | 安装指定版本，提交完整 `approvedPermissions` 与已审阅目录的 `expectedSha256` |
 | `PUT /admin/api/plugins/{id}/enabled` | 启用时提交已确认的 `installedVersion`、`expectedRevision` 和批准的权限；禁用不要求版本前提 |
 | `PUT /admin/api/plugins/{id}/configuration` | 提交 `values`、草稿 `expectedRevision` 与 `installedVersion`；陈旧基准返回冲突 |

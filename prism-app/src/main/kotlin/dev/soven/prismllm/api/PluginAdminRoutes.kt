@@ -62,7 +62,7 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
         call.response.headers.append("Cache-Control", "no-store")
         call.respond(app.pluginRuntime.states())
     }
-    get("/plugins/ui") {
+    get("/plugin-ui-contributions") {
         call.requireAdmin(app)
         call.response.headers.append("Cache-Control", "no-store")
         call.respond(app.pluginRuntime.contributions())

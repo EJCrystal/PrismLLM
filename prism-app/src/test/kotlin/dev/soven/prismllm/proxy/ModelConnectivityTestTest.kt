@@ -48,6 +48,7 @@ import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Assertions.assertNotNull
 import java.net.InetSocketAddress
+import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
 
 private const val DIAGNOSTIC_RESPONSE_BYTE_LIMIT = 1_048_576L
@@ -618,7 +619,7 @@ class ModelConnectivityTestTest {
         tokenOverride: Int? = null,
         chatTokenField: String = "max_completion_tokens",
     ): CapturedDiagnosticRequest {
-        val captured = AtomicReference<CapturedDiagnosticRequest>()
+        val captured = ConcurrentLinkedQueue<CapturedDiagnosticRequest>()
         val channelOverrides = UpstreamRequestOverrides(
             headers = mapOf("X-Diagnostic-Channel" to "kept-channel-header"),
             body = Json.parseToJsonElement("""{"metadata":{"source":"channel"},"tools":[{"type":"function","name":"injected-tool"}]}""").jsonObject,
@@ -657,7 +658,7 @@ class ModelConnectivityTestTest {
                 addHandler { request ->
                     val content = request.body as? OutgoingContent.ByteArrayContent
                         ?: error("Expected synthetic diagnostic JSON content")
-                    captured.set(
+                    captured.add(
                         CapturedDiagnosticRequest(
                             path = request.url.encodedPath,
                             body = Json.parseToJsonElement(content.bytes().decodeToString()).jsonObject,
@@ -714,7 +715,8 @@ class ModelConnectivityTestTest {
                 )()
             }
         }
-        return requireNotNull(captured.get())
+        assertEquals(1, captured.size, "A diagnostic must send exactly one model request without retry")
+        return captured.single()
     }
 
     private fun hostileDiagnosticBody(protocol: GatewayProtocol) = Json.parseToJsonElement(

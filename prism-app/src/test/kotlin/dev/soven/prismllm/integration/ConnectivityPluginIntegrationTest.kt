@@ -201,7 +201,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(fixture.manifest.configuration, state.configurationFields)
             assertEquals(JsonPrimitive(DEFAULT_PROMPT), state.configuration["defaultPrompt"])
             assertEquals(state.configuration, state.activeConfiguration)
-            val contributions = client.api(HttpMethod.Get, "/admin/api/plugins/ui", session).decoded<List<PluginUiContribution>>()
+            val contributions = client.api(HttpMethod.Get, "/admin/api/plugin-ui-contributions", session).decoded<List<PluginUiContribution>>()
             assertEquals(fixture.ui.entries, contributions.map { it.entry })
             assertTrue(contributions.all { it.pluginId == PLUGIN_ID && it.activeVersion == VERSION })
             assertEquals(setOf("channel-tests", "oauth-account-tests", "plugin-page"), contributions.map { it.entry.placement }.toSet())
@@ -257,7 +257,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         testApplication {
             application { app.install(this) }
             val channel = directChannel("admin-auth", GatewayProtocol.CHAT_COMPLETIONS)
-            val reads = listOf("/plugin-catalog", "/plugins", "/plugins/ui", "/plugins/$PLUGIN_ID",
+            val reads = listOf("/plugin-catalog", "/plugins", "/plugin-ui-contributions", "/plugins/$PLUGIN_ID",
                 "/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=channel&contextId=${channel.id}")
             reads.forEach { path ->
                 assertEquals(HttpStatusCode.Unauthorized, client.api(HttpMethod.Get, "/admin/api$path").status, path)
@@ -1514,6 +1514,16 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 application { app.install(this) }
                 val session = client.adminSession()
                 val channel = directChannel("two-workers", GatewayProtocol.CHAT_COMPLETIONS)
+                val admission = app.pluginRuntime.javaClass.getDeclaredField("executions").let { field ->
+                    field.isAccessible = true
+                    field.get(app.pluginRuntime) as Semaphore
+                }
+                val idlePermits = admission.availablePermits
+                val workers = app.pluginRuntime.javaClass.getDeclaredField("probeWorkers").let { field ->
+                    field.isAccessible = true
+                    field.get(app.pluginRuntime) as Semaphore
+                }
+                val queuedPermits = workers.javaClass.superclass.getDeclaredField("_availablePermits\$volatile").apply { isAccessible = true }
                 coroutineScope {
                     val results = (1..4).map { index ->
                         async {
@@ -1523,6 +1533,9 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                         }
                     }
                     try {
+                        awaitCondition("all four targets admitted with two queued for upstream capacity", timeoutMs = 5_000) {
+                            admission.availablePermits == idlePermits - 4 && queuedPermits.getInt(workers) == -2
+                        }
                         awaitCondition("two upstream workers waiting at the mock barrier") { runningProbes.get() == 2 }
                         assertEquals(2, probes.size, "Queued targets must not prepare/send a third probe")
                         release.complete(Unit)
@@ -1544,6 +1557,46 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `legal ui plugin detail remains distinct from active UI contributions`() = runBlocking {
+        val catalog = Files.createDirectory(auxiliaryDirectory.resolve("ui-identity-catalog"))
+        listOf("catalog.json", "prism-connectivity-1.0.0.prismplugin").forEach { name ->
+            Files.copy(connectivityPluginCatalogDirectory.resolve(name), catalog.resolve(name))
+        }
+        publishChannelOnlyPackage(catalog, id = "ui", version = VERSION)
+        restartApplication(app.config.copy(pluginCatalogDir = catalog))
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val offered = app.pluginRuntime.catalogItems().single { it.manifest.id == "ui" }
+            assertTrue(offered.compatible)
+            val installation = buildJsonObject {
+                put("version", VERSION)
+                put("expectedSha256", offered.sha256)
+                put("approvedPermissions", kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive(PluginApi.CHANNEL_PROBE))))
+            }.toString()
+            val installed = client.api(HttpMethod.Put, "/admin/api/plugins/ui/installation", session, installation).decoded<PluginRuntimeState>()
+            val enabled = buildJsonObject {
+                put("enabled", true)
+                put("expectedRevision", installed.revision)
+                put("installedVersion", VERSION)
+            }.toString()
+            client.api(HttpMethod.Put, "/admin/api/plugins/ui/enabled", session, enabled).decoded<PluginRuntimeState>()
+        }
+        restartApplication()
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val state = client.api(HttpMethod.Get, "/admin/api/plugins/ui", session).decoded<PluginRuntimeState>()
+            assertEquals("ui", state.id)
+            assertActive(state)
+            val contributions = client.api(HttpMethod.Get, "/admin/api/plugin-ui-contributions", session).decoded<List<PluginUiContribution>>()
+            assertEquals(setOf(PLUGIN_ID, "ui"), contributions.map { it.pluginId }.toSet())
+            assertTrue(contributions.filter { it.pluginId == "ui" }.all { it.activeVersion == VERSION })
+        }
+        assertNoPreparation()
+    }
+
+    @Test
     fun `pending channel only upgrade preserves active OAuth grants until explicit disable`() = runBlocking {
         val catalog = Files.createDirectory(auxiliaryDirectory.resolve("pending-grant-catalog"))
         listOf("catalog.json", "prism-connectivity-1.0.0.prismplugin").forEach { name ->
@@ -1560,7 +1613,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             val account = oauthAccount("pending-upgrade-grant", provider, listOf(model), listOf(channelId))
             assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id,
                 listOf(OAuthAccountModelCatalogEntry(model, model))))
-            publishChannelOnlyUpgrade(catalog)
+            publishChannelOnlyPackage(catalog)
             val pending = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
                 installationPayload(version = "2.0.0", approvedPermissions = listOf(PluginApi.CHANNEL_PROBE))).decoded<PluginRuntimeState>()
             assertEquals("2.0.0", pending.installedVersion)
@@ -1628,7 +1681,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             application { app.install(this) }
             val session = client.adminSession()
             assertActive(client.pluginState(session))
-            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugins/ui", session).decoded<List<PluginUiContribution>>().isNotEmpty())
+            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugin-ui-contributions", session).decoded<List<PluginUiContribution>>().isNotEmpty())
             assertTrue(client.invokePlugin(session, "channel", static.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS)).decoded<PluginExecution>().outcome.success)
             assertEquals(1, probes.size)
         }
@@ -1671,7 +1724,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertNull(absent.activeVersion)
             assertEquals("uninstalled", absent.status)
             assertEquals(tombstone, app.pluginInstallationRepository.find(PLUGIN_ID), "Bootstrap must never erase an uninstall decision")
-            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugins/ui", session).decoded<List<PluginUiContribution>>().isEmpty())
+            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugin-ui-contributions", session).decoded<List<PluginUiContribution>>().isEmpty())
             val restored = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, installationPayload()).decoded<PluginRuntimeState>()
             assertTrue(restored.installed)
             assertFalse(restored.desiredEnabled, "Manual restoration is disabled until explicitly enabled")
@@ -1721,7 +1774,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             val session = client.adminSession()
             assertTrue(client.api(HttpMethod.Get, "/admin/api/plugin-catalog", session).decoded<List<PluginCatalogItem>>().isEmpty())
             assertTrue(client.api(HttpMethod.Get, "/admin/api/plugins", session).decoded<List<PluginRuntimeState>>().isEmpty())
-            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugins/ui", session).decoded<List<PluginUiContribution>>().isEmpty())
+            assertTrue(client.api(HttpMethod.Get, "/admin/api/plugin-ui-contributions", session).decoded<List<PluginUiContribution>>().isEmpty())
             assertNull(app.pluginInstallationRepository.find(PLUGIN_ID))
             assertEquals(HttpStatusCode.OK, client.api(HttpMethod.Get, "/health/ready").status)
             val channel = directChannel("core-without-connectivity", GatewayProtocol.CHAT_COMPLETIONS)
@@ -2148,7 +2201,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     private suspend fun HttpClient.assertGated(session: AdminSession, channelId: String, accountId: String) {
-        assertTrue(api(HttpMethod.Get, "/admin/api/plugins/ui", session).decoded<List<PluginUiContribution>>().isEmpty())
+        assertTrue(api(HttpMethod.Get, "/admin/api/plugin-ui-contributions", session).decoded<List<PluginUiContribution>>().isEmpty())
         listOf("channel" to channelId, "oauth-account" to accountId).forEach { (kind, id) ->
             api(HttpMethod.Get, "/admin/api/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=$kind&contextId=$id", session)
                 .assertError(HttpStatusCode.ServiceUnavailable, "plugin_unavailable")
@@ -2196,9 +2249,9 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
-    private fun publishChannelOnlyUpgrade(catalog: Path) {
+    private fun publishChannelOnlyPackage(catalog: Path, id: String = PLUGIN_ID, version: String = "2.0.0") {
         val previous = readPackageFixture()
-        val manifest = previous.manifest.copy(version = "2.0.0", permissions = listOf(PluginApi.CHANNEL_PROBE))
+        val manifest = previous.manifest.copy(id = id, version = version, permissions = listOf(PluginApi.CHANNEL_PROBE))
         val ui = previous.ui.copy(entries = previous.ui.entries.filter { "oauth-account" !in it.contexts })
         val classes = Files.createDirectory(auxiliaryDirectory.resolve("upgrade-classes"))
         val source = auxiliaryDirectory.resolve("PendingConnectivityPlugin.java")
@@ -2207,8 +2260,8 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             import dev.soven.prismllm.plugin.sdk.*;
             import java.util.Collections;
             public final class PendingConnectivityPlugin implements DiagnosticPlugin {
-                public String getId() { return "$PLUGIN_ID"; }
-                public String getVersion() { return "2.0.0"; }
+                public String getId() { return "$id"; }
+                public String getVersion() { return "$version"; }
                 public int getApiVersion() { return 1; }
                 public ProbePlan plan(DiagnosticInput input, DiagnosticContext context) {
                     return new ProbePlan("pending V2", 128, 45000L);
@@ -2236,7 +2289,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 jar.closeEntry()
             }
         }
-        val filename = "prism-connectivity-2.0.0.prismplugin"
+        val filename = if (id == PLUGIN_ID) "prism-connectivity-$version.prismplugin" else "$id-$version.prismplugin"
         val archive = catalog.resolve(filename)
         java.util.zip.ZipOutputStream(Files.newOutputStream(archive)).use { zip ->
             mapOf(
@@ -2252,8 +2305,8 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         val catalogPath = catalog.resolve("catalog.json")
         val current = Json.parseToJsonElement(Files.readString(catalogPath)).jsonObject
         val replacement = buildJsonObject {
-            put("id", PLUGIN_ID)
-            put("version", "2.0.0")
+            put("id", id)
+            put("version", version)
             put("file", filename)
             put("sha256", sha256(Files.readAllBytes(archive)))
         }
