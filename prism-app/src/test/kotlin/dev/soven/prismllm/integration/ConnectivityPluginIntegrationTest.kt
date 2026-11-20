@@ -1772,6 +1772,119 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
+    @Test
+    fun channelOAuthProbesUseExplicitNonDefaultAccountAmongDifferentTokens(): Unit = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            for (provider in OAuthProvider.entries) {
+                val protocol = ProviderEndpoints.of(provider).protocols.single()
+                val model = if (provider == OAuthProvider.CHATGPT) "gpt-6-luna" else "gemini-plugin-native"
+                val channel = directChannel("explicit-account-" + provider.value, protocol, model)
+                val defaultToken = "first-account-token-" + provider.value
+                val selectedToken = "selected-account-token-" + provider.value
+                suspend fun account(name: String, token: String, priority: Int): OAuthAccountRecord =
+                    app.oauthAccountRepository.create(NewOAuthAccount(
+                        name = name, provider = provider, models = listOf(model), channelIds = listOf(channel.id),
+                        refreshToken = app.credentialCipher.encrypt("refresh-" + name),
+                        accessToken = app.credentialCipher.encrypt(token),
+                        accessTokenExpiresAt = System.currentTimeMillis() + 86_400_000,
+                        priority = priority,
+                    ))
+                val first = account("first-" + provider.value, defaultToken, 1)
+                val selected = account("selected-" + provider.value, selectedToken, 20)
+                val targets = client.api(HttpMethod.Get,
+                    "/admin/api/plugins/" + PLUGIN_ID + "/resources/model-test-targets?contextKind=channel&contextId=" + channel.id, session)
+                    .decoded<List<IqTestTargetResponse>>()
+                val eligibleAccounts = targets.single { it.channelId == channel.id && it.model == model }.credentials
+                    .filter { it.id == first.id || it.id == selected.id }
+                assertEquals(listOf(first.id, selected.id), eligibleAccounts.map { it.id })
+
+                val control = client.invokePlugin(session, "channel", channel.id,
+                    values(model, protocol, first.id, "first-account control")).decoded<PluginExecution>()
+                assertTrue(control.outcome.success)
+                assertEquals(first.id, control.target.credentialId)
+                assertEquals("Bearer " + defaultToken, probes.last().authorization)
+
+                val generic = client.invokePlugin(session, "channel", channel.id,
+                    values(model, protocol, selected.id, "selected-account probe")).decoded<PluginExecution>()
+                assertTrue(generic.outcome.success)
+                assertEquals(selected.id, generic.target.credentialId)
+                assertEquals("Bearer " + selectedToken, probes.last().authorization)
+                assertEquals("127.0.0.1", probes.last().host)
+                assertFalse("project" in probes.last().body)
+                val legacy = client.legacyProbe(session, "/channels/" + channel.id + "/model-test", model, protocol,
+                    selected.id, "selected-account probe").objectPayload()
+                assertLegacySuccess(legacy, model, protocol, selected.id, "selected-account probe")
+                assertEquals("Bearer " + selectedToken, probes.last().authorization)
+                assertEquals("127.0.0.1", probes.last().host)
+                assertFalse("project" in probes.last().body)
+            }
+            assertEquals(OAuthProvider.entries.size * 3, probes.size)
+            assertTrue(preparations.isEmpty())
+            assertTrue(fake.tokenRequests.isEmpty())
+            assertEquals(0, scalarInt("select count(*) from channels where kind = 'provider'"))
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun nativeOAuthHttpWaitOutlivesTheRealPreparationDeadline(): Unit = runBlocking {
+        val preparationBudgetMs = 3_000L
+        val base = app.config
+        app.close()
+        app = mockedApplication(base, preparationTimeoutMs = preparationBudgetMs)
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            for (provider in OAuthProvider.entries) {
+                val protocol = ProviderEndpoints.of(provider).protocols.single()
+                val model = if (provider == OAuthProvider.CHATGPT) "gpt-6-luna" else "gemini-plugin-native"
+                val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+                val account = oauthAccount("real-http-deadline-" + provider.value, provider, listOf(model), listOf(channelId))
+                assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id,
+                    listOf(OAuthAccountModelCatalogEntry(model, model))))
+                for (legacy in listOf(false, true)) {
+                    val release = CompletableDeferred<Unit>()
+                    probeHold.set(release)
+                    coroutineScope {
+                        val pending = async {
+                            if (legacy) client.legacyProbe(session, "/oauth-accounts/" + account.id + "/model-test",
+                                model, protocol, prompt = "independent real HTTP deadline")
+                            else client.invokePlugin(session, "oauth-account", account.id,
+                                values(model, protocol, prompt = "independent real HTTP deadline"))
+                        }
+                        try {
+                            awaitCondition("native model HTTP entered its held response", timeoutMs = 5_000) {
+                                runningProbes.get() == 1
+                            }
+                            val waitingSince = System.nanoTime()
+                            delay(preparationBudgetMs + 250)
+                            assertTrue(TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - waitingSince) >= preparationBudgetMs)
+                            assertFalse(pending.isCompleted, "The model request must outlive the real preparation timeout while held")
+                            assertEquals(1, runningProbes.get())
+                            release.complete(Unit)
+                            val response = withTimeout(5_000) { pending.await() }
+                            if (legacy) {
+                                assertLegacySuccess(response.objectPayload(), model, protocol, account.id, "independent real HTTP deadline")
+                            } else {
+                                val execution = response.decoded<PluginExecution>()
+                                assertTrue(execution.outcome.success)
+                                assertEquals(45_000L, execution.plan.timeoutMs)
+                            }
+                            assertNativeRequest(probes.last(), provider, model, "independent real HTTP deadline")
+                        } finally {
+                            release.complete(Unit)
+                            probeHold.compareAndSet(release, null)
+                        }
+                    }
+                }
+            }
+            assertEquals(OAuthProvider.entries.size * 2, probes.size)
+        }
+        assertNoDiagnosticSettlement()
+    }
+
     private fun mockedApplication(
         config: GatewayConfig,
         projectDelayMs: suspend () -> Long = { 0 },

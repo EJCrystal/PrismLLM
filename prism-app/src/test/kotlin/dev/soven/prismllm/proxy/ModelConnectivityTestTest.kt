@@ -532,6 +532,17 @@ class ModelConnectivityTestTest {
         }
     }
 
+    @Test
+    fun lowerOverrideTokenLimitsArePreservedOnActualRequestsForEveryEntryPoint(): Unit = runBlocking {
+        for (protocol in GatewayProtocol.entries) {
+            assertIsolatedDiagnosticRequest(captureDiagnosticRequest(protocol, tokenOverride = 7), protocol, null, 7)
+        }
+        for ((provider, protocol) in listOf(OAuthProvider.CHATGPT to GatewayProtocol.RESPONSES,
+            OAuthProvider.ANTIGRAVITY to GatewayProtocol.GEMINI)) {
+            assertIsolatedDiagnosticRequest(captureDiagnosticRequest(protocol, provider, 7), protocol, provider, 7)
+        }
+    }
+
     private fun assertIsolatedDiagnosticRequest(
         captured: CapturedDiagnosticRequest,
         protocol: GatewayProtocol,
@@ -1249,6 +1260,42 @@ class ModelConnectivityTestTest {
 
             val oversized = fingerprintDiagnosticTransport(
                 credential, body + padding + " ", maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
+            )
+            assertFalse(oversized.result.success)
+            assertEquals(200, oversized.result.statusCode)
+            assertEquals("上游响应超过 1 MiB 上限", oversized.result.errorMessage)
+            assertNull(oversized.result.responseText)
+            assertNull(oversized.result.usage)
+            assertNull(oversized.result.upstreamReportedModel)
+            assertNull(oversized.rawSample)
+        }
+    }
+
+    @Test
+    fun multibyteJsonAndSseUseTheResponseByteLimitRatherThanCharacterCount(): Unit = runBlocking {
+        val credential = "multibyte-boundary-secret"
+        val content = "完成😀 $credential"
+        for ((protocol, contentType, body) in listOf(
+            Triple(GatewayProtocol.CHAT_COMPLETIONS, ContentType.Application.Json,
+                """{"choices":[{"message":{"content":"$content"}}]}"""),
+            Triple(GatewayProtocol.RESPONSES, ContentType.Text.EventStream,
+                "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"$content\"}}\n"),
+        )) {
+            val exactBody = body + " ".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() - body.toByteArray(Charsets.UTF_8).size)
+            assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt(), exactBody.toByteArray(Charsets.UTF_8).size)
+            assertTrue(exactBody.length < MAX_MODEL_TEST_RESPONSE_BYTES)
+            val bounded = fingerprintDiagnosticTransport(
+                credential, exactBody, maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
+            )
+            assertTrue(bounded.result.success)
+            assertEquals("完成😀 [REDACTED]", bounded.result.responseText)
+            assertEquals(content, bounded.rawSample)
+
+            val oversizedBody = exactBody + " "
+            assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() + 1, oversizedBody.toByteArray(Charsets.UTF_8).size)
+            assertTrue(oversizedBody.length < MAX_MODEL_TEST_RESPONSE_BYTES)
+            val oversized = fingerprintDiagnosticTransport(
+                credential, oversizedBody, maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
             )
             assertFalse(oversized.result.success)
             assertEquals(200, oversized.result.statusCode)

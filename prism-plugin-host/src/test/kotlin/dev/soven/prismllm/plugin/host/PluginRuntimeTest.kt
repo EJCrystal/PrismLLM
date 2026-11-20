@@ -94,6 +94,24 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun bootstrapOrdersMultiDigitSemanticVersionsWithoutHigherCandidates(): Unit = runBlocking {
+        val earlier = fixture(version = "1.9.0")
+        val later = fixture(version = "1.10.0")
+        publish(earlier, later)
+        val store = MemoryInstallationStore()
+        val host = runtime(store)
+
+        host.initialize(earlier.manifest.id)
+
+        assertEquals("1.10.0", host.state(earlier.manifest.id).activeVersion)
+        val persisted = assertNotNull(store.find(earlier.manifest.id))
+        assertEquals("1.10.0", persisted.version)
+        assertEquals(later.sha256, persisted.sha256)
+        assertEquals(0, earlier.count("constructed"))
+        assertEquals(1, later.count("constructed"))
+    }
+
+    @Test
     fun missingInstallationsRetireOwnedProvidersAcrossEveryObservationPath(): Unit = runBlocking {
         for (lookup in listOf("states", "contributions", "state", "permission")) {
             val packaged = ownedFixture(id = "missing." + lookup)
