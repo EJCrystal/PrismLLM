@@ -187,25 +187,25 @@ export const api = {
   listPlugins: (options: PluginRequestOptions = {}) =>
     request<unknown>('/plugins', pluginRequestOptions(options)).then(parsePlugins),
   getPlugin: (id: string, options: PluginRequestOptions = {}) =>
-    request<unknown>(`/plugins/${encodeURIComponent(id)}`, pluginRequestOptions(options)).then(parsePluginRuntimeState),
+    request<unknown>(`/plugins/${encodeURIComponent(id)}`, pluginRequestOptions(options)).then(data => parsePluginRuntimeState(data, id)),
   getPluginContributions: (options: PluginRequestOptions = {}) =>
     request<unknown>('/plugin-ui-contributions', pluginRequestOptions(options)).then(parsePluginContributions),
   installPlugin: (id: string, payload: { version: string; approvedPermissions: string[]; expectedSha256: string }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/installation`, {
       method: 'PUT', body: JSON.stringify(payload),
-    }).then(parsePluginRuntimeState),
+    }).then(data => parsePluginRuntimeState(data, id)),
   setPluginEnabled: (id: string, payload: { enabled: false } | {
     enabled: true; expectedRevision: number; installedVersion: string; approvedPermissions?: string[]
   }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: JSON.stringify(payload),
-    }).then(parsePluginRuntimeState),
+    }).then(data => parsePluginRuntimeState(data, id)),
   configurePlugin: (id: string, payload: { values: PluginValues; expectedRevision: number; installedVersion: string }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/configuration`, {
       method: 'PUT', body: JSON.stringify(payload),
-    }).then(parsePluginRuntimeState),
+    }).then(data => parsePluginRuntimeState(data, id)),
   uninstallPlugin: (id: string) =>
-    request<unknown>(`/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(parsePluginRuntimeState),
+    request<unknown>(`/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(data => parsePluginRuntimeState(data, id)),
   listPluginTargets: (id: string, context?: PluginInvocationContext, options: PluginRequestOptions = {}) => {
     const bound = context ? { ...context } : undefined
     const query = bound ? '?' + new URLSearchParams({ contextKind: bound.kind, contextId: bound.id }) : ''

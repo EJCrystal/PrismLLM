@@ -515,15 +515,16 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
     // deleting a control or formatting character can assemble an otherwise split credential.
     val display = normalizeModelTestDisplay(text, multiline)
     val secret = normalizeModelTestDisplay(credential, multiline)
-    if (secret.isEmpty() || display.length < secret.length) return display
-    if (!budget.consume(secret.length.toLong() * 32)) return "[REDACTED]"
-    val forms = secret.codePoints().toArray().map { codePoint ->
+    if (credential.isEmpty() || display.isEmpty() || display.length < secret.length) return display
+    if (!budget.consume(credential.length.toLong() * 32)) return "[REDACTED]"
+    val forms = credential.codePoints().toArray().map { codePoint ->
         val literal = String(Character.toChars(codePoint))
         val percent = literal.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
             "%" + (byte.toInt() and 0xff).toString(16).padStart(2, '0')
         }
         val unicode = literal.map { char -> "\\u" + char.code.toString(16).padStart(4, '0') }.joinToString("")
         buildList {
+            if (normalizeModelTestDisplay(literal, multiline).isEmpty()) add(CredentialEchoForm(""))
             add(CredentialEchoForm(percent, hexCaseInsensitive = true))
             add(CredentialEchoForm(unicode, hexCaseInsensitive = true))
             add(CredentialEchoForm(JsonPrimitive(literal).toString().drop(1).dropLast(1)))
@@ -541,7 +542,7 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
             val next = HashSet<Int>()
             for (offset in offsets) {
                 for (form in alternatives) {
-                    if (!budget.consume(form.value.length.toLong())) return null
+                    if (!budget.consume(form.value.length.coerceAtLeast(1).toLong())) return null
                     if (form.matches(display, offset)) next += offset + form.value.length
                 }
             }
@@ -556,7 +557,7 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
         while (offset <= display.length - secret.length) {
             val end = matchEnd(offset)
             if (budget.exhausted) return "[REDACTED]"
-            if (end == null) {
+            if (end == null || end == offset) {
                 offset++
             } else {
                 append(display, copied, offset)

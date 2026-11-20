@@ -614,19 +614,7 @@ class PluginRuntime(
 
     private suspend fun persist(next: PluginInstallation, previous: PluginInstallation?) {
         checkOpen()
-        val saved = try {
-            if (previous == null) store.insertIfAbsent(next) else store.save(next, previous.revision)
-        } catch (cause: Exception) {
-            if (previous != null && previous.desiredEnabled && (!next.desiredEnabled || !next.installed)) {
-                withContext(NonCancellable) {
-                    val unchanged = try {
-                        withTimeoutOrNull(CODE_TIMEOUT_MS) { store.find(next.id) == previous } == true
-                    } catch (_: Exception) { false }
-                    if (!unchanged) active[next.id]?.admission?.set(false)
-                }
-            }
-            throw cause
-        }
+        val saved = if (previous == null) store.insertIfAbsent(next) else store.save(next, previous.revision)
         if (!saved) throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
     }
 

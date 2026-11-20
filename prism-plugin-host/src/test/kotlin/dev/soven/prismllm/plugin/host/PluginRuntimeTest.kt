@@ -1134,6 +1134,32 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun `failed stop preserves admission when a concurrent configuration update remains enabled`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        for (uninstall in listOf(false, true)) {
+            val store = MemoryInstallationStore()
+            val host = runtime(store)
+            host.initialize(packaged.manifest.id)
+            val original = assertNotNull(store.find(packaged.manifest.id))
+            store.beforeSave = {
+                store.seed(original.copy(configuration = config("concurrent update"), revision = original.revision + 1))
+                throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Concurrent configuration write", 409)
+            }
+            failure("PLUGIN_REVISION_CONFLICT") {
+                if (uninstall) host.uninstall(packaged.manifest.id) else host.disable(packaged.manifest.id)
+            }
+            store.beforeSave = null
+            val state = host.state(packaged.manifest.id)
+            assertTrue(state.installed && state.desiredEnabled && state.admissionEnabled)
+            assertFalse(state.requiresRestart)
+            assertEquals(config("concurrent update"), state.activeConfiguration)
+            assertTrue(invoke(host).outcome.success)
+            host.close()
+        }
+    }
+
+    @Test
     fun `failed stop never reopens a concurrently committed disable`(): Unit = runBlocking {
         val packaged = fixture()
         publish(packaged)

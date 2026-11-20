@@ -1918,6 +1918,21 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun `format characters are redacted in raw normalized percent and unicode echoes`() = runBlocking {
+        val credential = "sk-synthetic-\u200Bdisplay-secret"
+        val percent = credential.toByteArray(Charsets.UTF_8).joinToString("") {
+            "%" + (it.toInt() and 0xff).toString(16).padStart(2, '0').uppercase()
+        }
+        for (echo in listOf(credential, "sk-synthetic-display-secret", percent, unicodeEscapedCredential(credential))) {
+            val result = diagnosticTransport(
+                credential,
+                responseBody = """{"choices":[{"message":{"content":${JsonPrimitive("before ${echo} after")}}}],"model":"public-model"}""",
+            )
+            assertSuccessfulDiagnostic(result, "before [REDACTED] after", "public-model", usage = null)
+        }
+    }
+
+    @Test
     fun mixed_encodings_preserve_literal_case_and_handle_ambiguous_encoding_prefixes() = runBlocking {
         val credential = "%41\\u0041 A/+é中😀\"\\"
         val mixed = mixedCredentialEcho(credential)

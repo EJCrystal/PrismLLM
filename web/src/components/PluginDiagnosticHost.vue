@@ -243,14 +243,11 @@ async function run() {
   const hasCredential = fields.value.some((field) => field.kind === 'credential')
   const all = batch.value
   const values: PluginValues = Object.fromEntries(fields.value.map((field) => [field.key, form[field.key] ?? null]))
+  const inherited = fields.value.filter((field) => !editedFields.has(field.key) &&
+    !['model', 'credential', 'protocol', 'scope'].includes(field.kind))
   const chosen = (all ? targets.value : [selectedTarget.value!]).map((target) => ({
     ...target, protocols: [...target.protocols], credentials: target.credentials.map((credential) => ({ ...credential })),
   }))
-  const requestRows = chosen.map((target) => {
-    const targetValues = { ...values }
-    if (all && hasCredential) targetValues.keyId = target.credentials[0]!.id
-    return createRow(target, targetValues)
-  })
   const controller = new AbortController()
   runController = controller
   running.value = true
@@ -266,8 +263,21 @@ async function run() {
       notifyUnavailable()
       throw new Error('插件已停用、生效版本已改变或入口已失效，请重新打开诊断入口。')
     }
-    state.value = currentState
-    rows.value = requestRows
+    const latestDefaults = pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}, true)
+    for (const { key: fieldKey } of inherited) values[fieldKey] = latestDefaults[fieldKey] ?? null
+    if (!state.value || currentState.revision >= state.value.revision) {
+      state.value = currentState
+      for (const { key: fieldKey } of inherited) {
+        if (!editedFields.has(fieldKey)) form[fieldKey] = values[fieldKey]!
+      }
+    }
+    const inputError = pluginFormError(fields.value, values)
+    if (inputError) throw new Error(inputError)
+    rows.value = chosen.map((target) => {
+      const targetValues = { ...values }
+      if (all && hasCredential) targetValues.keyId = target.credentials[0]!.id
+      return createRow(target, targetValues)
+    })
     // 使用响应式代理更新批量进度，而不是修改赋值前的原始对象。
     const queue = rows.value.filter((row) => !row.skipped)
     workbench.value?.showResults()

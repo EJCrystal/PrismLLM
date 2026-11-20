@@ -299,7 +299,12 @@ function entry(value: unknown): PluginUiEntry {
 function ui(value: unknown): PluginUiDescriptor {
   const data = record(value, UI_KEYS)
   requireContract(integer(data.schemaVersion, 1, Number.MAX_SAFE_INTEGER, 1) === 1, 'UI 版本')
-  const entries = unique(array(data.entries, 32, true).map(entry), item => item.id)
+  return boundedUi(array(data.entries, 32, true).map(entry))
+}
+
+function boundedUi(entries: PluginUiEntry[]): PluginUiDescriptor {
+  requireContract(entries.length <= 32, '列表')
+  unique(entries, item => item.id)
   const schemas = new Map<string, string>()
   for (const item of entries) {
     for (const context of item.contexts) {
@@ -357,7 +362,7 @@ function inertData(value: unknown, depth = 0, budget: MetadataBudget = { items: 
     metadataBytes(budget, value === null ? 4 : value ? 4 : 5)
     return value
   }
-  if (typeof value === 'string') return inertString(text(value, MAX_METADATA_BYTES), budget)
+  if (typeof value === 'string') return inertString(value, budget)
   if (typeof value === 'number') {
     requireContract(Number.isFinite(value), '数值')
     metadataBytes(budget, JSON.stringify(value).length)
@@ -433,7 +438,7 @@ export function parsePluginCatalog(value: unknown): PluginCatalogItem[] {
   return unique(array(value, MAX_PACKAGES).map(parsePluginCatalogItem), item => `${item.manifest.id}\u0000${item.manifest.version}`)
 }
 
-export function parsePluginRuntimeState(value: unknown): PluginRuntimeState {
+export function parsePluginRuntimeState(value: unknown, expectedId?: string): PluginRuntimeState {
   const data = record(value, [
     'id', 'displayName', 'description', 'source', 'installed', 'installedVersion', 'activeVersion',
     'desiredEnabled', 'admissionEnabled', 'requiresRestart', 'status', 'loadError', 'permissions',
@@ -446,8 +451,10 @@ export function parsePluginRuntimeState(value: unknown): PluginRuntimeState {
   const activeVersion = data.activeVersion == null ? null : version(data.activeVersion)
   requireContract(!installed || installedVersion !== null, '安装版本')
   requireContract(!admissionEnabled || (installed && desiredEnabled && activeVersion !== null && data.activeUi != null), '执行准入')
+  const parsedId = id(data.id)
+  if (expectedId !== undefined) requireContract(parsedId === expectedId, '响应身份')
   return {
-    id: id(data.id), revision: integer(data.revision, 0, Number.MAX_SAFE_INTEGER, 0), displayName: text(data.displayName, 200, true), description: text(data.description, 4_000),
+    id: parsedId, revision: integer(data.revision, 0, Number.MAX_SAFE_INTEGER, 0), displayName: text(data.displayName, 200, true), description: text(data.description, 4_000),
     source: text(data.source, 4_000, true), installed, installedVersion, activeVersion, desiredEnabled, admissionEnabled,
     requiresRestart: boolean(data.requiresRestart), status: status(data.status), loadError: nullableText(data.loadError, 4_000),
     permissions: strings(data.permissions, 2, 128, true), approvedPermissions: strings(data.approvedPermissions, 2, 128, true),
@@ -460,14 +467,23 @@ export function parsePluginRuntimeState(value: unknown): PluginRuntimeState {
 }
 
 export function parsePlugins(value: unknown): PluginRuntimeState[] {
-  return unique(array(value, MAX_PACKAGES).map(parsePluginRuntimeState), item => item.id)
+  return unique(array(value, MAX_PACKAGES).map(item => parsePluginRuntimeState(item)), item => item.id)
 }
 
 export function parsePluginContributions(value: unknown): PluginUiContribution[] {
-  return unique(array(value, MAX_PACKAGES * 32).map(item => {
+  const parsed = unique(array(value, MAX_PACKAGES * 32).map(item => {
     const data = record(item, ['pluginId', 'activeVersion', 'entry'])
     return { pluginId: id(data.pluginId), activeVersion: version(data.activeVersion), entry: entry(data.entry) }
   }), item => `${item.pluginId}\u0000${item.activeVersion}\u0000${item.entry.id}`)
+  const groups = new Map<string, PluginUiEntry[]>()
+  for (const item of parsed) {
+    const key = `${item.pluginId}\u0000${item.activeVersion}`
+    const entries = groups.get(key) ?? []
+    entries.push(item.entry)
+    groups.set(key, entries)
+  }
+  for (const entries of groups.values()) boundedUi(entries)
+  return parsed
 }
 
 function usage(value: unknown): ChannelModelTestUsage | null {

@@ -35,7 +35,6 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -549,18 +548,23 @@ class OAuthTokenService(
             // Shutdown is the sole boundary at which in-memory retries stop. This is not a durable
             // queue: process termination or a persistently unavailable database can lose a result.
             stopPersistenceRetries = true
-            refreshSupervisor.cancel()
+            snapshot.forEach { it.cancel() }
             val completed = withTimeoutOrNull(saturatedAdd(config.requestTimeoutMs, DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS + 1_000)) {
                 snapshot.forEach { it.join() }
                 true
             } == true
             if (!completed) logger.warn("OAuth refresh shutdown still has an in-flight provider or JDBC operation")
         }
-        recoverPendingResults(timeoutMs.coerceAtLeast(1), shutdown = true)
-        val unsaved = synchronized(refreshLifecycleLock) { pendingRefreshes.size }
+        withTimeoutOrNull(timeoutMs) {
+            recoverPendingResults(timeoutMs, shutdown = true)
+        }
+        val (unsaved, inFlight) = synchronized(refreshLifecycleLock) {
+            pendingRefreshes.size to refreshTasks.values.any { !it.work.isCompleted }
+        }
         if (unsaved != 0) logger.warn("OAuth shutdown retains {} unsaved encrypted rotation results", unsaved)
-        refreshSupervisor.cancel()
-        return drained && unsaved == 0
+        val complete = !inFlight && unsaved == 0
+        if (complete) refreshSupervisor.cancel()
+        return drained && complete
     }
 
     override fun close() {
@@ -744,30 +748,28 @@ class OAuthTokenService(
         }
     }
 
-    private suspend fun recoverPendingResults(timeoutMs: Long, shutdown: Boolean = false) = supervisorScope {
+    private suspend fun recoverPendingResults(timeoutMs: Long, shutdown: Boolean = false) {
         val retained = synchronized(refreshLifecycleLock) {
             pendingRefreshes.filterKeys { id -> refreshTasks[id]?.work?.isCompleted != false }.toList()
         }
-        val budget = DiagnosticPreparationDeadline.start(timeoutMs)
-        val scope = if (shutdown) this else refreshScope
+        val recoveryBudget = DiagnosticPreparationDeadline.start(timeoutMs)
         for ((index, entry) in retained.withIndex()) {
             val remaining = try {
-                budget.remainingMillis(currentCoroutineContext().job)
+                recoveryBudget.remainingMillis(currentCoroutineContext().job)
             } catch (cause: Exception) {
                 if (!DiagnosticPreparationDeadline.isTimeout(cause)) throw cause
                 break
             }
-            val accountBudget = DiagnosticPreparationDeadline.start(
-                (if (shutdown) remaining / (retained.size - index) else remaining)
-                    .coerceIn(1, DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS),
-            )
+            val accountTimeoutMs = (if (shutdown) remaining / (retained.size - index) else remaining)
+                .coerceIn(1, DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS)
+            val accountBudget = DiagnosticPreparationDeadline.start(accountTimeoutMs)
             val (id, pending) = entry
             val task = synchronized(refreshLifecycleLock) {
                 if (!shutdown && (refreshAdmissionClosed ||
-                        (pendingRefreshes.keys + refreshTasks.keys).size < MAX_PENDING_REFRESH_RESULTS)) return@supervisorScope
+                        (pendingRefreshes.keys + refreshTasks.keys).size < MAX_PENDING_REFRESH_RESULTS)) return
                 if (pendingRefreshes[id] !== pending || refreshTasks[id]?.work?.isCompleted == false ||
                     refreshTasks.size >= MAX_DIAGNOSTIC_REFRESH_TASKS) null
-                else createRefreshTask(id, scope) { _, mutex ->
+                else createRefreshTask(id, refreshScope) { _, mutex ->
                     mutex.withLock {
                         withContext(NonCancellable) {
                             try {
@@ -794,7 +796,11 @@ class OAuthTokenService(
                 }
             } ?: continue
             try {
-                task.work.await()
+                if (shutdown) {
+                    withTimeoutOrNull(accountTimeoutMs) { task.work.await() }
+                } else {
+                    task.work.await()
+                }
             } catch (cause: CancellationException) {
                 currentCoroutineContext().ensureActive()
             } catch (_: Exception) {

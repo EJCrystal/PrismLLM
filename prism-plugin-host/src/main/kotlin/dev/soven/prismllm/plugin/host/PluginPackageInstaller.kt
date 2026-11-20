@@ -38,7 +38,6 @@ class PluginPackageInstaller internal constructor(
         val manifest = validated.item.manifest
         PluginValidation.identity(manifest.id, manifest.version)
         val pluginRoot = directory.resolve(manifest.id)
-        ensureDirectory(directory)
         ensureDirectory(pluginRoot)
         val destination = pluginRoot.resolve(manifest.version)
         PluginPackages.ensureNoLinks(destination)
@@ -117,13 +116,9 @@ class PluginPackageInstaller internal constructor(
 
     private fun ensureDirectory(path: Path) {
         PluginPackages.ensureNoLinks(path)
-        if (!Files.exists(path, NOFOLLOW_LINKS)) {
-            path.parent?.takeUnless { Files.exists(it, NOFOLLOW_LINKS) }?.let { ensureDirectory(it) }
-        }
         Files.createDirectories(path)
         PluginValidation.requireData(Files.isDirectory(path, NOFOLLOW_LINKS), "Managed plugin path must be a directory")
-        // Persist newly created managed-directory ancestors too, including on a concurrent replay.
-        path.parent?.let(syncDirectory)
+        generateSequence(path.parent) { it.parent }.toList().asReversed().forEach(syncDirectory)
     }
 
     private fun write(path: Path, bytes: ByteArray) {

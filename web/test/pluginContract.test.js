@@ -595,6 +595,39 @@ describe('plugin lifecycle and admitted UI contracts', () => {
     contribution.entry.action.resource = 'https://untrusted.example.test/'
     assert.throws(() => parsePluginContributions([contribution]), invalidResponse)
   })
+
+  it('bounds the complete normalized descriptor identically in runtime and contribution responses', () => {
+    const entries = Array.from({ length: 32 }, (_, entryIndex) => ({
+      id: 'entry' + entryIndex, label: 'Entry', placement: 'channel-tests', contexts: ['channel'],
+      action: {
+        id: 'action' + entryIndex, label: 'Action', fields: [
+          { key: 'model', label: 'Model', kind: 'model', required: true },
+          { key: 'protocol', label: 'Protocol', kind: 'protocol', required: true },
+          ...Array.from({ length: 30 }, (_, fieldIndex) => ({ key: 'field' + fieldIndex, label: 'x'.repeat(200), kind: 'text' })),
+        ],
+      },
+    }))
+    const descriptor = { schemaVersion: 1, entries }
+    const rawBytes = new TextEncoder().encode(JSON.stringify(descriptor)).length
+    assert.ok(rawBytes < 256 * 1024, 'The wire descriptor remains below the host file limit: ' + rawBytes)
+    const contributions = entries.map(entry => ({ pluginId: SECOND_PLUGIN, activeVersion: '1.0.0', entry }))
+    assert.throws(() => parsePluginContributions(contributions), invalidResponse)
+    assert.throws(() => parsePluginRuntimeState(runtime({
+      installed: true, installedVersion: '1.0.0', activeVersion: '1.0.0',
+      desiredEnabled: true, admissionEnabled: true, status: 'active', activeUi: descriptor,
+    })), invalidResponse)
+    const parts = contributions.map((item, index) => index < 16 ? item : { ...item, pluginId: 'another.plugin' })
+    assert.equal(parsePluginContributions(parts).length, entries.length)
+  })
+
+  it('ignores bounded incompatible permission metadata without allowing NUL in display text', () => {
+    const raw = catalog(SECOND_PLUGIN)
+    raw.compatible = false
+    raw.manifest.permissions = ['unsupported\u0000permission']
+    assert.deepEqual(parsePluginCatalogItem(raw).manifest.permissions, [])
+    raw.manifest.displayName = 'invalid\u0000name'
+    assert.throws(() => parsePluginCatalogItem(raw), invalidResponse)
+  })
 })
 
 describe('bounded host probe executions and outcome conversion', () => {
@@ -757,6 +790,7 @@ describe('generic plugin API paths and existing session semantics', () => {
   it('uses all ten fixed endpoints, exact payloads, cookies/CSRF and signal-only read options', async t => {
     const context = { kind: 'channel', id: 'channel/a +?#& 中文' }
     const unsafeLookingId = 'plugin/a +?#& 中文'
+    const lifecycleId = SECOND_PLUGIN
     const encodedId = encodeURIComponent(unsafeLookingId)
     const signal = new AbortController().signal
     const csrf = `csrf ${globalThis.crypto.randomUUID()}/+&=`
@@ -769,10 +803,10 @@ describe('generic plugin API paths and existing session semantics', () => {
     hostExecution.target.credentialId = invoke.values.keyId
     const contribution = { pluginId: SECOND_PLUGIN, activeVersion: '1.0.0', entry: catalog(SECOND_PLUGIN).ui.entries[0] }
     const responses = [
-      [catalog(SECOND_PLUGIN)], [runtime()], runtime(), [contribution],
-      runtime({ installed: true, installedVersion: '1.0.0', status: 'disabled' }),
-      runtime({ installed: true, installedVersion: '1.0.0', desiredEnabled: true, requiresRestart: true, status: 'pending-restart' }),
-      runtime({ configuration: configure.values }), runtime({ installedVersion: '1.0.0', configuration: configure.values }),
+      [catalog(SECOND_PLUGIN)], [runtime()], runtime({ id: lifecycleId }), [contribution],
+      runtime({ id: lifecycleId, installed: true, installedVersion: '1.0.0', status: 'disabled' }),
+      runtime({ id: lifecycleId, installed: true, installedVersion: '1.0.0', desiredEnabled: true, requiresRestart: true, status: 'pending-restart' }),
+      runtime({ id: lifecycleId, configuration: configure.values }), runtime({ id: lifecycleId, installedVersion: '1.0.0', configuration: configure.values }),
       [target({ channelId: context.id })], hostExecution,
     ]
     const calls = []
@@ -783,12 +817,12 @@ describe('generic plugin API paths and existing session semantics', () => {
     const readOptions = { signal, method: 'DELETE', body: 'ignored', headers: { 'X-Unsafe': 'ignored' } }
     assert.equal((await api.listPluginCatalog(readOptions))[0].manifest.id, SECOND_PLUGIN)
     await api.listPlugins(readOptions)
-    await api.getPlugin(unsafeLookingId, readOptions)
+    await api.getPlugin(lifecycleId, readOptions)
     await api.getPluginContributions(readOptions)
-    await api.installPlugin(unsafeLookingId, install)
-    await api.setPluginEnabled(unsafeLookingId, enable)
-    await api.configurePlugin(unsafeLookingId, configure)
-    const tombstone = await api.uninstallPlugin(unsafeLookingId)
+    await api.installPlugin(lifecycleId, install)
+    await api.setPluginEnabled(lifecycleId, enable)
+    await api.configurePlugin(lifecycleId, configure)
+    const tombstone = await api.uninstallPlugin(lifecycleId)
     assert.equal(tombstone.installed, false)
     assert.equal(tombstone.installedVersion, '1.0.0')
     assert.deepEqual(tombstone.configuration, configure.values)
@@ -796,9 +830,9 @@ describe('generic plugin API paths and existing session semantics', () => {
     await assert.rejects(api.invokePlugin(unsafeLookingId, invoke, { ...readOptions, method: 'DELETE' }), invalidResponse)
     assert.deepEqual(calls.map(call => [call.method, call.url]), [
       ['GET', '/admin/api/plugin-catalog'], ['GET', '/admin/api/plugins'],
-      ['GET', `/admin/api/plugins/${encodedId}`], ['GET', '/admin/api/plugin-ui-contributions'],
-      ['PUT', `/admin/api/plugins/${encodedId}/installation`], ['PUT', `/admin/api/plugins/${encodedId}/enabled`],
-      ['PUT', `/admin/api/plugins/${encodedId}/configuration`], ['DELETE', `/admin/api/plugins/${encodedId}`],
+      ['GET', '/admin/api/plugins/' + lifecycleId], ['GET', '/admin/api/plugin-ui-contributions'],
+      ['PUT', '/admin/api/plugins/' + lifecycleId + '/installation'], ['PUT', '/admin/api/plugins/' + lifecycleId + '/enabled'],
+      ['PUT', '/admin/api/plugins/' + lifecycleId + '/configuration'], ['DELETE', '/admin/api/plugins/' + lifecycleId],
       ['GET', `/admin/api/plugins/${encodedId}/resources/model-test-targets?${new URLSearchParams({ contextKind: context.kind, contextId: context.id })}`],
       ['POST', `/admin/api/plugins/${encodedId}/invocations`],
     ])
@@ -822,6 +856,22 @@ describe('generic plugin API paths and existing session semantics', () => {
     assert.deepEqual(JSON.parse(calls[9].body), invoke)
     assert.equal(calls[9].signal, signal)
     assert.equal(responses.length, 0)
+  })
+
+  it('rejects a valid state response bound to a different requested plugin ID', async t => {
+    replaceGlobals(t, {
+      document: { cookie: '' },
+      fetch: async () => json(runtime({ id: 'another.plugin' })),
+    })
+    const install = { version: '1.0.0', approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION], expectedSha256: 'a'.repeat(64) }
+    const operations = [
+      () => api.getPlugin(SECOND_PLUGIN),
+      () => api.installPlugin(SECOND_PLUGIN, install),
+      () => api.setPluginEnabled(SECOND_PLUGIN, { enabled: false }),
+      () => api.configurePlugin(SECOND_PLUGIN, { values: {}, expectedRevision: 0, installedVersion: '1.0.0' }),
+      () => api.uninstallPlugin(SECOND_PLUGIN),
+    ]
+    for (const operation of operations) await assert.rejects(operation(), invalidResponse)
   })
 
   it('keeps legal plugin ui detail and contribution requests distinct', async t => {

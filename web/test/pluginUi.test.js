@@ -640,6 +640,21 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
   })
 
   for (const edited of [false, true]) {
+    it(`uses the configuration confirmed by the run preflight while ${edited ? 'preserving explicit edits' : 'refreshing untouched defaults'}`, async () => {
+      const fixture = makePluginFixture()
+      const entry = await hostFor(fixture)
+      if (edited) await change(field(entry.container, '本次提示词'), 'explicit request value')
+      const updated = { defaultPrompt: 'default changed by another session', threshold: 0.9 }
+      mock.getState = id => Promise.resolve(setState(id, { activeConfiguration: updated, configuration: updated }))
+      await entry.state.run()
+      await settle()
+      assert.equal(calls.invocations.length, 1)
+      assert.equal(calls.invocations[0].payload.values.prompt, edited ? 'explicit request value' : updated.defaultPrompt)
+      mock.getState = undefined
+    })
+  }
+
+  for (const edited of [false, true]) {
     it(`refreshes untouched diagnostic defaults while ${edited ? 'retaining explicit zero, false and prompt edits' : 'following all active defaults'}`, async () => {
       const fixture = makePluginFixture({ extraFields: [
         makeField('threshold', '本次阈值', 'number', { defaultValue: 0.5, min: 0, max: 1 }),
@@ -1513,7 +1528,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     button(container, 'toggle').click(); await waitFor(() => stateReads === 2 && targetReads === 2)
     assert.equal(entry.state.loading.value, false)
     assert.equal(entry.state.form.model, 'test-model')
-    entry.state.form.prompt = 'custom prompt from the old activation context'
+    await change(field(container, '本次提示词'), 'custom prompt from the old activation context')
     const pendingInvocation = deferred()
     let invocationCall
     mock.invoke = call => { invocationCall = call; return pendingInvocation.promise }
@@ -2054,8 +2069,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     const fixture = makePluginFixture()
     mock.targets = [makeTarget({ credentials: [{ id: 'original-key', name: 'Original credential', priority: 1 }] })]
     const entry = await hostFor(fixture)
-    entry.state.form.prompt = 'original prompt'
-    entry.state.form.label = 'original label'
+    await change(field(entry.container, '本次提示词'), 'original prompt')
+    await change(field(entry.container, '观察标签'), 'original label')
     const preflight = deferred()
     mock.getState = () => preflight.promise
     const run = entry.state.run()
@@ -2098,7 +2113,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(toasts.length, 0)
     // A fresh run may finish while earlier remote requests ignore their abort signal.
     entry.state.form.scope = 'single'
-    entry.state.form.prompt = 'fresh after stop'
+    await change(field(entry.container, '本次提示词'), 'fresh after stop')
     mock.invoke = undefined
     await entry.state.run(); await settle()
     assert.equal(calls.invocations.length, 3)

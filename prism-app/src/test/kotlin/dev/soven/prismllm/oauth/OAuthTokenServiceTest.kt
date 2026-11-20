@@ -29,11 +29,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.BeforeEach
@@ -321,7 +323,7 @@ class OAuthTokenServiceTest {
     }
 
     @Test
-    fun shutdownRetainsAndSavesAnExchangeThatReturnsAfterSupervisorCancellation() = runBlocking {
+    fun shutdownRetainsAndSavesAnExchangeThatReturnsAfterTaskCancellation() = runBlocking {
         val accountId = createAccount("shutdown-handoff", accountEmail = email("shutdown-handoff"))
         val entered = CompletableDeferred<Unit>()
         val response = CompletableDeferred<OAuthTokenResponse>()
@@ -337,8 +339,9 @@ class OAuthTokenServiceTest {
             withTimeout(5_000) { entered.await() }
             val supervisor = OAuthTokenService::class.java.getDeclaredField("refreshSupervisor").apply { isAccessible = true }
                 .get(service) as kotlinx.coroutines.Job
+            val work = supervisor.children.single()
             val drain = async { service.drainRefreshes(timeoutMs = 1) }
-            withTimeout(5_000) { while (!supervisor.isCancelled) delay(1) }
+            withTimeout(5_000) { while (!work.isCancelled) delay(1) }
             response.complete(OAuthTokenResponse("shutdown-rotated-access", "shutdown-rotated-refresh"))
             assertFalse(withTimeout(7_000) { drain.await() })
             withTimeout(5_000) { request.await() }
@@ -1011,7 +1014,8 @@ class OAuthTokenServiceTest {
                         assertEquals(setOf(id), synchronized(monitor) { tasks.keys.toSet() })
                         assertEquals(setOf(id), synchronized(monitor) { locks.keys.toSet() })
                         withTimeout(5_000) { drain.cancelAndJoin() }
-                        assertTrue(synchronized(monitor) { tasks.isEmpty() && locks.isEmpty() })
+                        assertEquals(setOf(id), synchronized(monitor) { tasks.keys.toSet() })
+                        assertEquals(setOf(id), synchronized(monitor) { locks.keys.toSet() })
                         assertTrue(synchronized(monitor) { retained[id] === pending })
                         assertFalse(accounts.find(id)!!.hasAccessToken)
                         assertEquals(1, calls.get())
@@ -1028,6 +1032,56 @@ class OAuthTokenServiceTest {
         val context = assertNotNull(accounts.loadRefreshContext(id))
         assertEquals("rotated-cancelled-retained-save", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
         assertEquals(1, calls.get())
+    }
+
+    @Test
+    fun shutdownWaitBudgetDoesNotReleaseAStalledRetainedWrite() = runBlocking {
+        val id = createAccount("bounded-retained-save", accountEmail = email("bounded-retained-save"))
+        val service = service()
+        val entered = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<Unit>()
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }
+            .get(service)
+        val pending = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+            .get(service) as MutableMap<String, Any>
+        val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+            .get(service) as Map<*, *>
+        val locks = OAuthTokenService::class.java.getDeclaredField("accountLocks").apply { isAccessible = true }
+            .get(service) as Map<*, *>
+        val original = assertNotNull(accounts.find(id))
+        synchronized(monitor) { pending[id] = retainedRefreshResult(original, "access-retained", "rotated-retained") }
+        mockkObject(DiagnosticPreparationDeadline)
+        coEvery {
+            DiagnosticPreparationDeadline.withinSynchronousAndDrain<Any>(any<DiagnosticPreparationDeadline.Budget>(), any())
+        } coAnswers {
+            withContext(NonCancellable) {
+                entered.complete(Unit)
+                release.await()
+            }
+            val operation = secondArg<suspend () -> Any>()
+            operation()
+        }
+
+        try {
+            val drain = async { service.drainRefreshes(timeoutMs = 200) }
+            withTimeout(5_000) { entered.await() }
+            assertFalse(withTimeout(2_000) { drain.await() })
+            assertEquals(setOf(id), synchronized(monitor) { tasks.keys.toSet() })
+            assertEquals(setOf(id), synchronized(monitor) { locks.keys.toSet() })
+        } finally {
+            release.complete(Unit)
+            try {
+                withTimeout(5_000) { awaitRefreshTasksEnded(service) }
+            } finally {
+                unmockkObject(DiagnosticPreparationDeadline)
+            }
+            assertTrue(withTimeout(5_000) { service.drainRefreshes() })
+        }
+
+        val saved = assertNotNull(accounts.find(id))
+        assertEquals("access-retained", cipher.decrypt(saved.accessTokenCiphertext!!, saved.accessTokenNonce!!))
+        val context = assertNotNull(accounts.loadRefreshContext(id))
+        assertEquals("rotated-retained", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
     }
 
     @Test
@@ -1791,6 +1845,9 @@ class OAuthTokenServiceTest {
                     statement.setString(1, keyId)
                     statement.executeQuery().use { assertTrue(it.next()) }
                 }
+                val blockerPid = lock.createStatement().use { statement ->
+                    statement.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) }
+                }
                 val waiter = async {
                     runCatching {
                         service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(1_500))
@@ -1800,6 +1857,7 @@ class OAuthTokenServiceTest {
                 val failure = waiter.await().exceptionOrNull()
                 assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
                 finishExchange.complete(Unit)
+                awaitBlockedAccountSave(blockerPid)
             } finally {
                 finishExchange.complete(Unit)
                 lock.rollback()
@@ -2087,20 +2145,26 @@ class OAuthTokenServiceTest {
         val field = OAuthTokenService::class.java.getDeclaredField("refreshPermits").apply { isAccessible = true }
         val permits = field.get(service) as kotlinx.coroutines.sync.Semaphore
         repeat(4) { permits.acquire() }
+        var heldTestPermits = 4
+        fun releaseTestPermits() {
+            repeat(heldTestPermits) { permits.release() }
+            heldTestPermits = 0
+        }
         val ordinarySnapshot = accounts.find(accountId)!!
         val forced = async(start = CoroutineStart.UNDISPATCHED) { service.refreshNow(accountId) }
         val ordinary = async(start = CoroutineStart.UNDISPATCHED) { runCatching { service.accessToken(accountId) } }
         try {
-            awaitExchangePermitWait(service, accountId)
+            awaitExchangePermitWait(service, accountId, waiterCount = 2)
             forced.cancelAndJoin()
-            repeat(4) { permits.release() }
+            releaseTestPermits()
             val failure = withTimeout(5_000) { ordinary.await() }.exceptionOrNull()
             assertEquals(OAuthUnavailableReason.REAUTH_REQUIRED, assertIs<OAuthTokenUnavailableException>(failure).reason)
             assertEquals(0, providerCalls.get())
             assertEquals(ordinarySnapshot.refreshTokenCiphertext, accounts.find(accountId)!!.refreshTokenCiphertext)
         } finally {
-            while (permits.availablePermits < 4) permits.release()
             forced.cancelAndJoin()
+            ordinary.cancelAndJoin()
+            releaseTestPermits()
             assertTrue(service.drainRefreshes())
         }
     }
@@ -2119,6 +2183,11 @@ class OAuthTokenServiceTest {
         val field = OAuthTokenService::class.java.getDeclaredField("refreshPermits").apply { isAccessible = true }
         val permits = field.get(service) as kotlinx.coroutines.sync.Semaphore
         repeat(4) { permits.acquire() }
+        var heldTestPermits = 4
+        fun releaseTestPermits() {
+            repeat(heldTestPermits) { permits.release() }
+            heldTestPermits = 0
+        }
         val original = accounts.find(accountId)!!
         val caller = async(start = CoroutineStart.UNDISPATCHED) {
             runCatching { service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(10_000)) }
@@ -2126,14 +2195,14 @@ class OAuthTokenServiceTest {
         try {
             awaitExchangePermitWait(service, accountId)
             accounts.updateSettings(accountId, proxyUrl = "http://127.0.0.1:8181")
-            repeat(4) { permits.release() }
+            releaseTestPermits()
             val failure = withTimeout(5_000) { caller.await() }.exceptionOrNull()
             assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(failure).errorCode)
             assertEquals(0, providerCalls.get(), "the original egress must not be used after permit waiting")
             assertEquals("http://127.0.0.1:8181", accounts.find(accountId)!!.proxyUrl)
         } finally {
-            while (permits.availablePermits < 4) permits.release()
             caller.cancelAndJoin()
+            releaseTestPermits()
             assertTrue(service.drainRefreshes())
         }
     }
@@ -2507,13 +2576,14 @@ class OAuthTokenServiceTest {
         while (synchronized(monitor) { (tasks.get(service) as Map<*, *>).isNotEmpty() }) delay(1)
     }
 
-    private suspend fun awaitExchangePermitWait(service: OAuthTokenService, accountId: String) = withTimeout(5_000) {
+    private suspend fun awaitExchangePermitWait(service: OAuthTokenService, accountId: String, waiterCount: Int = 1) = withTimeout(5_000) {
         val tasksField = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
         val monitorField = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }
         while (true) {
             val waiting = synchronized(monitorField.get(service)) {
                 val task = (tasksField.get(service) as Map<*, *>)[accountId]
-                task != null && task.javaClass.getDeclaredField("waitingForExchangePermit").apply { isAccessible = true }.getBoolean(task)
+                task != null && task.javaClass.getDeclaredField("waitingForExchangePermit").apply { isAccessible = true }.getBoolean(task) &&
+                    (task.javaClass.getDeclaredField("waiters").apply { isAccessible = true }.get(task) as List<*>).size >= waiterCount
             }
             if (waiting) return@withTimeout
             delay(1)

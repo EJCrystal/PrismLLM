@@ -604,11 +604,11 @@ internal class PluginCatalogTest : PluginTestSupport() {
         val synced = mutableListOf<Pair<Path, Boolean>>()
         val installer = PluginPackageInstaller(managed) { path ->
             PluginPackageInstaller.forceDirectory(path)
-            if (path.fileName.toString().endsWith(".staging") || path == destination) {
+            if (path.fileName?.toString()?.endsWith(".staging") == true || path == destination) {
                 assertTrue(Files.readAllBytes(path.resolve("plugin.jar")).contentEquals(packaged.jar))
                 assertTrue(Files.readAllBytes(path.resolve("package.prismplugin")).contentEquals(packaged.archive))
             }
-            synced.add(path to Files.exists(destination, NOFOLLOW_LINKS))
+            if (path.startsWith(root)) synced.add(path to Files.exists(destination, NOFOLLOW_LINKS))
         }
         installer.stage(selected)
         assertEquals(listOf(root, managed.parent, managed), synced.take(3).map { it.first })
@@ -620,7 +620,7 @@ internal class PluginCatalogTest : PluginTestSupport() {
 
         synced.clear()
         installer.stage(selected)
-        assertEquals(listOf(managed.parent, managed, destination, pluginRoot), synced.map { it.first })
+        assertEquals(listOf(root, managed.parent, managed, destination, pluginRoot), synced.map { it.first })
         assertTrue(synced.all { it.second })
         assertEquals(0, packaged.count("initialized"))
     }
@@ -637,7 +637,7 @@ internal class PluginCatalogTest : PluginTestSupport() {
             val destination = pluginRoot.resolve("1.0.0")
             var calls = 0
             val installer = PluginPackageInstaller(managed) { path ->
-                if (calls++ == failedSync) throw IOException("injected directory sync failure")
+                if (path.startsWith(root) && calls++ == failedSync) throw IOException("injected directory sync failure")
                 PluginPackageInstaller.forceDirectory(path)
             }
             val error = failure("PLUGIN_STORAGE_UNREADABLE") { installer.stage(selected) }
@@ -649,6 +649,34 @@ internal class PluginCatalogTest : PluginTestSupport() {
             val replay = PluginPackageInstaller(managed).stage(selected)
             assertTrue(Files.readAllBytes(replay.jarPath).contentEquals(packaged.jar))
         }
+    }
+
+    @Test
+    fun `retry syncs newly created managed directory ancestors`() = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val selected = PluginCatalog(catalogDirectory).select(packaged.manifest.id, "1.0.0")
+        val managed = root.resolve("nested-parent/state")
+        val parent = root.resolve("nested-parent")
+        var failed = false
+        val first = PluginPackageInstaller(managed) { path ->
+            if (path == root && !failed) {
+                failed = true
+                throw IOException("injected ancestor sync failure")
+            }
+            PluginPackageInstaller.forceDirectory(path)
+        }
+        failure("PLUGIN_STORAGE_UNREADABLE") { first.stage(selected) }
+        assertTrue(failed)
+        assertTrue(Files.isDirectory(parent))
+
+        val synced = mutableSetOf<Path>()
+        PluginPackageInstaller(managed) { path ->
+            PluginPackageInstaller.forceDirectory(path)
+            synced.add(path)
+        }.stage(selected)
+        assertTrue(parent in synced, "The parent of the newly created ancestor must be synced on retry")
+        assertTrue(root in synced, "The parent directory entry of the nested parent must be synced on retry")
     }
 
     @Test
