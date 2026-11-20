@@ -789,12 +789,14 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 assertEquals(account.id, directExecution.target.credentialId)
                 assertTrue(directExecution.outcome.success)
                 assertEquals("127.0.0.1", probes.last().host)
+                assertEquals("Bearer " + accessToken(provider), probes.last().authorization)
                 assertFalse("project" in probes.last().body, "Channel mode must not acquire a provider envelope")
                 assertProbeBody(probes.last(), protocol, "direct account probe")
                 val directLegacy = client.legacyProbe(session, "/channels/${direct.id}/model-test", model, protocol,
                     account.id, "direct account probe").objectPayload()
                 assertLegacySuccess(directLegacy, model, protocol, account.id, "direct account probe")
                 assertEquals("127.0.0.1", probes.last().host)
+                assertEquals("Bearer " + accessToken(provider), probes.last().authorization)
 
                 val resourceResponse = client.api(HttpMethod.Get,
                     "/admin/api/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=oauth-account&contextId=${account.id}", session)
@@ -1104,6 +1106,14 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                                         }
                                     }
                                     assertPreparationTimeout(withTimeout(7_000) { pending.await() }, provider)
+                                    withTimeout(2_000) {
+                                        awaitCondition("timed out account query stopped waiting before the lock is released", timeoutMs = 1_500) {
+                                            observation.executeQuery().use { rows ->
+                                                check(rows.next())
+                                                !rows.getBoolean(1)
+                                            }
+                                        }
+                                    }
                                 } finally {
                                     lock.rollback()
                                 }

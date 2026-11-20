@@ -521,10 +521,22 @@ class ModelConnectivityTestTest {
         }
     }
 
+    @Test
+    fun excessive_override_token_limits_are_capped_on_actual_requests_for_every_entry_point() = runBlocking {
+        for (protocol in GatewayProtocol.entries) {
+            assertIsolatedDiagnosticRequest(captureDiagnosticRequest(protocol, tokenOverride = 4_096), protocol, null, 128)
+        }
+        for ((provider, protocol) in listOf(OAuthProvider.CHATGPT to GatewayProtocol.RESPONSES,
+            OAuthProvider.ANTIGRAVITY to GatewayProtocol.GEMINI)) {
+            assertIsolatedDiagnosticRequest(captureDiagnosticRequest(protocol, provider, 4_096), protocol, provider, 128)
+        }
+    }
+
     private fun assertIsolatedDiagnosticRequest(
         captured: CapturedDiagnosticRequest,
         protocol: GatewayProtocol,
         provider: OAuthProvider?,
+        expectedTokenLimit: Int = if (protocol == GatewayProtocol.GEMINI) 3 else 128,
     ) {
         val payload = if (provider == OAuthProvider.ANTIGRAVITY) captured.body["request"]!!.jsonObject else captured.body
         val prompt = when (protocol) {
@@ -551,7 +563,7 @@ class ModelConnectivityTestTest {
             GatewayProtocol.MESSAGES -> payload["max_tokens"]?.jsonPrimitive?.int
             GatewayProtocol.GEMINI -> payload["generationConfig"]?.jsonObject?.get("maxOutputTokens")?.jsonPrimitive?.int
         }
-        assertEquals(if (protocol == GatewayProtocol.GEMINI) 3 else 128, tokenLimit,
+        assertEquals(expectedTokenLimit, tokenLimit,
             "Diagnostic limits must cap at 128 while preserving stricter decoding overrides")
         assertEquals("Bearer diagnostic-token", captured.authorization)
         assertEquals("kept-channel-header", captured.channelHeader)
@@ -576,6 +588,7 @@ class ModelConnectivityTestTest {
     private suspend fun captureDiagnosticRequest(
         protocol: GatewayProtocol,
         provider: OAuthProvider? = null,
+        tokenOverride: Int? = null,
     ): CapturedDiagnosticRequest {
         val captured = AtomicReference<CapturedDiagnosticRequest>()
         val channelOverrides = UpstreamRequestOverrides(
@@ -584,7 +597,17 @@ class ModelConnectivityTestTest {
             protocols = mapOf(
                 protocol.value to UpstreamProtocolOverrides(
                     headers = mapOf("X-Diagnostic-Protocol" to "kept-protocol-header"),
-                    body = hostileDiagnosticBody(protocol),
+                    body = hostileDiagnosticBody(protocol).let { body ->
+                        if (tokenOverride == null) body
+                        else if (protocol == GatewayProtocol.GEMINI) kotlinx.serialization.json.JsonObject(body +
+                            ("generationConfig" to kotlinx.serialization.json.JsonObject(body["generationConfig"]!!.jsonObject +
+                                ("maxOutputTokens" to JsonPrimitive(tokenOverride)))))
+                        else kotlinx.serialization.json.JsonObject(body + ((when (protocol) {
+                            GatewayProtocol.CHAT_COMPLETIONS -> "max_completion_tokens"
+                            GatewayProtocol.RESPONSES -> "max_output_tokens"
+                            else -> "max_tokens"
+                        }) to JsonPrimitive(tokenOverride)))
+                    },
                 ),
             ),
         )
@@ -1276,16 +1299,28 @@ class ModelConnectivityTestTest {
     @Test
     fun caller_cancellation_interrupts_a_bounded_response_read() = runBlocking {
         val channel = ByteChannel(autoFlush = true)
-        val entered = CompletableDeferred<Unit>()
+        val readStarted = CompletableDeferred<Unit>()
+        val readExited = CompletableDeferred<Unit>()
+        val observed = object : ByteReadChannel by channel {
+            override suspend fun awaitContent(min: Int): Boolean {
+                readStarted.complete(Unit)
+                try {
+                    return channel.awaitContent(min)
+                } finally {
+                    readExited.complete(Unit)
+                }
+            }
+        }
         val pending = async {
             fingerprintDiagnosticTransport("cancelled-read-secret", "", maxResponseChars = 100,
-                requestEntered = entered, responseChannel = channel)
+                responseChannel = observed)
         }
         try {
-            withTimeout(5_000) { entered.await() }
+            withTimeout(5_000) { readStarted.await() }
             pending.cancel(CancellationException("caller stopped waiting"))
-            withTimeout(5_000) { pending.join() }
+            withTimeout(5_000) { readExited.await(); pending.join() }
             assertTrue(pending.isCancelled)
+            assertTrue(channel.isClosedForRead)
         } finally {
             channel.cancel(CancellationException("test cleanup"))
         }
@@ -1728,8 +1763,45 @@ class ModelConnectivityTestTest {
                 assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt(), body.toByteArray().size)
                 for (oauth in listOf(false, true)) {
                     val result = diagnosticTransport(credential, oauth = oauth, responseBody = body)
-                    assertSuccessfulDiagnostic(result, "[REDACTED]", "public-model", usage = null)
+                    assertSuccessfulDiagnostic(result, "[REDACTED]", "[REDACTED]", usage = null)
                 }
+            }
+        }
+    }
+
+    @Test
+    fun repeatedCredentialPrefixesShareOneBudgetAcrossJsonPreviewsAndFingerprintOutput() {
+        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(java.time.Duration.ofSeconds(5)) {
+            runBlocking {
+                val credential = "a".repeat(1_023) + "b"
+                val repeated = "a".repeat(2_048)
+                val bodies = listOf(
+                    kotlinx.serialization.json.buildJsonObject {
+                        repeat(500) { index -> put("field-" + index, JsonPrimitive(repeated)) }
+                        put("tail", JsonPrimitive(credential))
+                    }.toString(),
+                    kotlinx.serialization.json.buildJsonObject {
+                        repeat(500) { index -> put(repeated + index, JsonPrimitive(0)) }
+                        put("tail", JsonPrimitive(credential))
+                    }.toString(),
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("items", kotlinx.serialization.json.buildJsonArray {
+                            repeat(500) { add(JsonPrimitive(repeated)) }
+                            add(JsonPrimitive(credential))
+                        })
+                    }.toString(),
+                )
+                for (body in bodies) {
+                    assertTrue(body.toByteArray().size <= MAX_MODEL_TEST_RESPONSE_BYTES)
+                    for (oauth in listOf(false, true)) {
+                        val result = diagnosticTransport(credential, oauth = oauth, responseBody = body, status = HttpStatusCode.BadGateway)
+                        assertFailedDiagnostic(result, 502, "[REDACTED]")
+                    }
+                }
+                val execution = fingerprintDiagnosticTransport(credential, bodies.first(), maxResponseChars = 100, status = HttpStatusCode.BadGateway)
+                assertEquals("[REDACTED]", execution.safeText("later uninspected output"))
+                assertEquals("[REDACTED]", execution.safeText(credential))
+                assertNull(execution.rawSample)
             }
         }
     }

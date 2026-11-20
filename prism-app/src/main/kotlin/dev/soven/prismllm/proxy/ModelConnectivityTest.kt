@@ -238,6 +238,7 @@ private suspend fun runModelConnectivityTest(
     request: () -> HttpRequestBuilder,
 ): ModelConnectivityExecution {
     val startedAt = System.currentTimeMillis()
+    val redactionBudget = ModelTestRedactionBudget()
     return try {
         withTimeoutOrNull(timeoutMs) {
             val prepared = request()
@@ -275,23 +276,23 @@ private suspend fun runModelConnectivityTest(
                     success = ok && !responsesError,
                     statusCode = status,
                     latencyMs = latencyMs,
-                    responseText = displayText?.let { redactModelTestCredential(it, credential).take(maxResponseChars) },
-                    errorMessage = if (!ok || responsesError) extractModelTestError(json, status, credential) {
+                    responseText = displayText?.let { redactModelTestCredential(it, credential, budget = redactionBudget).take(maxResponseChars) },
+                    errorMessage = if (!ok || responsesError) extractModelTestError(json, status, credential, redactionBudget) {
                         if (ok && incompleteResponse) {
-                            "上游 Responses 尚未成功完成：${redactModelTestCredential(responseState.orEmpty(), credential)}"
+                            "上游 Responses 尚未成功完成：${redactModelTestCredential(responseState.orEmpty(), credential, budget = redactionBudget)}"
                         } else {
-                            redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
+                            redactModelTestErrorPreview(body, parsedBody ?: parsed, credential, redactionBudget)
                         }
                     } else null,
                     usage = if (ok) extractModelTestUsage(protocol, json) else null,
-                    upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential, multiline = false) } else null,
+                    upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential, multiline = false, budget = redactionBudget) } else null,
                 )
                 ModelConnectivityExecution(
                     result = result,
                     rawSample = if (captureRawSample && result.success && (!requireCompleteSample || !isModelTestOutputTruncated(protocol, json))) {
                         displayText?.take(maxResponseChars)
                     } else null,
-                    sanitize = { redactModelTestCredential(it, credential) },
+                    sanitize = { redactModelTestCredential(it, credential, budget = redactionBudget) },
                 )
             }
         } ?: ModelConnectivityExecution(
@@ -307,17 +308,17 @@ private suspend fun runModelConnectivityTest(
     } catch (cause: CancellationException) {
         throw cause
     } catch (cause: Exception) {
-        ModelConnectivityExecution(modelTestConnectionFailure(cause, credential, System.currentTimeMillis() - startedAt))
+        ModelConnectivityExecution(modelTestConnectionFailure(cause, credential, System.currentTimeMillis() - startedAt, redactionBudget))
     }
 }
 
-private fun modelTestConnectionFailure(cause: Throwable, credential: String, latencyMs: Long): ModelConnectivityTestResult =
+private fun modelTestConnectionFailure(cause: Throwable, credential: String, latencyMs: Long, budget: ModelTestRedactionBudget = ModelTestRedactionBudget()): ModelConnectivityTestResult =
     ModelConnectivityTestResult(
         success = false,
         statusCode = null,
         latencyMs = latencyMs,
         responseText = null,
-        errorMessage = "无法连接上游：${redactModelTestCredential(cause.message ?: cause::class.simpleName.orEmpty(), credential).take(200)}",
+        errorMessage = "无法连接上游：${redactModelTestCredential(cause.message ?: cause::class.simpleName.orEmpty(), credential, budget = budget).take(200)}",
         usage = null,
     )
 
@@ -458,7 +459,7 @@ internal fun extractModelTestResponseText(protocol: GatewayProtocol, json: JsonO
     }
 }
 
-private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential: String, preview: () -> String): String {
+private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential: String, budget: ModelTestRedactionBudget, preview: () -> String): String {
     val error = json?.get("error")
     val message = when (error) {
         is JsonObject -> collectText(error["message"]) ?: collectText(error)
@@ -466,7 +467,7 @@ private fun extractModelTestError(json: JsonObject?, statusCode: Int, credential
         else -> null
     }
     // An error message can span text blocks. Redact the joined value before bounding it.
-    return message?.let { redactModelTestCredential(it, credential).take(MAX_ERROR_CHARS) }
+    return message?.let { redactModelTestCredential(it, credential, budget = budget).take(MAX_ERROR_CHARS) }
         ?: preview().trim().take(MAX_ERROR_CHARS).takeIf { it.isNotEmpty() }
         ?: "上游返回 HTTP $statusCode"
 }
@@ -480,12 +481,25 @@ private data class CredentialEchoForm(val value: String, val hexCaseInsensitive:
         text.regionMatches(offset, value, 0, value.length, ignoreCase = hexCaseInsensitive)
 }
 
-private fun redactModelTestCredential(text: String, credential: String, multiline: Boolean = true): String {
+private class ModelTestRedactionBudget {
+    private var remainingWork = MAX_REDACTION_MATCH_WORK
+    val exhausted: Boolean get() = remainingWork < 0
+
+    fun consume(work: Long): Boolean {
+        if (exhausted) return false
+        remainingWork -= work
+        return !exhausted
+    }
+}
+
+private fun redactModelTestCredential(text: String, credential: String, multiline: Boolean = true, budget: ModelTestRedactionBudget): String {
+    if (!budget.consume(text.length.toLong() + credential.length)) return "[REDACTED]"
     // The host/report removes these characters. Do so before matching, never after redaction:
     // deleting a control or formatting character can assemble an otherwise split credential.
     val display = normalizeModelTestDisplay(text, multiline)
     val secret = normalizeModelTestDisplay(credential, multiline)
     if (secret.isEmpty() || display.length < secret.length) return display
+    if (!budget.consume(secret.length.toLong() * 32)) return "[REDACTED]"
     val forms = secret.codePoints().toArray().map { codePoint ->
         val literal = String(Character.toChars(codePoint))
         val percent = literal.toByteArray(Charsets.UTF_8).joinToString("") { byte ->
@@ -504,19 +518,13 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
     // Scan literal variants without a regex call stack proportional to token length.
     // Merge alternative endpoints at each code point, so ambiguous mixed encodings
     // cannot cause recursive/exponential backtracking (e.g. a literal '%' or '\\').
-    var remainingWork = MAX_REDACTION_MATCH_WORK
-    var exhausted = false
     fun matchEnd(start: Int): Int? {
         var offsets = setOf(start)
         for (alternatives in forms) {
             val next = HashSet<Int>()
             for (offset in offsets) {
                 for (form in alternatives) {
-                    remainingWork -= form.value.length
-                    if (remainingWork < 0) {
-                        exhausted = true
-                        return null
-                    }
+                    if (!budget.consume(form.value.length.toLong())) return null
                     if (form.matches(display, offset)) next += offset + form.value.length
                 }
             }
@@ -530,7 +538,7 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
         var copied = 0
         while (offset <= display.length - secret.length) {
             val end = matchEnd(offset)
-            if (exhausted) return "[REDACTED]"
+            if (budget.exhausted) return "[REDACTED]"
             if (end == null) {
                 offset++
             } else {
@@ -544,19 +552,38 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
     }
 }
 
-private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String): String =
-    if (json == null) redactModelTestCredential(body, credential) else redactModelTestJsonPreview(json, credential).toString()
+private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String, budget: ModelTestRedactionBudget): String {
+    if (json == null) return redactModelTestCredential(body, credential, budget = budget)
+    val preview = redactModelTestJsonPreview(json, credential, budget)
+    return if (budget.exhausted) "[REDACTED]" else preview.toString()
+}
 
 /** Display-only copy: keys can also contain JSON-escaped echoes. Never use this copy for parsing. */
-private fun redactModelTestJsonPreview(element: JsonElement, credential: String): JsonElement {
+private fun redactModelTestJsonPreview(element: JsonElement, credential: String, budget: ModelTestRedactionBudget): JsonElement {
+    if (!budget.consume(1)) return JsonPrimitive("[REDACTED]")
     return when (element) {
-        is JsonObject -> JsonObject(element.entries.associate { (key, value) ->
-            redactModelTestCredential(key, credential) to redactModelTestJsonPreview(value, credential)
-        })
-        is JsonArray -> JsonArray(element.map { redactModelTestJsonPreview(it, credential) })
+        is JsonObject -> {
+            val fields = linkedMapOf<String, JsonElement>()
+            for ((key, value) in element) {
+                val safeKey = redactModelTestCredential(key, credential, budget = budget)
+                if (budget.exhausted) return JsonPrimitive("[REDACTED]")
+                val safeValue = redactModelTestJsonPreview(value, credential, budget)
+                if (budget.exhausted) return JsonPrimitive("[REDACTED]")
+                fields[safeKey] = safeValue
+            }
+            JsonObject(fields)
+        }
+        is JsonArray -> {
+            val entries = mutableListOf<JsonElement>()
+            for (value in element) {
+                entries += redactModelTestJsonPreview(value, credential, budget)
+                if (budget.exhausted) return JsonPrimitive("[REDACTED]")
+            }
+            JsonArray(entries)
+        }
         is JsonPrimitive -> {
             val value = element.content
-            val redacted = redactModelTestCredential(value, credential)
+            val redacted = redactModelTestCredential(value, credential, budget = budget)
             if (redacted != value) JsonPrimitive(redacted) else element
         }
     }

@@ -20,6 +20,7 @@ const contributions = ref<PluginUiContribution[]>([])
 const invalidContributions = ref(new Set<string>())
 const diagnosticGenerations = ref(new Map<string, number>())
 const loadError = ref('')
+const retryAction = ref<HTMLButtonElement | null>(null)
 const guard = createLatestRequestGuard()
 let disposed = false
 let initialized = false
@@ -130,9 +131,25 @@ async function load(recheck = false) {
   controller?.abort()
   const current = new AbortController()
   controller = current
+  const retryElement = typeof document !== 'undefined' && document.activeElement === retryAction.value ? retryAction.value : null
   loadError.value = ''
   try {
-    const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
+    const result = await guard.run(async () => {
+      const available = await api.getPluginContributions({ signal: current.signal })
+      const invalidSnapshot = invalidContributions.value
+      const recovered: string[] = []
+      if (recheck) {
+        for (const item of available) {
+          const key = contributionVersionKey(item)
+          if (!invalidSnapshot.has(key) || item.entry.placement !== 'channel-tests' || !item.entry.contexts.includes('channel')) continue
+          const live = await api.getPlugin(item.pluginId, { signal: current.signal })
+          if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
+            live.activeUi?.entries.some((entry) => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
+              entry.placement === 'channel-tests' && entry.contexts.includes('channel'))) recovered.push(key)
+        }
+      }
+      return { available, recovered, invalidSnapshot }
+    })
     if (!result.isLatest || disposed) return
     const previousAvailable = availableContributions.value
     const previousActiveTab = activeTab.value
@@ -141,13 +158,15 @@ async function load(recheck = false) {
     const focusedTabId = activeElement && tabList.value?.contains(activeElement) ? activeElement.id : ''
     const focusWasInPanel = !!activeElement && !!tabPanel.value?.contains(activeElement)
     if (recheck) {
-      const resultKeys = new Set(result.value.map(contributionVersionKey))
-      for (const key of invalidContributions.value) {
-        if (resultKeys.has(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+      const remaining = new Set(invalidContributions.value)
+      if (invalidContributions.value === result.value.invalidSnapshot) {
+        for (const key of result.value.recovered) {
+          if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+        }
       }
-      invalidContributions.value = new Set()
+      invalidContributions.value = remaining
     }
-    contributions.value = result.value
+    contributions.value = result.value.available
     const removedContributions = previousAvailable.filter((item) =>
       !availableContributions.value.some((next) => contributionKey(next) === contributionKey(item)))
     const removedTabIds = removedContributions.map((item) => `${tabId}-${contributionKey(item)}`)
@@ -166,7 +185,18 @@ async function load(recheck = false) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
       loadError.value = cause instanceof Error ? cause.message : String(cause)
     }
-  } finally { if (controller === current) controller = null }
+  } finally {
+    if (controller === current) {
+      await nextTick()
+      if (controller === current) {
+        if (!disposed && retryElement && !retryElement.isConnected && document.activeElement === document.body) {
+          const target = retryAction.value ?? tabList.value?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+          target?.focus()
+        }
+        controller = null
+      }
+    }
+  }
 }
 function refresh() { void load(true) }
 function markUnavailable(value: { pluginId: string; activeVersion: string; entryId: string }) {
@@ -200,8 +230,8 @@ onBeforeUnmount(() => { disposed = true; guard.invalidate(); controller?.abort()
           :class="{ active: activeTab === tab.id }" :aria-selected="activeTab === tab.id" :aria-controls="`${tabId}-panel`"
           :tabindex="activeTab === tab.id ? 0 : -1" @click="selectTab(tab.id)" @keydown="navigateTabs($event, index)"><Icon :name="tab.icon" :size="17" /><span>{{ tab.label }}</span></button>
       </div>
-      <p v-if="loadError" class="channel-test-plugin-note" role="alert">诊断插件入口读取失败：{{ loadError }} <button type="button" class="link-button" @click="refresh">重试</button></p>
-      <p v-else-if="invalidContributions.size" class="channel-test-plugin-note" role="status">此生效版本的诊断入口已不可用。可手动重新检查入口状态。<button type="button" class="link-button" @click="refresh">重新检查</button></p>
+      <p v-if="loadError" class="channel-test-plugin-note" role="alert">诊断插件入口读取失败：{{ loadError }} <button ref="retryAction" type="button" class="link-button" @click="refresh">重试</button></p>
+      <p v-else-if="invalidContributions.size" class="channel-test-plugin-note" role="status">此生效版本的诊断入口已不可用。可手动重新检查入口状态。<button ref="retryAction" type="button" class="link-button" @click="refresh">重新检查</button></p>
       <p v-else-if="initialized && !availableContributions.length" class="channel-test-plugin-note">没有已生效的渠道诊断插件，可在「插件」页检查。智商、指纹与记录仍可使用。</p>
     </template>
     <section :id="`${tabId}-panel`" ref="tabPanel" class="channel-test-panel" :class="{ 'is-records': activeTab === 'records' }" role="tabpanel" :aria-labelledby="`${tabId}-${activeTab}`" tabindex="0"

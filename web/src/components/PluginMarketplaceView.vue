@@ -251,7 +251,7 @@ async function mutate(operation: () => Promise<PluginRuntimeState>, message: str
       const conflict = cause instanceof ApiError && cause.status === 409 && cause.code === 'PLUGIN_REVISION_CONFLICT'
       const uncertain = !(cause instanceof ApiError) || cause.status < 400 || cause.status === 408 || cause.status >= 500
       if (conflict && configurationSave) draftRejected.value = true
-      if ((conflict && !configurationSave) || uncertain) {
+      if (conflict || uncertain) {
         installationStateKnown.value = false
         loadError.value = uncertain ? '无法确认写入结果，请重新读取安装状态后再操作。' : '安装状态已变化，请重新读取后再操作。'
       }

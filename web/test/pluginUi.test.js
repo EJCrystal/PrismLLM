@@ -1435,6 +1435,96 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     }
   })
 
+  for (const unavailable of ['disabled', 'version', 'entry']) {
+    it('does not restore a channel drawer contribution from a stale list when live ' + unavailable + ' admission disagrees', async () => {
+      const fixture = makeOfficialPluginFixture()
+      setFixtures(fixture)
+      const entry = await mount('ChannelTestDrawer', { channel })
+      await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
+      const contribution = fixture.contribution
+      const key = contribution.pluginId + ':' + contribution.activeVersion + ':' + contribution.entry.id
+      const tabKey = 'plugin:' + contribution.pluginId + ':' + contribution.entry.id
+      const discovery = deferred()
+      const live = deferred()
+      mock.listContributions = () => discovery.promise
+      mock.getState = () => live.promise
+      const reads = calls.state.length
+      const loading = entry.state.load(true)
+      await settle()
+      entry.state.markUnavailable({ pluginId: contribution.pluginId, activeVersion: contribution.activeVersion, entryId: contribution.entry.id })
+      await settle()
+      discovery.resolve(clonePluginData(fixture.contributions))
+      await waitFor(() => calls.state.length === reads + 1)
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(entry.state.tabs.value.some(tab => tab.id === tabKey), false)
+      const changes = unavailable === 'disabled' ? { admissionEnabled: false }
+        : unavailable === 'version' ? { activeVersion: '2.0.0' }
+        : { activeUi: { ...fixture.ui, entries: fixture.ui.entries.filter(item => item.id !== contribution.entry.id) } }
+      live.resolve({ ...clonePluginData(fixture.state), ...changes })
+      await loading; await settle()
+      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(entry.state.tabs.value.some(tab => tab.id === tabKey), false)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+
+      mock.listContributions = undefined
+      mock.getState = undefined
+      const retry = button(entry.container, '重新检查')
+      retry.focus()
+      retry.click()
+      await waitFor(() => entry.state.invalidContributions.value.size === 0)
+      assert.equal(entry.state.tabs.value.some(tab => tab.id === tabKey), true)
+      assert.equal(entry.state.diagnosticGenerations.value.get(key), 1)
+      assert.equal(document.activeElement, entry.container.querySelector('[role="tab"][aria-selected="true"]'))
+    })
+  }
+
+  it('restores focus to the selected channel drawer tab after a successful list retry removes its button', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    mock.listContributions = () => Promise.reject(new Error('temporary contributions failure'))
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => entry.state.loadError.value !== '')
+    const retry = button(entry.container, '重试')
+    retry.focus()
+    mock.listContributions = undefined
+    retry.click()
+    await waitFor(() => entry.state.loadError.value === '' && entry.state.tabs.value.length > 3)
+    assert.equal(retry.isConnected, false)
+    assert.equal(document.activeElement, entry.container.querySelector('[role="tab"][aria-selected="true"]'))
+  })
+
+  it('keeps keyboard focus on the replacement channel drawer retry after another discovery failure', async () => {
+    setFixtures(makeOfficialPluginFixture())
+    mock.listContributions = () => Promise.reject(new Error('initial list failure'))
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => entry.state.loadError.value !== '')
+    const retry = button(entry.container, '重试')
+    retry.focus()
+    mock.listContributions = () => Promise.reject(new Error('retry list failure'))
+    retry.click()
+    await waitFor(() => entry.state.loadError.value === 'retry list failure')
+    assert.equal(document.activeElement, button(entry.container, '重试'))
+  })
+
+  it('does not steal focus if the user leaves a pending channel drawer retry', async () => {
+    const fixture = makeOfficialPluginFixture()
+    setFixtures(fixture)
+    mock.listContributions = () => Promise.reject(new Error('initial list failure'))
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => entry.state.loadError.value !== '')
+    const pending = deferred()
+    mock.listContributions = () => pending.promise
+    const retry = button(entry.container, '重试')
+    retry.focus()
+    retry.click()
+    await settle()
+    const destination = button(entry.container, '指纹')
+    destination.focus()
+    pending.resolve(clonePluginData(fixture.contributions))
+    await waitFor(() => entry.state.tabs.value.length > 3)
+    assert.equal(document.activeElement, destination)
+  })
+
   it('keeps ordinary list failures mounted with host-level manual retry', async () => {
     const fixture = makeOfficialPluginFixture()
     setFixtures(fixture)
@@ -2396,6 +2486,41 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await waitFor(() => calls.configuration.length === 1 && !entry.state.busy.value)
     assert.equal(entry.state.draftConflict.value, false)
     assert.equal(entry.state.configuration.defaultPrompt, 'fresh edit after uninstall conflict')
+  })
+
+  it('keeps a conflicting configuration draft but blocks installation actions until the upgraded selection is reread', async () => {
+    const fixture = makePluginFixture({ state: { revision: 3 } })
+    const next = makePluginFixture({ version: '2.0.0', state: { revision: 4 } })
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    await change(field(entry.container, '默认提示词'), 'local draft from version one')
+    mock.states.set(fixture.manifest.id, clonePluginData(next.state))
+    mock.catalog.push(clonePluginData(next.catalog))
+    button(entry.container, '保存配置').click()
+    await waitFor(() => !entry.state.busy.value && entry.state.draftRejected.value)
+    assert.equal(entry.state.installationStateKnown.value, false)
+    assert.equal(entry.state.configuration.defaultPrompt, 'local draft from version one')
+    assert.equal(button(entry.container, '禁用').disabled, true)
+    assert.equal(button(entry.container, '卸载').disabled, true)
+    assert.equal(field(entry.container, '目录版本').disabled, true)
+    const before = [calls.install.length, calls.enabled.length, calls.uninstall.length, calls.configuration.length]
+    entry.state.install(); entry.state.toggleEnabled(); entry.state.uninstall(); entry.state.saveConfiguration()
+    await settle()
+    assert.deepEqual([calls.install.length, calls.enabled.length, calls.uninstall.length, calls.configuration.length], before)
+    mock.listPlugins = () => Promise.reject(new Error('state reread unavailable'))
+    await entry.state.load(); await settle()
+    assert.equal(entry.state.installationStateKnown.value, false)
+    assert.equal(entry.state.configuration.defaultPrompt, 'local draft from version one')
+    mock.listPlugins = undefined
+    await entry.state.load(); await settle()
+    assert.equal(entry.state.installationStateKnown.value, true)
+    assert.equal(entry.state.selectedState.value.installedVersion, '2.0.0')
+    assert.equal(entry.state.draftRejected.value, true)
+    assert.equal(entry.state.configuration.defaultPrompt, 'local draft from version one')
+    button(entry.container, '放弃旧草稿并载入当前配置').click()
+    await waitFor(() => !entry.state.draftConflict.value)
+    assert.equal(entry.state.draftInstalledVersion.value, '2.0.0')
   })
 
   it('adopts the server revision for two consecutive configuration saves without a refresh', async () => {

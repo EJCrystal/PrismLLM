@@ -2007,6 +2007,30 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun throwingProviderCloseCannotEscapeOrPreventOtherProvidersFromClosing(): Unit = runBlocking {
+        val throwing = fixture(id = "throwing.close", closePrefix = {
+            "mark(\"close-attempt\"); throw new IllegalStateException(\"synthetic provider close failure\");"
+        })
+        val healthy = ownedFixture(id = "healthy.close")
+        publish(throwing, healthy)
+        val store = MemoryInstallationStore()
+        val writer = runtime(store)
+        writer.initialize()
+        for (packaged in listOf(throwing, healthy)) {
+            val installed = writer.install(packaged.manifest.id, "1.0.0", packaged.manifest.permissions)
+            writer.enable(packaged.manifest.id, installed.revision, "1.0.0", packaged.manifest.permissions)
+        }
+        val host = runtime(store)
+        host.initialize()
+        host.close()
+        assertEquals(1, throwing.count("close-attempt"))
+        assertDisposed(healthy)
+        assertNoActive(host)
+        host.close()
+        assertEquals(1, throwing.count("close-attempt"))
+    }
+
+    @Test
     fun `close is idempotent closes providers and denies later calls`(): Unit = runBlocking {
         val packaged = ownedFixture()
         publish(packaged)
