@@ -436,6 +436,35 @@ class CodeAssistProjectResolverTest {
     }
 
     @Test
+    fun `authorization replaced during load cannot issue onboarding through any resolver entry`() = runBlocking {
+        for (entry in listOf("context", "diagnostic", "probe")) {
+            val accepts = java.util.concurrent.atomic.AtomicBoolean(true)
+            val onboard = AtomicInteger()
+            val accounts = FakeAccounts(AtomicReference(), snapshotMatches = { accepts.get() })
+            HttpClient(MockEngine { request ->
+                if (request.url.encodedPath.endsWith("loadCodeAssist")) {
+                    accepts.set(false)
+                    respond("""{"allowedTiers":[{"id":"free-tier"}]}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                } else {
+                    onboard.incrementAndGet()
+                    respond("""{"cloudaicompanionProject":"stale-onboarding"}""", headers = headersOf(HttpHeaders.ContentType, "application/json"))
+                }
+            }).use { client ->
+                val resolver = CodeAssistProjectResolver(accounts, client)
+                val failed = runCatching {
+                    when (entry) {
+                        "context" -> resolver.context(account(), "synthetic-token")
+                        "diagnostic" -> resolver.contextForDiagnostic(account(), "synthetic-token", null, DiagnosticPreparationDeadline.start(5_000))
+                        else -> resolver.probe(account(), "synthetic-token")
+                    }
+                }.exceptionOrNull()
+                assertEquals("credential_replaced", (failed as? dev.soven.prismllm.oauth.OAuthTokenUnavailableException)?.errorCode)
+                assertEquals(0, onboard.get(), "$entry must revalidate before onboarding with an old authorization")
+            }
+        }
+    }
+
+    @Test
     fun `discovery rejects a replaced authorization and only publishes accepted snapshots`() = runBlocking {
         val saved = AtomicReference<OAuthAccountRepository.UpstreamContext?>()
         val accepts = java.util.concurrent.atomic.AtomicBoolean(true)

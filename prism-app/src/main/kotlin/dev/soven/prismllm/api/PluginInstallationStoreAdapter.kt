@@ -2,6 +2,8 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.admin.domain.PluginInstallationRecord
 import dev.soven.prismllm.admin.persistence.PluginInstallationRepository
+import dev.soven.prismllm.db.DiagnosticPreparationDeadline
+import dev.soven.prismllm.plugin.host.PluginHostException
 import dev.soven.prismllm.plugin.host.PluginInstallation
 import dev.soven.prismllm.plugin.host.PluginInstallationStore
 import org.jetbrains.exposed.v1.jdbc.Database
@@ -15,7 +17,11 @@ internal class PluginInstallationStoreAdapter(
 ) : PluginInstallationStore {
     override suspend fun list(): List<PluginInstallation> = repository.list().map { it.toRuntime() }
 
-    override suspend fun find(id: String): PluginInstallation? = repository.find(id)?.toRuntime()
+    override suspend fun find(id: String): PluginInstallation? =
+        (DiagnosticPreparationDeadline.withinSynchronousAndDrain(2_000) { StoredInstallation(repository.find(id)?.toRuntime()) }
+            ?: throw PluginHostException("PLUGIN_BUSY", "Timed out reading plugin installation", 503)).value
+
+    private class StoredInstallation(val value: PluginInstallation?)
 
     override suspend fun insertIfAbsent(installation: PluginInstallation): Boolean =
         repository.insertIfAbsent(installation.toRecord())

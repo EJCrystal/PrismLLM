@@ -160,6 +160,7 @@ function stopWaiting() {
 
 async function load(reset = true) {
   if (disposed || !active) return
+  if (reset) editedFields.clear()
   loadController?.abort()
   const current = new AbortController()
   loadController = current
@@ -192,7 +193,6 @@ async function load(reset = true) {
         : target.protocols,
     })).filter((target) => target.protocols.length && target.credentials.length)
     const previous = { ...form }
-    if (reset) editedFields.clear()
     for (const fieldKey of Object.keys(form)) delete form[fieldKey]
     Object.assign(form, pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}, true))
     if (!reset) for (const field of fields.value) if (editedFields.has(field.key) && Object.hasOwn(previous, field.key)) form[field.key] = previous[field.key]!
@@ -361,9 +361,9 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="plugin-diagnostic-host">
-    <div v-if="loading" class="panel plugin-diagnostic-loading"><span class="spinner"></span><p>正在读取诊断配置与可测试的模型…</p></div>
+    <div v-if="loading" class="panel plugin-diagnostic-loading"><span class="spinner"></span><p>正在读取诊断配置与可测试的模型…</p><button v-if="running" type="button" class="link-button" @click="stopWaiting">停止等待</button></div>
     <div v-else-if="loadError" class="callout danger plugin-diagnostic-load-error" role="alert">
-      <span>{{ loadError }}</span><button type="button" class="link-button" @click="load()">重新读取</button>
+      <span>{{ loadError }}</span><button type="button" class="link-button" @click="load(false)">重新读取</button><button v-if="running" type="button" class="link-button" @click="stopWaiting">停止等待</button>
     </div>
     <TestEmptyState v-else-if="!targets.length" :icon="contribution.entry.icon" title="没有可测试的模型"
       :description="isAccount ? '请先同步订阅账号目录并配置模型授权。账号诊断使用自己的凭据，不需要选择渠道密钥。' : '请先在渠道中授权模型并添加可用凭据。停用渠道仍可手动诊断。'" />

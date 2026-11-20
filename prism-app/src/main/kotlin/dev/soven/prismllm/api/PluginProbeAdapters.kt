@@ -2,6 +2,7 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
 import dev.soven.prismllm.channel.domain.ChannelRecord
+import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ProviderEndpoints
 import dev.soven.prismllm.channel.domain.authTypeFor
@@ -22,6 +23,7 @@ import dev.soven.prismllm.proxy.ModelConnectivityTestResult
 import dev.soven.prismllm.proxy.prepareOAuthAccountModelConnectivity
 import dev.soven.prismllm.proxy.testChannelModelConnectivity
 import dev.soven.prismllm.shared.domain.GatewayProtocol
+import dev.soven.prismllm.shared.domain.KeyCredentialResolver
 import dev.soven.prismllm.shared.error.GatewayError
 import dev.soven.prismllm.shared.error.badRequest
 import dev.soven.prismllm.shared.error.notFound
@@ -67,11 +69,11 @@ private suspend fun GatewayApplication.validateOAuthDiagnosticAccount(
     }
 }
 
-private fun sameOAuthDiagnosticEndpoint(
+private fun sameDiagnosticEndpoint(
     first: ChannelRecord,
     second: ChannelRecord,
     protocol: GatewayProtocol,
-): Boolean = first.id == second.id && first.provider == second.provider &&
+): Boolean = first.id == second.id && first.kind == second.kind && first.provider == second.provider &&
     first.baseUrl == second.baseUrl && first.authTypeFor(protocol) == second.authTypeFor(protocol) &&
     first.protocolAuthTypes == second.protocolAuthTypes && first.requestOverrides == second.requestOverrides &&
     first.upstreamEnvelope == second.upstreamEnvelope
@@ -145,11 +147,28 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     throw badRequest("model_test_protocol_unsupported", "渠道未启用协议 ${protocol.value}")
                 }
                 val currentCredential = resolveChannelCredentialForModel(currentChannel, model, target.credentialId)
-                if (currentCredential.isOAuth != credential.isOAuth) {
-                    throw badRequest("channel_key_unavailable", "所选渠道凭据类型已变化，请刷新后重试")
+                val sameCredential = when (credential) {
+                    is ChannelKeyRecord -> currentCredential is ChannelKeyRecord &&
+                        currentCredential.credentialCiphertext == credential.credentialCiphertext &&
+                        currentCredential.credentialNonce == credential.credentialNonce &&
+                        currentCredential.credentialKeyVersion == credential.credentialKeyVersion
+                    is OAuthAccountRecord -> currentCredential is OAuthAccountRecord && oauthTokenService.acceptsSnapshot(credential, currentCredential)
+                    else -> false
+                }
+                if (!sameCredential || !sameDiagnosticEndpoint(channel, currentChannel, protocol)) {
+                    throw badRequest("channel_key_unavailable", "所选渠道凭据或请求配置已变化，请刷新后重试")
                 }
                 testChannelModelConnectivity(
-                    currentChannel, currentCredential, model, protocol, plan.prompt, oauthTokenService, httpClient,
+                    currentChannel, currentCredential, model, protocol, plan.prompt, KeyCredentialResolver { candidate ->
+                        if (candidate is OAuthAccountRecord && credential is OAuthAccountRecord) {
+                            val bound = oauthTokenService.accessTokenWithSnapshot(candidate.id)
+                                ?: throw badRequest("channel_key_unavailable", "所选订阅账号已不可用")
+                            if (!oauthTokenService.acceptsSnapshot(credential, bound.account)) {
+                                throw badRequest("channel_key_unavailable", "所选订阅账号凭据已变化，请刷新后重试")
+                            }
+                            bound.token.accessToken
+                        } else oauthTokenService.resolveCredential(candidate)
+                    }, httpClient,
                     timeoutMs = plan.timeoutMs, maxOutputTokens = plan.maxOutputTokens,
                     globalOverrides = upstreamRequestSettingsRepository.load().overrides,
                     headerProfiles = upstreamHeaderCatalogService.profiles(),
@@ -188,7 +207,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                                 ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
                         } ?: throw oauthPreparationTimeout()
                         validateOAuthDiagnosticAccount(latest, context.id, model, protocol)
-                        if (latest.provider != initialAccount.provider || latest.authorizedAt != initialAccount.authorizedAt) {
+                        if (!oauthTokenService.acceptsSnapshot(initialAccount, latest)) {
                             throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
                         }
                         return latest
@@ -250,7 +269,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     currentAccount = revalidateAccount()
                     if (!token.matches(currentAccount)) throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
                     val currentChannel = revalidateSystemChannel(channelId)
-                    if (!sameOAuthDiagnosticEndpoint(channel, currentChannel, protocol)) {
+                    if (!sameDiagnosticEndpoint(channel, currentChannel, protocol)) {
                         throw badRequest("oauth_provider_channel_changed", "系统端点配置已变化，请刷新后重试")
                     }
                     revalidatePluginGrant()
@@ -264,7 +283,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     currentAccount = revalidateAccount()
                     if (!token.matches(currentAccount)) throw badRequest("oauth_account_changed", "订阅账号凭据已变化，请刷新后重试")
                     channel = revalidateSystemChannel(channelId)
-                    if (!sameOAuthDiagnosticEndpoint(currentChannel, channel, protocol)) {
+                    if (!sameDiagnosticEndpoint(currentChannel, channel, protocol)) {
                         throw badRequest("oauth_provider_channel_changed", "系统端点配置已变化，请刷新后重试")
                     }
                     revalidatePluginGrant()

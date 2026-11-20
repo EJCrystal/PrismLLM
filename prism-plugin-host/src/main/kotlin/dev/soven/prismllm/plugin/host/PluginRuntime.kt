@@ -502,14 +502,17 @@ class PluginRuntime(
             val rawPlan = runCode("plan", minOf(CODE_TIMEOUT_MS, boundedLimits.timeoutMs), snapshot.loaded.loader, owner = snapshot.loaded) { snapshot.loaded.plugin.plan(snapshot.input, snapshot.context) }
             val plan = plan(rawPlan, snapshot.context.limits)
             val boundedOutcome = withProbePermit(plan.timeoutMs) {
-                mutex.withLock {
-                    checkReady()
-                    val current = find(id)
-                    observe(current)
-                    requireAdmission(current, snapshot.loaded, expectedActiveVersion)
-                    if (active[id] !== snapshot.loaded) throw PluginHostException("PLUGIN_NOT_ACTIVE", "Active plugin changed", 409)
-                    if (PluginValidation.permission(target.kind) !in snapshot.loaded.grants) throw PluginHostException("PLUGIN_PERMISSION_REQUIRED", "Plugin probe permission was revoked", 403)
+                val checked = withTimeoutOrNull(minOf(CODE_TIMEOUT_MS, plan.timeoutMs)) {
+                    mutex.withLock {
+                        checkReady()
+                        val current = find(id)
+                        requireAdmission(current, snapshot.loaded, expectedActiveVersion)
+                        if (active[id] !== snapshot.loaded) throw PluginHostException("PLUGIN_NOT_ACTIVE", "Active plugin changed", 409)
+                        if (PluginValidation.permission(target.kind) !in snapshot.loaded.grants) throw PluginHostException("PLUGIN_PERMISSION_REQUIRED", "Plugin probe permission was revoked", 403)
+                    }
+                    true
                 }
+                if (checked != true) throw PluginHostException("PLUGIN_BUSY", "Timed out revalidating diagnostic admission", 503)
                 if (closed.get() || !snapshot.loaded.admissionOpen()) throw PluginHostException("PLUGIN_DISABLED", "Plugin admission is disabled", 409)
                 // Admission waiting is NOT upstream latency. The callback binds the authorized target
                 // and prepares secrets only after this final gate. OAuth gets a separate 20s envelope
@@ -597,14 +600,26 @@ class PluginRuntime(
         throw PluginHostException("PLUGIN_INVALID_CONFIGURATION", error.message ?: "Invalid plugin configuration")
     }
 
-    private suspend fun find(id: String): PluginInstallation = store.find(id) ?: run {
+    private suspend fun find(id: String): PluginInstallation = store.find(id)?.also(::observe) ?: run {
         retireMissing(id)
         throw PluginHostException("PLUGIN_NOT_INSTALLED", "No plugin installation or tombstone exists for this id", 404)
     }
 
     private suspend fun persist(next: PluginInstallation, previous: PluginInstallation?) {
         checkOpen()
-        val saved = if (previous == null) store.insertIfAbsent(next) else store.save(next, previous.revision)
+        val saved = try {
+            if (previous == null) store.insertIfAbsent(next) else store.save(next, previous.revision)
+        } catch (cause: Exception) {
+            if (previous != null && previous.desiredEnabled && (!next.desiredEnabled || !next.installed)) {
+                withContext(NonCancellable) {
+                    val unchanged = try {
+                        withTimeoutOrNull(CODE_TIMEOUT_MS) { store.find(next.id) == previous } == true
+                    } catch (_: Exception) { false }
+                    if (!unchanged) active[next.id]?.admission?.set(false)
+                }
+            }
+            throw cause
+        }
         if (!saved) throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin state changed concurrently; refresh and try again", 409)
     }
 

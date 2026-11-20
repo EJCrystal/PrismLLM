@@ -19,6 +19,11 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -869,6 +874,109 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             assertEquals("old snapshot", execution.report.text)
         }
         assertEquals("new snapshot", invoke(host).plan.prompt)
+    }
+
+    @Test
+    fun `final admission timeout releases both probe slots without calling transport or report`(): Unit = runBlocking {
+        for (blockedStore in listOf(false, true)) {
+            val packaged = fixture(id = if (blockedStore) "timeout.storage" else "timeout.mutex", planPrefix = { property -> """
+                mark("plan-ready");
+                while (!"true".equals(System.getProperty("$property.release"))) {
+                    try { Thread.sleep(5); } catch (InterruptedException failure) { throw new RuntimeException(failure); }
+                }
+            """.trimIndent() })
+            publish(packaged)
+            val decisions = MemoryInstallationStore()
+            var holdRead = false
+            val readEntered = CompletableDeferred<Unit>()
+            val host = runtime(object : PluginInstallationStore by decisions {
+                override suspend fun find(id: String): PluginInstallation? {
+                    if (holdRead) { readEntered.complete(Unit); awaitCancellation() }
+                    return decisions.find(id)
+                }
+            })
+            host.initialize(packaged.manifest.id)
+            val mutex = host.javaClass.getDeclaredField("mutex").apply { isAccessible = true }.get(host) as Mutex
+            val workers = host.javaClass.getDeclaredField("probeWorkers").apply { isAccessible = true }.get(host) as Semaphore
+            val owner = Any()
+            val probes = AtomicInteger()
+            coroutineScope {
+                val invocation = async(Dispatchers.Default) {
+                    failure("PLUGIN_BUSY") { host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok } }
+                }
+                try {
+                    awaitProperty("${packaged.property}.plan-ready", "1")
+                    if (blockedStore) holdRead = true else mutex.lock(owner)
+                    System.setProperty("${packaged.property}.release", "true")
+                    if (blockedStore) withTimeout(3_000) { readEntered.await() }
+                    withTimeout(5_000) { invocation.await() }
+                    assertEquals(2, workers.availablePermits)
+                    assertEquals(0, probes.get())
+                    assertEquals(0, packaged.count("reported"))
+                } finally {
+                    holdRead = false
+                    if (mutex.holdsLock(owner)) mutex.unlock(owner)
+                    System.setProperty("${packaged.property}.release", "true")
+                }
+            }
+            assertTrue(invoke(host, id = packaged.manifest.id).outcome.success)
+            host.close()
+        }
+    }
+
+    @Test
+    fun `cancel after committed stop cannot let a queued reenable reopen admission`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val decisions = MemoryInstallationStore()
+        val committed = CompletableDeferred<Unit>()
+        var delayStop = true
+        val host = runtime(object : PluginInstallationStore by decisions {
+            override suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean {
+                val saved = decisions.save(installation, expectedRevision)
+                if (delayStop && !installation.desiredEnabled) {
+                    delayStop = false
+                    committed.complete(Unit)
+                    awaitCancellation()
+                }
+                return saved
+            }
+        })
+        host.initialize(packaged.manifest.id)
+        coroutineScope {
+            val stop = async { host.disable(packaged.manifest.id) }
+            try {
+                withTimeout(3_000) { committed.await() }
+                val disabled = assertNotNull(decisions.find(packaged.manifest.id))
+                assertFalse(disabled.desiredEnabled)
+                val enabling = async(start = CoroutineStart.UNDISPATCHED) {
+                    host.enable(packaged.manifest.id, disabled.revision, disabled.version)
+                }
+                stop.cancelAndJoin()
+                val state = withTimeout(5_000) { enabling.await() }
+                assertTrue(state.desiredEnabled)
+                assertFalse(state.admissionEnabled)
+                assertTrue(state.requiresRestart)
+                failure("PLUGIN_DISABLED") { invoke(host) }
+            } finally { stop.cancelAndJoin() }
+        }
+    }
+
+    @Test
+    fun `deep non scalar invocation and configuration data is rejected before serialization`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        for (objects in listOf(false, true)) {
+            var nested: JsonElement = JsonPrimitive("nested")
+            repeat(5_000) { nested = if (objects) JsonObject(mapOf("value" to nested)) else JsonArray(listOf(nested)) }
+            failure("PLUGIN_INVALID_CONFIGURATION") { host.configure(packaged.manifest.id, JsonObject(mapOf("defaultPrompt" to nested))) }
+            failure("PLUGIN_INVALID_INPUT") { invoke(host, values = JsonObject(mapOf("prompt" to nested))) }
+        }
+        assertEquals(0, packaged.count("planned"))
+        assertEquals(0, packaged.count("reported"))
+        assertTrue(invoke(host).outcome.success)
     }
 
     @Test

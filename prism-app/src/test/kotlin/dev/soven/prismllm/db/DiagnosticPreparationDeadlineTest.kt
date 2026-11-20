@@ -220,6 +220,30 @@ class DiagnosticPreparationDeadlineTest {
 
     @OptIn(ExperimentalCoroutinesApi::class)
     @Test
+    fun `connection initialization receives the remaining timeout before SQL interception`() = runBlocking {
+        val jdbc = StatementJdbc(blockRead = false)
+        val clock = AtomicLong()
+        val budget = DiagnosticPreparationDeadline.start(5_000, clock::get)
+        val result = DiagnosticPreparationDeadline.within(budget) {
+            DiagnosticPreparationDeadline.diagnosticConnection(jdbc.connection) { jdbc.discards.incrementAndGet() }.use { connection ->
+                assertTrue(jdbc.networkTimeout.get() in 1..5_000, "Lease handoff must already be bounded")
+                clock.addAndGet(TimeUnit.MILLISECONDS.toNanos(1_500))
+                assertEquals(Connection.TRANSACTION_READ_COMMITTED, connection.transactionIsolation)
+                assertTrue(jdbc.timeoutAtInitialization.get() in 1..3_500, "Transaction initialization must refresh the network deadline")
+                clock.addAndGet(TimeUnit.MILLISECONDS.toNanos(3_501))
+                assertTrue(runCatching { connection.transactionIsolation }.isFailure)
+                assertEquals(1, jdbc.initializations.get(), "Expired connection work must not reach the driver")
+                connection.rollback()
+                assertTrue(jdbc.timeoutAtRollback.get() in 1..1_000)
+            }
+            true
+        }
+        assertNull(result)
+        assertEquals(jdbc.originalTimeout, jdbc.networkTimeout.get())
+        assertEquals(1, jdbc.closes.get())
+    }
+
+    @Test
     fun `caller times out during uninterruptible commit and lease stays owned through cleanup`() = runTest {
         val jdbc = BlockingJdbc()
         val budget = DiagnosticPreparationDeadline.start(1_000, { testScheduler.currentTime * 1_000_000L })
@@ -479,6 +503,8 @@ class DiagnosticPreparationDeadlineTest {
         val originalTimeout = 9_000
         val networkTimeout = AtomicInteger(originalTimeout)
         val timeoutAtExecute = AtomicInteger()
+        val timeoutAtInitialization = AtomicInteger()
+        val initializations = AtomicInteger()
         val timeoutAtRead = AtomicInteger()
         val timeoutAtRollback = AtomicInteger()
         val timeoutAtClose = AtomicInteger()
@@ -497,6 +523,11 @@ class DiagnosticPreparationDeadlineTest {
             when (method.name) {
                 "getNetworkTimeout" -> networkTimeout.get()
                 "setNetworkTimeout" -> { networkTimeout.set(args!![1] as Int); null }
+                "getTransactionIsolation" -> {
+                    initializations.incrementAndGet()
+                    timeoutAtInitialization.set(networkTimeout.get())
+                    Connection.TRANSACTION_READ_COMMITTED
+                }
                 "createStatement" -> statementProxy()
                 "rollback" -> {
                     timeoutAtRollback.set(networkTimeout.get())

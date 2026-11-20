@@ -42,6 +42,9 @@ import org.junit.jupiter.api.TestInstance
 import org.junit.jupiter.api.Timeout
 import org.testcontainers.containers.PostgreSQLContainer
 import java.net.InetSocketAddress
+import io.mockk.coEvery
+import io.mockk.mockkObject
+import io.mockk.unmockkObject
 import java.sql.DriverManager
 import java.util.Base64
 import java.util.UUID
@@ -494,6 +497,36 @@ class OAuthTokenServiceTest {
         } finally {
             assertTrue(service.drainRefreshes())
         }
+    }
+
+    @Test
+    fun manualRefreshRejectsAReplacementBetweenSavedOutcomeAndDetailedResponse() = runBlocking {
+        val id = createAccount("manual-detail-old", accountEmail = email("manual-detail"))
+        val repository = OAuthAccountRepository(factory.database, OAuthProviderChannelLookup())
+        val exchanges = AtomicInteger()
+        val provider = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                exchanges.incrementAndGet()
+                return OAuthTokenResponse("manual-result-access", "manual-result-refresh")
+            }
+        }
+        val service = OAuthTokenService(repository, cipher, OAuthTokenProviderRegistry(listOf(provider)))
+        mockkObject(repository)
+        coEvery { repository.findDetailed(id) } coAnswers {
+            val refreshed = assertNotNull(accounts.find(id))
+            accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                provider = refreshed.provider, refreshToken = cipher.encrypt("manual-detail-replacement"),
+            ))
+            accounts.findDetailed(id)
+        }
+        try {
+            val failed = assertIs<OAuthRefreshResult.Failed>(service.refreshNow(id))
+            assertEquals("credential_replaced", failed.errorCode)
+            assertEquals(1, exchanges.get())
+            val current = assertNotNull(accounts.loadRefreshContext(id))
+            assertEquals("manual-detail-replacement", cipher.decrypt(current.refreshTokenCiphertext, current.refreshTokenNonce))
+        } finally { unmockkObject(repository); assertTrue(service.drainRefreshes()) }
     }
 
     @Test

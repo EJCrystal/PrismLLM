@@ -1506,6 +1506,111 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `queued probes reject changed credential endpoint and native account egress snapshots`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val executions = app.pluginRuntime.javaClass.getDeclaredField("executions").apply { isAccessible = true }
+                .get(app.pluginRuntime) as Semaphore
+            for (change in listOf("credential", "endpoint", "proxy")) {
+                val release = CompletableDeferred<Unit>()
+                probeHold.set(release)
+                val occupied = directChannel("binding-occupied-$change", GatewayProtocol.CHAT_COMPLETIONS)
+                val selected = directChannel("binding-selected-$change", GatewayProtocol.CHAT_COMPLETIONS)
+                val model = "gpt-6-luna"
+                val native = if (change == "proxy") {
+                    val system = assertNotNull(app.providerChannelProvisioner.ensure(OAuthProvider.CHATGPT))
+                    oauthAccount("binding-proxy", OAuthProvider.CHATGPT, listOf(model), listOf(system))
+                } else null
+                val before = probes.size
+                val idlePermits = executions.availablePermits
+                coroutineScope {
+                    val running = (1..2).map { async {
+                        client.invokePlugin(session, "channel", occupied.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS))
+                    } }
+                    try {
+                        awaitCondition("two upstream workers occupied") { runningProbes.get() == 2 }
+                        val queued = async {
+                            if (native != null) client.invokePlugin(session, "oauth-account", native.id, values(model, GatewayProtocol.RESPONSES))
+                            else client.invokePlugin(session, "channel", selected.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS, selected.keys.single().id))
+                        }
+                        awaitCondition("queued probe bound its original credential and egress") { executions.availablePermits == idlePermits - 3 }
+                        if (native != null) {
+                            app.oauthAccountRepository.updateSettings(native.id, proxyUrl = "http://127.0.0.1:8181")
+                        } else {
+                            assertNotNull(app.channelRepository.update(
+                                id = selected.id, name = selected.name,
+                                baseUrl = if (change == "endpoint") "${fake.baseUrl}/changed/v1" else selected.baseUrl,
+                                keys = selected.keys.map { key -> ChannelKeyUpdate(
+                                    id = key.id, name = key.name, priority = key.priority, models = key.models, state = key.state, stateVersion = key.stateVersion,
+                                    credential = if (change == "credential") app.credentialCipher.encrypt("new-static-credential") else null,
+                                ) }, authType = selected.authType, protocols = selected.protocols, enabled = selected.enabled,
+                            ))
+                        }
+                        release.complete(Unit)
+                        running.awaitAll().forEach { assertTrue(it.decoded<PluginExecution>().outcome.success) }
+                        queued.await().assertError(HttpStatusCode.BadRequest, if (native == null) "channel_key_unavailable" else "oauth_account_changed")
+                        assertEquals(before + 2, probes.size, "Changed $change cannot send a queued model request")
+                        assertTrue(preparations.isEmpty())
+                    } finally { release.complete(Unit) }
+                }
+                probeHold.set(null)
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `failed stop writes block HTTP probes during persistence and restore confirmed enabled admission`() = runBlocking {
+        val repository = app.pluginInstallationRepository
+        val runtime = app.pluginRuntime
+        mockkObject(repository, runtime)
+        try {
+            testApplication {
+                application { app.install(this) }
+                val session = client.adminSession()
+                val channel = directChannel("failed-stop-write", GatewayProtocol.CHAT_COMPLETIONS)
+                for (uninstall in listOf(false, true)) {
+                    val entered = CompletableDeferred<Unit>()
+                    val release = CompletableDeferred<Unit>()
+                    val arrived = CompletableDeferred<Unit>()
+                    val before = assertNotNull(repository.find(PLUGIN_ID))
+                    val sent = probes.size
+                    coEvery { repository.save(any(), any()) } coAnswers {
+                        entered.complete(Unit)
+                        release.await()
+                        throw PluginHostException("TEST_STOP_SAVE_FAILED", "synthetic persistence rejection", 409)
+                    }
+                    coEvery { runtime.contributions() } coAnswers { arrived.complete(Unit); callOriginal() }
+                    coroutineScope {
+                        val stop = async {
+                            if (uninstall) client.api(HttpMethod.Delete, "/admin/api/plugins/$PLUGIN_ID", session)
+                            else client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, """{"enabled":false}""")
+                        }
+                        try {
+                            withTimeout(5_000) { entered.await() }
+                            val probe = async { client.invokePlugin(session, "channel", channel.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS)) }
+                            withTimeout(5_000) { arrived.await() }
+                            assertEquals(sent, probes.size, "A held stop write must not send model HTTP")
+                            probe.cancel()
+                            withTimeout(5_000) { probe.join() }
+                            release.complete(Unit)
+                            stop.await().assertError(HttpStatusCode.Conflict, "TEST_STOP_SAVE_FAILED")
+                        } finally { release.complete(Unit) }
+                    }
+                    assertEquals(before, repository.find(PLUGIN_ID))
+                    assertTrue(client.pluginState(session).admissionEnabled)
+                    assertEquals(sent, probes.size, "Cancelled probes cannot escape after the failed stop")
+                    assertTrue(client.invokePlugin(session, "channel", channel.id, values(MODEL, GatewayProtocol.CHAT_COMPLETIONS))
+                        .decoded<PluginExecution>().outcome.success)
+                    assertEquals(sent + 1, probes.size)
+                }
+            }
+        } finally { unmockkObject(repository, runtime) }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `batch scope invocations use at most two upstream workers and return complete final reports`() = runBlocking {
         val release = CompletableDeferred<Unit>()
         probeHold.set(release)
@@ -1768,7 +1873,13 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     fun `absent connectivity leaves core forwarding legacy IQ jars and fingerprint facilities independent`() = runBlocking {
         val emptyCatalog = Files.createDirectory(auxiliaryDirectory.resolve("empty-catalog"))
         writeLegacyIqJar()
-        restartApplication(app.config.copy(pluginCatalogDir = emptyCatalog))
+        val responses = ConcurrentLinkedQueue<String>()
+        val config = app.config.copy(pluginCatalogDir = emptyCatalog)
+        app.close()
+        app = mockedApplication(config, probeResponse = {
+            val content = responses.poll() ?: "OK"
+            HttpStatusCode.OK to """{"choices":[{"message":{"content":${JsonPrimitive(content)}},"finish_reason":"stop"}]}"""
+        })
         testApplication {
             application { app.install(this) }
             val session = client.adminSession()
@@ -1814,6 +1925,24 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(IqJudgeVerdict.REVIEW, judgeResult.verdict)
             assertEquals("Legacy disk judge", judgeResult.label)
             assertNotNull(app.iqJudgeRegistry.find("local"))
+            responses.add(html)
+            val startedIq = client.api(HttpMethod.Post, "/admin/api/iq-tests", session, buildJsonObject {
+                put("channelId", channel.id); put("model", MODEL); put("benchmark", "pelican"); put("judgeId", LEGACY_JUDGE_ID)
+                put("protocol", GatewayProtocol.CHAT_COMPLETIONS.value)
+            }.toString())
+            assertEquals(HttpStatusCode.Accepted, startedIq.status, startedIq.bodyAsText())
+            val jobId = Json.parseToJsonElement(startedIq.bodyAsText()).jsonObject["jobId"]!!.jsonPrimitive.content
+            var job = client.api(HttpMethod.Get, "/admin/api/iq-tests/jobs/$jobId", session).objectPayload()
+            withTimeout(10_000) {
+                while (job["status"]!!.jsonPrimitive.content == "running") {
+                    delay(10)
+                    job = client.api(HttpMethod.Get, "/admin/api/iq-tests/jobs/$jobId", session).objectPayload()
+                }
+            }
+            assertEquals("completed", job["status"]!!.jsonPrimitive.content, job.toString())
+            val iqRun = client.api(HttpMethod.Get, "/admin/api/iq-tests/${job["runId"]!!.jsonPrimitive.content}", session).objectPayload()
+            assertEquals(LEGACY_JUDGE_ID, iqRun["judgeResult"]!!.jsonObject["judgeId"]!!.jsonPrimitive.content)
+            assertTrue(iqRun.toString().contains("Legacy disk judge"))
             assertEquals(quotaPluginDirectory, app.config.quotaPluginDir)
             assertEquals(iqJudgePluginDirectory, app.config.iqJudgePluginDir)
             assertTrue(app.channelQuotaProviderRegistry.loadFailures.isEmpty())
@@ -1830,6 +1959,13 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(3, analysis.usedOutputs)
             assertEquals("scored", analysis.decision)
             assertEquals("claude-sonnet-4.6", analysis.prediction)
+            outputs.forEach { responses.add(it.text) }
+            val fingerprint = client.api(HttpMethod.Post, "/admin/api/model-tests/fingerprint", session, buildJsonObject {
+                put("channelId", channel.id); put("model", MODEL); put("protocol", GatewayProtocol.CHAT_COMPLETIONS.value)
+            }.toString()).objectPayload()
+            assertEquals("scored", fingerprint["decision"]!!.jsonPrimitive.content)
+            assertEquals(3, fingerprint["usedOutputs"]!!.jsonPrimitive.int)
+            assertTrue(responses.isEmpty())
             assertEquals(0, scalarInt("select count(*) from plugin_installations"))
         }
     }

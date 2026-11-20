@@ -241,6 +241,7 @@ internal object PluginValidation {
     }
 
     fun configuration(fields: List<PluginField>, values: JsonObject, complete: Boolean = true): JsonObject {
+        requireData(values.values.all { it is JsonPrimitive }, "Configuration values must be scalars")
         requireData(values.toString().toByteArray(Charsets.UTF_8).size <= MAX_METADATA_BYTES, "Configuration is too large")
         requireData(values.keys.all { key -> fields.any { it.key == key } }, "Unknown configuration field")
         val result = LinkedHashMap<String, JsonElement>()
@@ -276,6 +277,7 @@ internal object PluginValidation {
     }
 
     fun input(action: PluginAction, values: JsonObject, target: DiagnosticTarget, configuration: JsonObject, maxPromptChars: Int): JsonObject {
+        requireData(values.values.all { it is JsonPrimitive }, "Invocation values must be scalars")
         requireData(values.toString().toByteArray(Charsets.UTF_8).size <= MAX_METADATA_BYTES, "Invocation values are too large")
         requireData(values.keys.all { key -> action.fields.any { it.key == key } }, "Unknown invocation field")
         val result = LinkedHashMap<String, JsonElement>()

@@ -126,6 +126,7 @@ class CodeAssistProjectResolver(
         val loaded = attempt(account.id, "loadCodeAssist") { loadCodeAssist(account.id, accessToken, proxy) }
             ?: return fallbackContext(account, proxyKey, preparation)
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
+            confirmedContext(account, preparation)
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
         if (project == null) return fallbackContext(account, proxyKey, preparation)
@@ -233,8 +234,10 @@ class CodeAssistProjectResolver(
      * 管理面刷新模型依赖这三项，不应自己访问 oauth_accounts 表拼装。
      */
     suspend fun probe(account: OAuthAccountRecord, accessToken: String, proxy: InetSocketAddress? = null): Probe {
+        confirmedContext(account)
         val loaded = loadCodeAssist(account.id, accessToken, proxy)
         val project = loaded.project ?: attempt(account.id, "onboardUser") {
+            confirmedContext(account)
             onboard(accessToken, loaded.tier ?: loaded.allowedTiers.firstOrNull(), proxy)
         }
         if (project == null) {

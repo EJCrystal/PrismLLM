@@ -13,15 +13,23 @@ export function currentInvalidPluginContributions(available: PluginUiContributio
 export async function recheckPluginContributions(available: PluginUiContribution[], invalid: Set<string>, signal: AbortSignal) {
   const recovered: string[] = []
   let error = ''
+  const groups = new Map<string, PluginUiContribution[]>()
   for (const item of available) {
-    const key = pluginContributionVersionKey(item)
-    if (!invalid.has(key) || signal.aborted) continue
+    if (!invalid.has(pluginContributionVersionKey(item))) continue
+    const entries = groups.get(item.pluginId) ?? []
+    entries.push(item)
+    groups.set(item.pluginId, entries)
+  }
+  for (const [pluginId, entries] of groups) {
+    if (signal.aborted) break
     try {
-      const live = await api.getPlugin(item.pluginId, { signal })
-      if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
-        live.activeUi?.entries.some(entry => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
-          entry.placement === item.entry.placement && item.entry.contexts.every(context => entry.contexts.includes(context)))) {
-        recovered.push(key)
+      const live = await api.getPlugin(pluginId, { signal })
+      for (const item of entries) {
+        if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
+          live.activeUi?.entries.some(entry => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
+            entry.placement === item.entry.placement && item.entry.contexts.every(context => entry.contexts.includes(context)))) {
+          recovered.push(pluginContributionVersionKey(item))
+        }
       }
     } catch (cause) {
       if (signal.aborted) throw cause

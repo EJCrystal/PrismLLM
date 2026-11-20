@@ -424,7 +424,7 @@ class OAuthTokenService(
     private fun sameSnapshot(before: OAuthAccountRecord, after: OAuthAccountRecord): Boolean =
         DiagnosticOAuthAccess(before, "", before.proxyUrl).matches(after)
 
-    private fun acceptsSnapshot(before: OAuthAccountRecord, after: OAuthAccountRecord): Boolean {
+    internal fun acceptsSnapshot(before: OAuthAccountRecord, after: OAuthAccountRecord): Boolean {
         if (sameSnapshot(before, after)) return true
         return synchronized(refreshLifecycleLock) {
             var current = before
@@ -485,7 +485,9 @@ class OAuthTokenService(
         return try {
             val outcome = awaitRefresh(account, force = true)
             requireAccessToken(outcome.account)
-            OAuthRefreshResult.Refreshed(repository.findDetailed(accountId) ?: outcome.account)
+            val detailed = repository.findDetailed(accountId) ?: throw credentialReplaced()
+            if (!acceptsSnapshot(outcome.account, detailed)) throw credentialReplaced()
+            OAuthRefreshResult.Refreshed(detailed)
         } catch (cause: CancellationException) {
             throw cause
         } catch (cause: OAuthTokenUnavailableException) {

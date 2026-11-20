@@ -207,9 +207,10 @@ export const api = {
   uninstallPlugin: (id: string) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}`, { method: 'DELETE' }).then(parsePluginRuntimeState),
   listPluginTargets: (id: string, context?: PluginInvocationContext, options: PluginRequestOptions = {}) => {
-    const query = context ? '?' + new URLSearchParams({ contextKind: context.kind, contextId: context.id }) : ''
+    const bound = context ? { ...context } : undefined
+    const query = bound ? '?' + new URLSearchParams({ contextKind: bound.kind, contextId: bound.id }) : ''
     return request<unknown>(`/plugins/${encodeURIComponent(id)}/resources/model-test-targets${query}`, pluginRequestOptions(options))
-      .then(data => parsePluginTargets(data, context))
+      .then(data => parsePluginTargets(data, bound))
   },
   invokePlugin: (id: string, payload: PluginInvocationRequest, options: PluginRequestOptions = {}) => {
     const binding = { pluginId: id, request: { ...payload, context: { ...payload.context }, values: { ...payload.values } } }

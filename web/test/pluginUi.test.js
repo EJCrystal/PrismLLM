@@ -656,6 +656,48 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
+  it('preserves same-context diagnostic edits when re-reading after a background refresh failure', async () => {
+    const entry = await hostFor()
+    await change(field(entry.container, '本次提示词'), 'unsent retry draft')
+    mock.getState = () => Promise.reject(new Error('temporary refresh failure'))
+    await entry.state.load(false); await settle()
+    assert.match(entry.state.loadError.value, /temporary refresh failure/)
+    mock.getState = undefined
+    button(entry.container, '重新读取').click()
+    await waitFor(() => !entry.state.loading.value && !entry.state.loadError.value)
+    assert.equal(field(entry.container, '本次提示词').value, 'unsent retry draft')
+    await entry.state.run(); await settle()
+    assert.equal(calls.invocations.at(-1).payload.values.prompt, 'unsent retry draft')
+  })
+
+  for (const refresh of ['pending', 'failed']) {
+    it(`keeps stop available and suppresses queued work during a ${refresh} background refresh`, async () => {
+      mock.targets = Array.from({ length: 4 }, (_, index) => makeTarget({ model: `model-${index}` }))
+      const entry = await hostFor()
+      await change(field(entry.container, '检测范围'), 'all')
+      const upstream = deferred()
+      mock.invoke = () => upstream.promise
+      const run = entry.state.run()
+      await waitFor(() => calls.invocations.length === 2)
+      const discovery = deferred()
+      mock.getState = () => discovery.promise
+      window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
+      await waitFor(() => entry.state.loading.value)
+      if (refresh === 'failed') {
+        discovery.reject(new Error('background failure while batch runs'))
+        await waitFor(() => !entry.state.loading.value && !!entry.state.loadError.value)
+      }
+      button(entry.container, '停止等待').click(); await settle()
+      assert.equal(entry.state.running.value, false)
+      assert.equal(calls.invocations.length, 2)
+      if (refresh === 'pending') discovery.resolve(stateFor('acme.synthetic'))
+      upstream.resolve(responseFor(calls.invocations[0]))
+      await run; await settle()
+      assert.equal(calls.invocations.length, 2, 'Stopping while config is unavailable cannot send the remaining batch')
+      assert.equal(entry.state.rows.value.filter(row => row.waitingStopped).length, 4)
+    })
+  }
+
   for (const surface of ['ChannelTestDrawer', 'ChannelConnectivityPanel', 'OAuthModelTestModal']) {
     it(`prunes unavailable historical versions before showing the replacement on ${surface}`, async () => {
       const fixture = makeOfficialPluginFixture()

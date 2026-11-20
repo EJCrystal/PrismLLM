@@ -256,6 +256,7 @@ internal class DiagnosticPreparationDeadline private constructor(
             fun setRemainingNetworkTimeout() =
                 setTimeout(deadline.remainingMillis().coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
 
+            setRemainingNetworkTimeout()
             return Proxy.newProxyInstance(
                 Connection::class.java.classLoader,
                 arrayOf(Connection::class.java),
@@ -293,7 +294,10 @@ internal class DiagnosticPreparationDeadline private constructor(
                             throw cause
                         }
                     }
-                    else -> wrapJdbcValue(invoke(connection, method, args), ::setRemainingNetworkTimeout, ::poison)
+                    else -> {
+                        setRemainingNetworkTimeout()
+                        wrapJdbcValue(invoke(connection, method, args), ::setRemainingNetworkTimeout, ::poison)
+                    }
                 }
             } as Connection
         }

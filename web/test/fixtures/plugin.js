@@ -116,7 +116,7 @@ export function makeExecution(options = {}) {
     target: {
       kind: context.kind, id: context.id, model: values.model ?? resource.model,
       protocol: values.protocol ?? resource.protocols[0], displayName: resource.channelName,
-      credentialId: context.kind === 'channel' ? credential?.id ?? null : null,
+      credentialId: context.kind === 'channel' ? credential?.id ?? null : context.id,
       credentialName: context.kind === 'channel' ? credential?.name ?? null : '账号原生授权',
     },
     plan: { prompt: typeof values.prompt === 'string' ? values.prompt : '请只回复 OK', maxOutputTokens: 128, timeoutMs: 45000 },

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { api } from '../src/api'
 import { ApiError } from '../src/types/api'
+import { makeExecution } from './fixtures/plugin.js'
 import {
   parsePluginCatalog, parsePluginCatalogItem, parsePluginContributions, parsePluginExecution,
   parsePluginRuntimeState, parsePluginTargets, parsePlugins, pluginExecutionToModelTestResult,
@@ -737,6 +738,22 @@ describe('bounded authorized model-test-target resources', () => {
 })
 
 describe('generic plugin API paths and existing session semantics', () => {
+  it('binds target discovery to the exact context sent before a caller mutates its object', async t => {
+    const context = { kind: 'channel', id: 'channel/one' }
+    replaceGlobals(t, { document: { cookie: '' }, fetch: async input => {
+      assert.match(String(input), /contextId=channel%2Fone/)
+      context.id = 'another-channel'
+      return json([target()])
+    } })
+    assert.equal((await api.listPluginTargets(SECOND_PLUGIN, context))[0].channelId, 'channel/one')
+  })
+
+  it('uses OAuth execution fixtures that pass real request-bound response validation', () => {
+    const request = invocation({ kind: 'oauth-account', id: 'fixture-account' })
+    delete request.values.keyId
+    const raw = makeExecution({ pluginId: SECOND_PLUGIN, context: request.context, values: request.values })
+    assert.equal(parsePluginExecution(raw, { pluginId: SECOND_PLUGIN, request }).target.credentialId, 'fixture-account')
+  })
   it('uses all ten fixed endpoints, exact payloads, cookies/CSRF and signal-only read options', async t => {
     const context = { kind: 'channel', id: 'channel/a +?#& 中文' }
     const unsafeLookingId = 'plugin/a +?#& 中文'
