@@ -287,16 +287,22 @@ internal suspend fun GatewayApplication.executePluginProbe(
 
 internal suspend fun GatewayApplication.accountPluginTargets(id: String): List<IqTestTargetResponse> {
     val account = oauthAccountRepository.findDetailed(id) ?: throw notFound("oauth_account_not_found", "订阅账号不存在")
-    val channelId = providerChannelProvisioner.ensure(account.provider)
-        ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + account.provider.value)
-    val channel = channelRepository.find(channelId) ?: throw notFound("channel_not_found", "系统端点渠道不存在")
-    val endpointProtocols = ProviderEndpoints.of(account.provider).protocols
-    val protocols = channel.protocols.filter { it in endpointProtocols }.map { it.value }
+    val endpoint = ProviderEndpoints.of(account.provider)
+    if (!endpoint.servable) {
+        throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + account.provider.value)
+    }
+    // Resource reads must not persist the hidden provider channel. When it has not been
+    // provisioned yet, expose only the provider's seed models/protocols; explicit execution
+    // creates the channel under its shared diagnostic-preparation deadline.
+    val channel = channelRepository.findProviderChannel(account.provider)
+    val models = channel?.models ?: endpoint.models
+    val supportedProtocols = channel?.protocols ?: endpoint.protocols
+    val protocols = supportedProtocols.filter { it in endpoint.protocols }.map { it.value }
     if (protocols.isEmpty()) return emptyList()
     // 原生账号不需要先作为渠道凭据出现；仅暴露官方端点与账号授权的交集。
-    return channel.models.filter { account.supports(it) }.sorted().map { model ->
+    return models.filter { account.supports(it) }.sorted().map { model ->
         IqTestTargetResponse(
-            channelId = account.id, channelName = account.name, channelEnabled = channel.enabled,
+            channelId = account.id, channelName = account.name, channelEnabled = channel?.enabled ?: true,
             model = model, protocols = protocols,
             credentials = listOf(IqTestTargetCredentialResponse(account.id, account.name, account.priority)),
         )

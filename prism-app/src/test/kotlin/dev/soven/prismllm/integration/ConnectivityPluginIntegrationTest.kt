@@ -114,6 +114,8 @@ import kotlin.test.assertTrue
 @Tag("channel")
 @Timeout(60)
 class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
+    override val requiresConnectivityPluginPackage = true
+
     @TempDir
     lateinit var auxiliaryDirectory: Path
 
@@ -658,6 +660,45 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(original, app.channelRepository.find(channel.id), "Diagnostic preparation cannot disable or rewrite either saved key")
             assertActive(client.pluginState(session))
             assertNoPreparation()
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `OAuth target reads do not provision provider channel and explicit probe provisions it`() = runBlocking {
+        val provider = OAuthProvider.CHATGPT
+        val model = "gpt-6-luna"
+        val protocol = GatewayProtocol.RESPONSES
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val account = oauthAccount("read-only-provider-target", provider, listOf(model), emptyList())
+            assertNull(app.channelRepository.findProviderChannel(provider))
+
+            val targets = client.api(HttpMethod.Get,
+                "/admin/api/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=oauth-account&contextId=${account.id}", session)
+                .decoded<List<IqTestTargetResponse>>()
+            assertEquals(listOf(model), targets.map { it.model }, "Missing system channels still expose authorized seed models")
+            assertEquals(listOf(protocol.value), targets.single().protocols)
+            assertEquals(account.id, targets.single().channelId)
+            assertEquals(account.name, targets.single().channelName)
+            assertTrue(targets.single().channelEnabled)
+            assertEquals(listOf(account.id), targets.single().credentials.map { it.id })
+            assertNull(app.channelRepository.findProviderChannel(provider), "Target discovery must not persist the provider channel")
+            assertEquals(0, scalarInt("select count(*) from channels where kind = 'provider'"))
+            assertTrue(probes.isEmpty())
+            assertTrue(preparations.isEmpty())
+            assertTrue(fake.tokenRequests.isEmpty())
+
+            val execution = client.invokePlugin(session, "oauth-account", account.id, values(model, protocol))
+                .decoded<PluginExecution>()
+            assertTrue(execution.outcome.success)
+            assertNativeRequest(probes.single(), provider, model, DEFAULT_PROMPT)
+            val channel = assertNotNull(app.channelRepository.findProviderChannel(provider),
+                "An explicit diagnostic provisions its endpoint as part of preparation")
+            assertEquals(listOf(protocol), channel.protocols)
+            assertTrue(model in channel.models)
+            assertEquals(0, preparations.size, "ChatGPT probes do not require project discovery")
         }
         assertNoDiagnosticSettlement()
     }

@@ -58,6 +58,7 @@ import kotlin.test.assertTrue
 @Tag("integration")
 @Tag("shard-3")
 class AdminConsoleIntegrationTest : GatewayIntegrationTestBase() {
+    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `rejects invalid model and stream types`() = runBlocking {

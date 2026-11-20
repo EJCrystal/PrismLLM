@@ -83,6 +83,10 @@ abstract class GatewayIntegrationTestBase {
     lateinit var iqJudgePluginDirectory: Path
     @TempDir
     lateinit var pluginInstallationDirectory: Path
+    @TempDir
+    lateinit var emptyPluginCatalogDirectory: Path
+
+    protected open val requiresConnectivityPluginPackage: Boolean = false
 
     /** 使用独立 verify 产物；缺少包时明确失败，不能用应用 classpath 上的实现替代。 */
     protected val connectivityPluginCatalogDirectory: Path by lazy {
@@ -122,8 +126,8 @@ abstract class GatewayIntegrationTestBase {
 
     @BeforeAll
     fun startInfrastructure() {
-        // 在启动数据库之前检查打包前置条件，不能把关键验收用例静默跳过。
-        connectivityPluginCatalogDirectory
+        // 仅依赖真实诊断包的测试在启动数据库之前检查打包前置条件。
+        if (requiresConnectivityPluginPackage) connectivityPluginCatalogDirectory
         postgres = IntegrationPostgres.container
         databaseUrl = IntegrationPostgres.newDatabase()
         fake = FakeUpstream().apply { start() }
@@ -365,7 +369,7 @@ abstract class GatewayIntegrationTestBase {
         iqDefaultJudge = "local",
         iqJudgeTimeoutMs = 5_000,
         iqJudgePluginDir = iqJudgePluginDirectory,
-        pluginCatalogDir = connectivityPluginCatalogDirectory,
+        pluginCatalogDir = if (requiresConnectivityPluginPackage) connectivityPluginCatalogDirectory else emptyPluginCatalogDirectory,
         pluginInstallDir = pluginInstallationDirectory,
         cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false),

@@ -424,6 +424,133 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun staleAccountReadCannotDiscardNewerPendingRefreshAfterSaveFailure() = runBlocking {
+        val id = createAccount("rt-stale-pending", accountEmail = email("stale-pending"))
+        val firstReadStarted = CompletableDeferred<Unit>()
+        val releaseFirstRead = CompletableDeferred<Unit>()
+        val heldRead = AtomicReference<Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>?>(null)
+        val repository = object : OAuthAccountRepository(factory.database, OAuthProviderChannelLookup()) {
+            override suspend fun find(accountId: String): OAuthAccountRecord? {
+                val account = super.find(accountId)
+                val gate = if (accountId == id) heldRead.getAndSet(null) else null
+                if (gate != null) {
+                    gate.first.complete(Unit)
+                    withTimeout(5_000) { gate.second.await() }
+                }
+                return account
+            }
+        }
+        val providerCalls = AtomicInteger()
+        val provider = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse =
+                when (providerCalls.incrementAndGet()) {
+                    1 -> {
+                        assertEquals("rt-stale-pending", refreshToken)
+                        OAuthTokenResponse("at-old", "rt-old-rotated")
+                    }
+                    2 -> {
+                        assertEquals("rt-replaced-pending", refreshToken)
+                        OAuthTokenResponse("at-new", "rt-new-rotated")
+                    }
+                    else -> error("pending recovery must reuse its rotation, not exchange again")
+                }
+        }
+        val service = OAuthTokenService(
+            repository = repository,
+            cipher = cipher,
+            providers = OAuthTokenProviderRegistry(listOf(provider)),
+            config = OAuthConfig(refreshAheadMs = 900_000),
+        )
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val function = "stale_pending_save_$suffix"
+        val trigger = "stale_pending_trigger_$suffix"
+        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+            connection.createStatement().use { statement ->
+                statement.execute("CREATE FUNCTION $function() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id = '$id' AND NEW.access_token_ciphertext IS NOT NULL THEN RAISE EXCEPTION 'synthetic write failure' USING ERRCODE = '42501'; END IF; RETURN NEW; END $$")
+                statement.execute("CREATE TRIGGER $trigger BEFORE UPDATE ON oauth_accounts FOR EACH ROW EXECUTE FUNCTION $function()")
+            }
+        }
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }
+        val pendingField = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+        val tasksField = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+        var staleRead: kotlinx.coroutines.Deferred<Result<OAuthAccountAccess?>>? = null
+        try {
+            val firstFailure = assertFailsWith<OAuthTokenUnavailableException> {
+                withTimeout(5_000) { service.accessToken(id) }
+            }
+            assertEquals("refresh_save_pending", firstFailure.errorCode)
+            withTimeout(5_000) {
+                while (synchronized(monitor.get(service)) { (tasksField.get(service) as Map<*, *>).isNotEmpty() }) delay(1)
+            }
+            val firstPending = synchronized(monitor.get(service)) { (pendingField.get(service) as Map<*, *>)[id] }
+            assertNotNull(firstPending)
+
+            // Capture the old account row, but suspend its return after accessTokenWithSnapshot
+            // has already observed the first pending result and before it can inspect the map again.
+            heldRead.set(firstReadStarted to releaseFirstRead)
+            staleRead = async(Dispatchers.IO) { runCatching { service.accessTokenWithSnapshot(id) } }
+            withTimeout(5_000) { firstReadStarted.await() }
+            accounts.updateCredentials(
+                id,
+                OAuthAccountCredentialUpdate(
+                    provider = OAuthProvider.CHATGPT,
+                    refreshToken = cipher.encrypt("rt-replaced-pending"),
+                ),
+            )
+
+            // Replacing credentials discards the first result. The next exchange then rotates the
+            // replacement credential but cannot persist it, leaving a different pending result.
+            val secondFailure = assertFailsWith<OAuthTokenUnavailableException> {
+                withTimeout(5_000) { service.accessToken(id) }
+            }
+            assertEquals("refresh_save_pending", secondFailure.errorCode)
+            val secondPending = synchronized(monitor.get(service)) { (pendingField.get(service) as Map<*, *>)[id] }
+            assertNotNull(secondPending)
+            assertTrue(secondPending !== firstPending, "the replacement refresh must own a new pending result")
+            withTimeout(5_000) {
+                while (synchronized(monitor.get(service)) { (tasksField.get(service) as Map<*, *>).isNotEmpty() }) {
+                    delay(1)
+                }
+            }
+
+            releaseFirstRead.complete(Unit)
+            val staleFailure = withTimeout(5_000) { staleRead.await() }.exceptionOrNull()
+            assertEquals("refresh_save_pending", assertIs<OAuthTokenUnavailableException>(staleFailure).errorCode)
+            withTimeout(5_000) {
+                while (synchronized(monitor.get(service)) { (tasksField.get(service) as Map<*, *>).isNotEmpty() }) delay(1)
+            }
+            assertTrue(
+                synchronized(monitor.get(service)) { (pendingField.get(service) as Map<*, *>)[id] === secondPending },
+                "the stale account snapshot must not discard the newer failed-save rotation",
+            )
+
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION $function()")
+                }
+            }
+            val recovered = withTimeout(5_000) { service.accessToken(id) }
+            assertEquals("at-new", assertNotNull(recovered).accessToken)
+            assertEquals(2, providerCalls.get(), "recovery must persist the retained rotation without re-exchange")
+            val context = accounts.loadRefreshContext(id)!!
+            assertEquals("rt-new-rotated", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+        } finally {
+            releaseFirstRead.complete(Unit)
+            staleRead?.let { runCatching { withTimeout(5_000) { it.await() } } }
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER IF EXISTS $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION IF EXISTS $function()")
+                }
+            }
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
     fun refreshesCachesAndPersistsRotatedRefreshToken() = runBlocking {
         val keyId = createAccount("rt-1", accountEmail = email("cache"), accountPlan = "free")
         val service = service()

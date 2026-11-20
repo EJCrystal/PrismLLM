@@ -90,7 +90,7 @@ open class OAuthAccountRepository(
     private val quotaJson = Json { ignoreUnknownKeys = true }
 
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
-    suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
+    open suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
         OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
             ?.let { toRecord(it, emptyList(), emptySet()) }
     }

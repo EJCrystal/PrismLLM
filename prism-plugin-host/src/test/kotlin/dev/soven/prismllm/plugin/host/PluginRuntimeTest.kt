@@ -9,6 +9,7 @@ import dev.soven.prismllm.plugin.sdk.ProbeOutcome
 import dev.soven.prismllm.plugin.sdk.ProbePlan
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -786,7 +787,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
-    fun `CAS failures never replace active config or silently retry and disable remains fail-closed`(): Unit = runBlocking {
+    fun `CAS failures never replace active config or silently retry and failed disable restores admission`(): Unit = runBlocking {
         val packaged = fixture()
         publish(packaged)
         val store = MemoryInstallationStore()
@@ -801,10 +802,100 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         store.failNextSave.set(true)
         failure("PLUGIN_REVISION_CONFLICT") { host.disable(packaged.manifest.id) }
         val state = host.state(packaged.manifest.id)
+        assertTrue(state.desiredEnabled && state.admissionEnabled)
+        assertFalse(state.requiresRestart)
+        invoke(host)
+        store.failNextSave.set(true)
+        failure("PLUGIN_REVISION_CONFLICT") { host.uninstall(packaged.manifest.id) }
+        assertTrue(host.state(packaged.manifest.id).admissionEnabled)
+        invoke(host)
+        assertEquals(2, store.writes)
+    }
+
+    @Test
+    fun `failed stop never reopens a concurrently committed disable`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        for (uninstall in listOf(false, true)) {
+            val store = MemoryInstallationStore()
+            val host = runtime(store)
+            host.initialize(packaged.manifest.id)
+            val original = assertNotNull(store.find(packaged.manifest.id))
+            store.beforeSave = {
+                store.seed(original.copy(desiredEnabled = false, revision = original.revision + 1))
+            }
+            failure("PLUGIN_REVISION_CONFLICT") {
+                if (uninstall) host.uninstall(packaged.manifest.id) else host.disable(packaged.manifest.id)
+            }
+            store.beforeSave = null
+            val disabled = host.state(packaged.manifest.id)
+            assertFalse(disabled.desiredEnabled)
+            assertFalse(disabled.admissionEnabled)
+            val enabled = host.enable(packaged.manifest.id, disabled.revision, packaged.manifest.version)
+            assertTrue(enabled.desiredEnabled && enabled.requiresRestart)
+            failure("PLUGIN_DISABLED") { invoke(host) }
+        }
+    }
+
+    @Test
+    fun `cancelled stop waiting for the mutex restores admission after checking committed state`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        for (uninstall in listOf(false, true)) {
+            val decisions = MemoryInstallationStore()
+            val saving = CompletableDeferred<Unit>()
+            val releaseSave = CompletableDeferred<Unit>()
+            val host = runtime(object : PluginInstallationStore by decisions {
+                override suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean {
+                    saving.complete(Unit)
+                    withTimeout(5_000) { releaseSave.await() }
+                    return decisions.save(installation, expectedRevision)
+                }
+            })
+            host.initialize(packaged.manifest.id)
+            coroutineScope {
+                val configuring = async { host.configure(packaged.manifest.id, config("committed while stopping")) }
+                withTimeout(1_500) { saving.await() }
+                val stopping = async(start = CoroutineStart.UNDISPATCHED) {
+                    if (uninstall) host.uninstall(packaged.manifest.id) else host.disable(packaged.manifest.id)
+                }
+                try {
+                    stopping.cancel()
+                } finally {
+                    releaseSave.complete(Unit)
+                }
+                withTimeout(4_000) { configuring.await(); stopping.join() }
+            }
+            val state = host.state(packaged.manifest.id)
+            assertTrue(state.installed && state.desiredEnabled && state.admissionEnabled)
+            assertFalse(state.requiresRestart)
+            assertEquals("committed while stopping", invoke(host).plan.prompt)
+        }
+    }
+
+    @Test
+    fun `failed stop stays closed when committed state cannot be checked`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val decisions = MemoryInstallationStore()
+        var unavailable = false
+        val host = runtime(object : PluginInstallationStore by decisions {
+            override suspend fun find(id: String): PluginInstallation? {
+                if (unavailable) throw IllegalStateException("store unavailable")
+                return decisions.find(id)
+            }
+            override suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean {
+                unavailable = true
+                return false
+            }
+        })
+        host.initialize(packaged.manifest.id)
+        failure("PLUGIN_REVISION_CONFLICT") { host.disable(packaged.manifest.id) }
+        unavailable = false
+        val state = host.state(packaged.manifest.id)
         assertTrue(state.desiredEnabled && state.requiresRestart)
         assertFalse(state.admissionEnabled)
         failure("PLUGIN_DISABLED") { invoke(host) }
-        assertEquals(2, store.writes)
     }
 
     @Test

@@ -63,6 +63,7 @@ import kotlin.test.assertFailsWith
 @Tag("channel")
 @Tag("protocol")
 class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
+    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `protocol authentication overrides apply per outbound protocol and legacy auth remains fallback`() = runBlocking {

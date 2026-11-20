@@ -19,6 +19,8 @@ PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
 
 官方连通性扩展不在根 reactor 中，也不进入 app 测试 classpath。`verify` 生成同目录的 `catalog.json` 与 `prism-connectivity-1.0.0.prismplugin`。宿主组件测试通过 `prism.plugin.fixtureDirectory` 读取真实包；app 通过 `PRISM_TEST_PLUGIN_CATALOG_DIR` 读取同一目录，该变量不是运行时的 `PLUGIN_CATALOG_DIR`。已有有效夹具且插件源码未变时，可只执行上面的最后一条测试命令。不要在测试读取夹具期间清理或重新构建同一个扩展 `target` 目录；独立构建和冷加载边界见 [官方诊断插件指南](plugins/connectivity-diagnostic.md)。
 
+共享集成夹具默认使用空插件目录。需要官方诊断包的测试类显式覆盖 `requiresConnectivityPluginPackage = true`，并在启动数据库前检查真实产物；无关测试的定向执行不要求先构建扩展。完整回归和专用包加载验收仍需执行上述独立构建。
+
 CI 在同一个 job 中先编译、测试编译、安装当前 checkout 的模块与插件 SPI，再运行已编译测试；app 执行前独立构建官方诊断包，并在宿主中验证实际产物：
 
 ```bash

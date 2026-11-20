@@ -142,12 +142,15 @@ class OAuthTokenService(
         accessTokenWithSnapshot(accountId, forceRefresh)?.token
 
     internal suspend fun accessTokenWithSnapshot(accountId: String, forceRefresh: Boolean = false): OAuthAccountAccess? {
+        val pendingBeforeRead = synchronized(refreshLifecycleLock) { pendingRefreshes[accountId] }
         val account = repository.find(accountId)
         if (account == null) {
-            synchronized(refreshLifecycleLock) { pendingRefreshes.remove(accountId) }
+            synchronized(refreshLifecycleLock) {
+                if (pendingRefreshes[accountId] === pendingBeforeRead) pendingRefreshes.remove(accountId)
+            }
             return null
         }
-        discardReplacedPending(account)
+        discardReplacedPending(account, pendingBeforeRead)
         if (!forceRefresh) cachedAccessToken(account)?.let { return OAuthAccountAccess(account, it) }
         return try {
             val saved = awaitRefresh(account, force = forceRefresh).account
@@ -685,8 +688,9 @@ class OAuthTokenService(
         }
     }
 
-    private fun discardReplacedPending(account: OAuthAccountRecord) = synchronized(refreshLifecycleLock) {
-        val pending = pendingRefreshes[account.id] ?: return@synchronized
+    private fun discardReplacedPending(account: OAuthAccountRecord, observedPending: PendingRefresh?) = synchronized(refreshLifecycleLock) {
+        val pending = observedPending ?: return@synchronized
+        if (pendingRefreshes[account.id] !== pending) return@synchronized
         if (refreshTasks[account.id]?.work?.isCompleted == false) return@synchronized
         val original = pending.context.account
         val belongsToAuthorization = account.provider == original.provider && account.authorizedAt == original.authorizedAt &&
@@ -714,7 +718,7 @@ class OAuthTokenService(
             } ?: return
             if (current.account == null) synchronized(refreshLifecycleLock) {
                 if (refreshTasks[id]?.work?.isCompleted != false) pendingRefreshes.remove(id, pending)
-            } else discardReplacedPending(current.account)
+            } else discardReplacedPending(current.account, pending)
         }
     }
 

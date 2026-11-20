@@ -11,6 +11,7 @@ import dev.soven.prismllm.plugin.sdk.ProbeOutcome
 import dev.soven.prismllm.plugin.sdk.ProbePlan
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -343,10 +344,41 @@ class PluginRuntime(
         }
     }
 
-    suspend fun disable(id: String): PluginRuntimeState {
-        // Close before waiting for the mutex/database: a concurrent plan must not prepare credentials.
-        active[id]?.admission?.set(false)
-        return changeEnabled(id, false, null) {}
+    suspend fun disable(id: String): PluginRuntimeState = stoppingAdmission(id) {
+        changeEnabled(id, false, null) {}
+    }
+
+    private suspend fun stoppingAdmission(id: String, change: suspend () -> PluginRuntimeState): PluginRuntimeState {
+        // Block before waiting for the mutex/database, but only committed stops close the latch.
+        val loaded = active[id]
+        loaded?.pendingStops?.incrementAndGet()
+        var committed = false
+        try {
+            return change().also { committed = true }
+        } finally {
+            if (loaded != null) {
+                try {
+                    if (committed) loaded.admission.set(false)
+                    else withContext(NonCancellable) {
+                        try {
+                            val checked = withTimeoutOrNull(CODE_TIMEOUT_MS) {
+                                mutex.withLock {
+                                    val current = store.find(id)
+                                    if (current == null) loaded.admission.set(false) else observe(current)
+                                }
+                                true
+                            }
+                            if (checked != true) loaded.admission.set(false)
+                        } catch (_: Exception) {
+                            // Unknown persistence state cannot safely restore admission.
+                            loaded.admission.set(false)
+                        }
+                    }
+                } finally {
+                    loaded.pendingStops.decrementAndGet()
+                }
+            }
+        }
     }
 
     private suspend fun changeEnabled(
@@ -412,9 +444,8 @@ class PluginRuntime(
         render(next)
     }
 
-    suspend fun uninstall(id: String): PluginRuntimeState {
-        active[id]?.admission?.set(false)
-        return mutex.withLock {
+    suspend fun uninstall(id: String): PluginRuntimeState = stoppingAdmission(id) {
+        mutex.withLock {
             checkReady()
             val previous = find(id)
             if (!previous.installed && !previous.desiredEnabled) return@withLock render(previous)
@@ -475,7 +506,7 @@ class PluginRuntime(
                     if (active[id] !== snapshot.loaded) throw PluginHostException("PLUGIN_NOT_ACTIVE", "Active plugin changed", 409)
                     if (PluginValidation.permission(target.kind) !in snapshot.loaded.grants) throw PluginHostException("PLUGIN_PERMISSION_REQUIRED", "Plugin probe permission was revoked", 403)
                 }
-                if (closed.get() || !snapshot.loaded.admission.get()) throw PluginHostException("PLUGIN_DISABLED", "Plugin admission is disabled", 409)
+                if (closed.get() || !snapshot.loaded.admissionOpen()) throw PluginHostException("PLUGIN_DISABLED", "Plugin admission is disabled", 409)
                 // Admission waiting is NOT upstream latency. The callback binds the authorized target
                 // and prepares secrets only after this final gate. OAuth gets a separate 20s envelope
                 // allowance for native preparation; its HTTP helper still receives plan.timeoutMs.
@@ -591,7 +622,7 @@ class PluginRuntime(
         active.forEach { (id, loaded) -> if (id !in ids) loaded.admission.set(false) }
     }
 
-    private fun admitted(installation: PluginInstallation, loaded: LoadedPlugin): Boolean = !closed.get() && installation.installed && installation.desiredEnabled && loaded.admission.get()
+    private fun admitted(installation: PluginInstallation, loaded: LoadedPlugin): Boolean = !closed.get() && installation.installed && installation.desiredEnabled && loaded.admissionOpen()
 
     private fun requireAdmission(installation: PluginInstallation, loaded: LoadedPlugin, expectedVersion: String) {
         if (!admitted(installation, loaded)) throw PluginHostException("PLUGIN_DISABLED", "Plugin admission is disabled", 409)
@@ -842,6 +873,9 @@ class PluginRuntime(
         val staged: StagedPluginPackage, val plugin: DiagnosticPlugin, val loader: PackageClassLoader,
         val grants: Set<String>, var configuration: JsonObject, val admission: AtomicBoolean = AtomicBoolean(true),
     ) {
+        val pendingStops = AtomicInteger()
+        fun admissionOpen(): Boolean = pendingStops.get() == 0 && admission.get()
+
         private var workers = 0
         private var disposalStarted = false
         private var providerClosed = false
