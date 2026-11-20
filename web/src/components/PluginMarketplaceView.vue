@@ -36,6 +36,7 @@ const invalidDiagnosticKey = ref('')
 const diagnosticGeneration = ref(0)
 const diagnosticRechecking = ref(false)
 const diagnosticRecheckError = ref('')
+const diagnosticRecovery = ref<HTMLElement | null>(null)
 const guard = createLatestRequestGuard()
 let controller: AbortController | null = null
 let diagnosticRecheckToken = 0
@@ -126,6 +127,14 @@ function markDiagnosticUnavailable(value: { pluginId: string; activeVersion: str
   if (current?.pluginId !== value.pluginId || current.activeVersion !== value.activeVersion || current.entry.id !== value.entryId) return
   invalidDiagnosticKey.value = `${value.pluginId}:${value.activeVersion}:${value.entryId}`
   diagnosticRecheckError.value = ''
+  const invalidKey = invalidDiagnosticKey.value
+  void nextTick(() => {
+    if (disposed || invalidDiagnosticKey.value !== invalidKey) return
+    const recovery = diagnosticRecovery.value
+    const action = recovery?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+    const target = action ?? recovery
+    target?.focus({ preventScroll: true })
+  })
 }
 
 async function recheckDiagnostic() {
@@ -226,7 +235,7 @@ async function load(preserveDraft = true): Promise<boolean> {
 }
 
 async function mutate(operation: () => Promise<PluginRuntimeState>, message: string, discardDraft = false, confirmDiscard = discardDraft, configurationSave = false) {
-  if (busy.value || (confirmDiscard && dirty.value && !canLeave())) return
+  if (busy.value || !installationStateKnown.value || (confirmDiscard && dirty.value && !canLeave())) return
   const id = selectedId.value
   busy.value = true
   cancelListRequest()
@@ -239,12 +248,12 @@ async function mutate(operation: () => Promise<PluginRuntimeState>, message: str
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
   } catch (cause) {
     if (!disposed && id === selectedId.value) {
-      if (cause instanceof ApiError && cause.status === 409 && cause.code === 'PLUGIN_REVISION_CONFLICT') {
-        if (configurationSave) draftRejected.value = true
-        else {
-          installationStateKnown.value = false
-          loadError.value = '安装状态已变化，请重新读取后再操作。'
-        }
+      const conflict = cause instanceof ApiError && cause.status === 409 && cause.code === 'PLUGIN_REVISION_CONFLICT'
+      const uncertain = !(cause instanceof ApiError) || cause.status < 400 || cause.status === 408 || cause.status >= 500
+      if (conflict && configurationSave) draftRejected.value = true
+      if ((conflict && !configurationSave) || uncertain) {
+        installationStateKnown.value = false
+        loadError.value = uncertain ? '无法确认写入结果，请重新读取安装状态后再操作。' : '安装状态已变化，请重新读取后再操作。'
       }
       notify(errorMessage(cause), 'error')
     }
@@ -360,7 +369,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
           <p v-if="draftConflict" class="callout warning" role="alert">当前配置草稿属于 {{ draftOwnerId }} 安装版本 {{ draftInstalledVersion ?? '无' }}、revision {{ draftRevision }}；当前安装选择为 {{ selectedId }} {{ selectedState?.installedVersion ?? '无' }}、revision {{ selectedState?.revision ?? 0 }}。配置或安装选择已变化，请放弃旧草稿后载入当前配置，不能将旧版本或旧 revision 草稿保存到当前状态。</p>
           <p v-if="selectedState?.activeVersion && selectedState.activeVersion !== selectedState.installedVersion" class="muted small">这里保存待生效版本的配置；当前运行的旧版本继续使用自己的配置快照。</p>
           <form class="plugin-market-config" @submit.prevent="saveConfiguration"><PluginFieldInput v-for="field in configurationFields" :key="field.key" :field="field" v-model="configuration[field.key]" :disabled="busy || draftConflict" />
-            <small v-if="configurationError" class="danger-text" role="status">{{ configurationError }}</small><div class="plugin-market-actions"><button type="submit" class="button primary" :disabled="busy || draftConflict || !dirty || !!configurationError">保存配置</button><button v-if="draftConflict" type="button" class="button ghost" :disabled="busy" @click="discardVersionConflict">放弃旧草稿并载入当前配置</button><button v-else type="button" class="button ghost" :disabled="busy || !dirty" @click="resetConfiguration">撤销修改</button></div></form>
+            <small v-if="configurationError" class="danger-text" role="status">{{ configurationError }}</small><div class="plugin-market-actions"><button type="submit" class="button primary" :disabled="!installationStateKnown || busy || draftConflict || !dirty || !!configurationError">保存配置</button><button v-if="draftConflict" type="button" class="button ghost" :disabled="busy" @click="discardVersionConflict">放弃旧草稿并载入当前配置</button><button v-else type="button" class="button ghost" :disabled="busy || !dirty" @click="resetConfiguration">撤销修改</button></div></form>
         </section>
         <section v-if="pageEntries.length" class="plugin-market-section"><h3>运行诊断<span class="muted small"> · 当前生效 {{ selectedState?.activeVersion }}</span></h3>
           <div class="plugin-market-actions"><template v-for="entry in pageEntries" :key="entry.id"><button v-if="entry.contexts.includes('channel')" type="button" class="button" :disabled="busy" @click="openDiagnostic(entry.id, $event)"><Icon :name="entry.icon" :size="16" />{{ entry.label }}</button><small v-else class="muted">{{ entry.label }}请从订阅账号页面打开。</small></template></div>
@@ -369,7 +378,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
       <TestEmptyState v-else icon="layers" title="选择一个插件" description="从清单查看版本、能力授权和配置。安装不代表当前进程已经加载。" />
     </div>
     <Modal v-if="diagnosticContribution" :key="diagnosticGeneration" :title="diagnosticContribution.entry.label" full :body-scrollable="false" @close="closeDiagnostic"><PluginDiagnosticHost :contribution="diagnosticContribution" @unavailable="markDiagnosticUnavailable" /></Modal>
-    <p v-else-if="diagnosticEntryId && (invalidDiagnosticKey || diagnosticRecheckError)" class="callout danger" role="alert">{{ diagnosticRecheckError || '此生效版本的诊断入口已不可用。' }}<button v-if="invalidDiagnosticKey" type="button" class="button ghost" :disabled="busy || diagnosticRechecking" @click="recheckDiagnostic">{{ diagnosticRechecking ? '正在检查…' : '重新检查' }}</button>或关闭弹窗后重试。</p>
+    <p v-else-if="diagnosticEntryId && (invalidDiagnosticKey || diagnosticRecheckError)" ref="diagnosticRecovery" class="callout danger" role="alert" tabindex="-1">{{ diagnosticRecheckError || '此生效版本的诊断入口已不可用。' }}<button v-if="invalidDiagnosticKey" type="button" class="button ghost" :disabled="busy || diagnosticRechecking" @click="recheckDiagnostic">{{ diagnosticRechecking ? '正在检查…' : '重新检查' }}</button>诊断弹窗已关闭，请重新检查入口后重试。</p>
   </section>
 </template>
 

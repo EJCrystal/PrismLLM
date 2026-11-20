@@ -339,6 +339,7 @@ class OAuthTokenService(
 
             var exchangeContext = context
             task.waitingForExchangePermit = true
+            var retainedExchange: PendingRefresh? = null
             val pending = try {
                 refreshPermits.withPermit {
                     task.waitingForExchangePermit = false
@@ -368,10 +369,16 @@ class OAuthTokenService(
                         withTimeoutOrNull(config.requestTimeoutMs) {
                             completed.set(exchange(prepared))
                         }
-                        completed.get() ?: throw OAuthRefreshException(false, "timeout", "OAuth 刷新超时")
+                        val exchanged = completed.get() ?: throw OAuthRefreshException(false, "timeout", "OAuth 刷新超时")
+                        synchronized(refreshLifecycleLock) { pendingRefreshes[accountId] = exchanged }
+                        retainedExchange = exchanged
+                        exchanged
                     }
                 }
             } catch (cause: CancellationException) {
+                retainedExchange?.let { retained ->
+                    withContext(NonCancellable) { persistRefresh(retained, task) }
+                }
                 throw cause
             } catch (cause: Exception) {
                 // A pre-exchange reauthorization rejection is not a provider failure.
@@ -392,7 +399,6 @@ class OAuthTokenService(
             }
             // Keep the account mutex and encrypted result, but release the global exchange permit
             // before any save attempt or backoff. Save retries remain bounded by MAX_DIAGNOSTIC_REFRESH_TASKS.
-            synchronized(refreshLifecycleLock) { pendingRefreshes[accountId] = pending }
             val saved = withContext(NonCancellable) { persistRefresh(pending, task) }
             RefreshOutcome(saved, exchanged = true)
         }

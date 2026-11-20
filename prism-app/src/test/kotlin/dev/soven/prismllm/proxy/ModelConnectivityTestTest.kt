@@ -1717,6 +1717,23 @@ class ModelConnectivityTestTest {
         }
     }
 
+    @Test
+    fun repeatedCredentialPrefixesHaveBoundedRedactionWorkForMaximumResponses() {
+        org.junit.jupiter.api.Assertions.assertTimeoutPreemptively(java.time.Duration.ofSeconds(5)) {
+            runBlocking {
+                val credential = "a".repeat(1_023) + "b"
+                val empty = """{"choices":[{"message":{"content":""}}],"model":"public-model"}"""
+                val content = "a".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() - empty.length)
+                val body = empty.replace("\"content\":\"\"", "\"content\":" + JsonPrimitive(content))
+                assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt(), body.toByteArray().size)
+                for (oauth in listOf(false, true)) {
+                    val result = diagnosticTransport(credential, oauth = oauth, responseBody = body)
+                    assertSuccessfulDiagnostic(result, "[REDACTED]", "public-model", usage = null)
+                }
+            }
+        }
+    }
+
     private fun mixedCredentialEcho(credential: String): String =
         credential.codePoints().toArray().mapIndexed { index, codePoint ->
             val literal = String(Character.toChars(codePoint))

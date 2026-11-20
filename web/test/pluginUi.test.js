@@ -315,7 +315,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await change(field(container, '详细报告'), true)
     await change(field(container, '样本数量'), 3)
     await change(field(container, '报告风格'), 'full')
-    await state.run(); await settle()
+    button(container, fixture.contribution.entry.action.label).click()
+    await waitFor(() => calls.invocations.length === 1 && !state.running.value)
     const call = calls.invocations[0]
     assert.equal(call.id, 'acme.synthetic')
     assert.equal(call.payload.actionId, fixture.contribution.entry.action.id)
@@ -1231,8 +1232,15 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       assert.equal(unavailable.length, expected)
       assert.equal(entry.state.rows.value[0]?.error.includes('plugin response') ?? false, code !== 'network')
       if (!expected) {
+        assert.equal(entry.state.rows.value[0].error, code === 'network' ? 'temporary resource failure' : 'plugin response')
+        assert.match(text(entry.container.querySelector('.plugin-diagnostic-pending')), code === 'network' ? /temporary resource failure/ : /plugin response/)
         assert.ok(entry.state.rows.value.length > 0, 'ordinary failures remain in the host result view')
         assert.equal(entry.state.loadError.value, '')
+        mock.invoke = call => responseFor(call)
+        button(entry.container, fixture.contribution.entry.action.label).click()
+        await waitFor(() => calls.invocations.length === firstInvocation + 2 && !entry.state.running.value)
+        assert.equal(entry.state.rows.value[0].error, '')
+        assert.equal(entry.container.querySelectorAll('.plugin-result').length, 1)
       } else {
         assert.deepEqual(unavailable[0], { pluginId: fixture.manifest.id, activeVersion: '1.0.0', entryId: fixture.contribution.entry.id })
       }
@@ -1649,7 +1657,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.match([...scope.options].find(option => option.value === 'all').textContent, /（3）/)
     await change(scope, 'all')
     assert.deepEqual([...field(entry.container, '协议').options].map(option => option.value), ['responses'])
-    await entry.state.run(); await settle()
+    button(entry.container, '诊断全部模型').click()
+    await waitFor(() => calls.invocations.length === 3 && !entry.state.running.value)
     assert.deepEqual(calls.invocations.slice(1).map(call => call.payload.values.model), ['shared-protocol', 'other-shared-protocol'])
     assert.ok(calls.invocations.every(call => call.payload.values.protocol === 'responses' && call.payload.values.scope === 'single'))
     const skipped = [...entry.container.querySelectorAll('.plugin-diagnostic-pending')].find(row => text(row).includes('no-shared-protocol'))
@@ -2103,9 +2112,14 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     button(entry.container, first.pageContribution.entry.label).click()
     await waitFor(() => captures.get('PluginDiagnosticHost')?.loading.value === false)
     const initialHost = captures.get('PluginDiagnosticHost')
+    const initialClose = button(entry.container, '关闭模拟窗口')
+    initialClose.focus()
+    assert.equal(document.activeElement, initialClose)
     mock.states.set(first.manifest.id, clonePluginData(next.state))
     await initialHost.load(); await settle()
     assert.equal(entry.container.querySelector('.synthetic-dialog'), null)
+    assert.equal(document.activeElement, button(entry.container, '重新检查'))
+    assert.doesNotMatch(text(entry.container), /关闭弹窗后重试/)
     const pending = deferred()
     mock.listPlugins = () => pending.promise
     const setups = diagnosticHostSetups
@@ -2309,6 +2323,58 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       assert.equal(button(entry.container, '卸载').disabled, false)
     }
   })
+
+  for (const [failureKind, makeFailure] of [
+    ['network', () => new Error('mutation response lost')],
+    ['server', () => new ApiError('mutation result unknown', 503, 'upstream_error')],
+    ['invalid response', () => new ApiError('mutation result invalid', 200, 'invalid_response')],
+  ]) {
+    it('blocks every mutation after an uncertain ' + failureKind + ' until authoritative state is read', async () => {
+      for (const operation of ['install', 'disable', 'enable', 'uninstall', 'configuration']) {
+        const fixture = makePluginFixture({ state: operation === 'install'
+          ? { installed: false, installedVersion: null, activeVersion: null, desiredEnabled: false, admissionEnabled: false, requiresRestart: false, status: 'uninstalled' }
+          : operation === 'enable' ? { desiredEnabled: false, admissionEnabled: false, status: 'disabled' } : {} })
+        setFixtures(fixture)
+        const entry = await mount('PluginMarketplaceView')
+        await waitFor(() => !entry.state.loading.value)
+        const method = { install: 'installPlugin', disable: 'setPluginEnabled', enable: 'setPluginEnabled', uninstall: 'uninstallPlugin', configuration: 'configurePlugin' }[operation]
+        const original = api[method]
+        api[method] = async (...args) => { await original(...args); throw makeFailure() }
+        confirmResult = true
+        try {
+          if (operation === 'install') { assert.equal(entry.state.canInstall.value, true); entry.state.install() }
+          else if (operation === 'configuration') {
+            await change(field(entry.container, '默认提示词'), 'preserved uncertain draft')
+            button(entry.container, '保存配置').click()
+          } else button(entry.container, operation === 'disable' ? '禁用' : operation === 'enable' ? '启用（重启生效）' : '卸载').click()
+          await waitFor(() => !entry.state.busy.value && !entry.state.installationStateKnown.value)
+          assert.match(text(entry.container), /无法确认写入结果/)
+          assert.equal(field(entry.container, '目录版本').disabled, true)
+          const counts = () => [calls.install.length, calls.enabled.length, calls.uninstall.length, calls.configuration.length]
+          const before = counts()
+          entry.state.install()
+          entry.state.toggleEnabled()
+          entry.state.uninstall()
+          entry.state.saveConfiguration()
+          await settle()
+          assert.deepEqual(counts(), before)
+          mock.listPlugins = () => Promise.reject(new Error('authoritative state unavailable'))
+          await entry.state.load(); await settle()
+          assert.equal(entry.state.installationStateKnown.value, false)
+          if (operation === 'configuration') assert.equal(entry.state.configuration.defaultPrompt, 'preserved uncertain draft')
+          mock.listPlugins = undefined
+          await entry.state.load(); await settle()
+          assert.equal(entry.state.installationStateKnown.value, true)
+          assert.deepEqual(clonePluginData(entry.state.selectedState.value), stateFor(fixture.manifest.id))
+          assert.deepEqual(counts(), before)
+        } finally {
+          api[method] = original
+          mock.listPlugins = undefined
+          entry.unmount(); mounted.splice(mounted.indexOf(entry), 1)
+        }
+      }
+    })
+  }
 
   it('treats an uninstall revision conflict as unknown installation state without rejecting a clean draft', async () => {
     const fixture = makePluginFixture()

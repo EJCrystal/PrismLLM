@@ -51,6 +51,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.intOrNull
 
 internal const val MAX_MODEL_TEST_RESPONSE_BYTES = 1_048_576L
+private const val MAX_REDACTION_MATCH_WORK = 16 * MAX_MODEL_TEST_RESPONSE_BYTES
 
 /** 一次渠道模型连通性测试的结果。 */
 data class ModelConnectivityTestResult(
@@ -503,12 +504,19 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
     // Scan literal variants without a regex call stack proportional to token length.
     // Merge alternative endpoints at each code point, so ambiguous mixed encodings
     // cannot cause recursive/exponential backtracking (e.g. a literal '%' or '\\').
+    var remainingWork = MAX_REDACTION_MATCH_WORK
+    var exhausted = false
     fun matchEnd(start: Int): Int? {
         var offsets = setOf(start)
         for (alternatives in forms) {
             val next = HashSet<Int>()
             for (offset in offsets) {
                 for (form in alternatives) {
+                    remainingWork -= form.value.length
+                    if (remainingWork < 0) {
+                        exhausted = true
+                        return null
+                    }
                     if (form.matches(display, offset)) next += offset + form.value.length
                 }
             }
@@ -522,6 +530,7 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
         var copied = 0
         while (offset <= display.length - secret.length) {
             val end = matchEnd(offset)
+            if (exhausted) return "[REDACTED]"
             if (end == null) {
                 offset++
             } else {

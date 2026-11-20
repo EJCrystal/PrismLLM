@@ -12,6 +12,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
@@ -90,6 +91,79 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         }
         installer.close()
         return store
+    }
+
+    @Test
+    fun missingInstallationsRetireOwnedProvidersAcrossEveryObservationPath(): Unit = runBlocking {
+        for (lookup in listOf("states", "contributions", "state", "permission")) {
+            val packaged = ownedFixture(id = "missing." + lookup)
+            publish(packaged)
+            val decisions = MemoryInstallationStore()
+            var missing = false
+            val host = runtime(object : PluginInstallationStore by decisions {
+                override suspend fun list(): List<PluginInstallation> = if (missing) emptyList() else decisions.list()
+                override suspend fun find(id: String): PluginInstallation? = if (missing) null else decisions.find(id)
+            })
+            host.initialize(packaged.manifest.id)
+            missing = true
+            when (lookup) {
+                "states" -> assertTrue(host.states().isEmpty())
+                "contributions" -> assertTrue(host.contributions().isEmpty())
+                "state" -> failure("PLUGIN_NOT_INSTALLED") { host.state(packaged.manifest.id) }
+                "permission" -> failure("PLUGIN_NOT_INSTALLED") {
+                    host.requireActivePermission(packaged.manifest.id, "1.0.0", packaged.manifest.permissions.first())
+                }
+            }
+            assertDisposed(packaged)
+            missing = false
+            val restored = host.state(packaged.manifest.id)
+            assertNull(restored.activeVersion)
+            assertFalse(restored.admissionEnabled)
+            assertTrue(restored.requiresRestart)
+            host.close()
+            assertEquals(1, packaged.count("closed"))
+        }
+    }
+
+    @Test
+    fun failedStopReconciliationRemainsBoundedWhenTheStoreSuspends(): Unit = runBlocking {
+        for (operation in listOf("disable", "uninstall")) {
+            val packaged = fixture(id = "reconcile." + operation)
+            publish(packaged)
+            val decisions = MemoryInstallationStore()
+            val reconciling = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            var unavailable = false
+            val host = runtime(object : PluginInstallationStore by decisions {
+                override suspend fun find(id: String): PluginInstallation? {
+                    if (unavailable) {
+                        reconciling.complete(Unit)
+                        release.await()
+                    }
+                    return decisions.find(id)
+                }
+                override suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean {
+                    unavailable = true
+                    return false
+                }
+            })
+            host.initialize(packaged.manifest.id)
+            val stop = async {
+                failure("PLUGIN_REVISION_CONFLICT") {
+                    if (operation == "disable") host.disable(packaged.manifest.id) else host.uninstall(packaged.manifest.id)
+                }
+            }
+            try {
+                withTimeout(3_500) { reconciling.await(); stop.await() }
+                unavailable = false
+                assertFalse(host.state(packaged.manifest.id).admissionEnabled)
+                failure("PLUGIN_DISABLED") { invoke(host, packaged.manifest.id) }
+            } finally {
+                unavailable = false
+                release.complete(Unit)
+                stop.cancelAndJoin()
+            }
+        }
     }
 
     private fun ownedFixture(

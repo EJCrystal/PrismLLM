@@ -318,6 +318,39 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun shutdownRetainsAndSavesAnExchangeThatReturnsAfterSupervisorCancellation() = runBlocking {
+        val accountId = createAccount("shutdown-handoff", accountEmail = email("shutdown-handoff"))
+        val entered = CompletableDeferred<Unit>()
+        val response = CompletableDeferred<OAuthTokenResponse>()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                entered.complete(Unit)
+                return response.await()
+            }
+        }, requestTimeoutMs = 5_000)
+        val request = async { runCatching { service.accessToken(accountId) } }
+        try {
+            withTimeout(5_000) { entered.await() }
+            val supervisor = OAuthTokenService::class.java.getDeclaredField("refreshSupervisor").apply { isAccessible = true }
+                .get(service) as kotlinx.coroutines.Job
+            val drain = async { service.drainRefreshes(timeoutMs = 1) }
+            withTimeout(5_000) { while (!supervisor.isCancelled) delay(1) }
+            response.complete(OAuthTokenResponse("shutdown-rotated-access", "shutdown-rotated-refresh"))
+            assertFalse(withTimeout(7_000) { drain.await() })
+            withTimeout(5_000) { request.await() }
+            val saved = accounts.find(accountId)!!
+            assertEquals("shutdown-rotated-access", cipher.decrypt(saved.accessTokenCiphertext!!, saved.accessTokenNonce!!))
+            val context = accounts.loadRefreshContext(accountId)!!
+            assertEquals("shutdown-rotated-refresh", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+        } finally {
+            response.complete(OAuthTokenResponse("shutdown-cleanup-access", "shutdown-cleanup-refresh"))
+            request.cancelAndJoin()
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
     fun serviceDeadlineCancelsProviderWithoutItsOwnTimerAndReleasesExchangePermit() = runBlocking {
         val accountId = createAccount("service-timeout", accountEmail = email("service-timeout"))
         val original = accounts.find(accountId)!!

@@ -1093,9 +1093,9 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                                 }
                             }
                             lock.createStatement().use { it.execute("lock table oauth_accounts in access exclusive mode") }
-                            try {
-                                coroutineScope {
-                                    val pending = async(Dispatchers.Default) { invoke(account.id, legacy) }
+                            coroutineScope {
+                                val pending = async(Dispatchers.Default) { invoke(account.id, legacy) }
+                                try {
                                     observation.setInt(1, blocker)
                                     awaitCondition("initial account query is blocked by the table lock", timeoutMs = 5_000) {
                                         observation.executeQuery().use { rows ->
@@ -1104,9 +1104,9 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                                         }
                                     }
                                     assertPreparationTimeout(withTimeout(7_000) { pending.await() }, provider)
+                                } finally {
+                                    lock.rollback()
                                 }
-                            } finally {
-                                lock.rollback()
                             }
                         }
                     }

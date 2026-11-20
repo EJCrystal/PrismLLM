@@ -232,8 +232,11 @@ class PluginRuntime(
 
     suspend fun state(id: String): PluginRuntimeState = mutex.withLock {
         checkReady()
-        store.find(id)?.let { render(it) } ?: bootstrapErrors[id]?.let { bootstrapState(id, it) }
-            ?: throw PluginHostException("PLUGIN_NOT_INSTALLED", "No plugin installation or tombstone exists for this id", 404)
+        store.find(id)?.let { render(it) } ?: run {
+            retireMissing(id)
+            bootstrapErrors[id]?.let { bootstrapState(id, it) }
+                ?: throw PluginHostException("PLUGIN_NOT_INSTALLED", "No plugin installation or tombstone exists for this id", 404)
+        }
     }
 
     /** Recheck live admission and the grants belonging to the executable version, not a pending install. */
@@ -594,8 +597,10 @@ class PluginRuntime(
         throw PluginHostException("PLUGIN_INVALID_CONFIGURATION", error.message ?: "Invalid plugin configuration")
     }
 
-    private suspend fun find(id: String): PluginInstallation = store.find(id)
-        ?: throw PluginHostException("PLUGIN_NOT_INSTALLED", "No plugin installation or tombstone exists for this id", 404)
+    private suspend fun find(id: String): PluginInstallation = store.find(id) ?: run {
+        retireMissing(id)
+        throw PluginHostException("PLUGIN_NOT_INSTALLED", "No plugin installation or tombstone exists for this id", 404)
+    }
 
     private suspend fun persist(next: PluginInstallation, previous: PluginInstallation?) {
         checkOpen()
@@ -620,7 +625,13 @@ class PluginRuntime(
 
     private fun closeMissing(installations: List<PluginInstallation>) {
         val ids = installations.mapTo(HashSet()) { it.id }
-        active.forEach { (id, loaded) -> if (id !in ids) loaded.admission.set(false) }
+        active.keys.filter { it !in ids }.forEach(::retireMissing)
+    }
+
+    private fun retireMissing(id: String) {
+        synchronized(lifecycleLock) {
+            active.remove(id)?.let { dispose(it) }
+        }
     }
 
     private fun admitted(installation: PluginInstallation, loaded: LoadedPlugin): Boolean = !closed.get() && installation.installed && installation.desiredEnabled && loaded.admissionOpen()
