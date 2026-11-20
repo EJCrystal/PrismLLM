@@ -3,6 +3,7 @@ package dev.soven.prismllm.integration
 import dev.soven.prismllm.admin.domain.PluginInstallationRecord
 import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.api.IqTestTargetResponse
+import dev.soven.prismllm.api.PluginInstallationStoreAdapter
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.ProviderEndpoints
 import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
@@ -15,8 +16,13 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthAuthState
 import dev.soven.prismllm.oauth.infra.OAuthTokenResponse
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
+import dev.soven.prismllm.plugin.host.PluginCatalog
 import dev.soven.prismllm.plugin.host.PluginCatalogItem
 import dev.soven.prismllm.plugin.host.PluginExecution
+import dev.soven.prismllm.plugin.host.PluginHostException
+import dev.soven.prismllm.plugin.host.PluginInstallation
+import dev.soven.prismllm.plugin.host.PluginInstallationStore
+import dev.soven.prismllm.plugin.host.PluginRuntime
 import dev.soven.prismllm.plugin.host.PluginRuntimeState
 import dev.soven.prismllm.plugin.host.PluginUiContribution
 import dev.soven.prismllm.plugin.sdk.PluginApi
@@ -342,6 +348,65 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 .assertError(HttpStatusCode.Conflict, "PLUGIN_CATALOG_CONFLICT")
             assertEquals(winner, client.pluginState(session))
         }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun `independent runtimes racing from the same revision retain only the PostgreSQL CAS winner`() = runBlocking {
+        app.pluginRuntime.initialize(bootstrapId = PLUGIN_ID)
+        val baseline = app.pluginRuntime.state(PLUGIN_ID)
+        val persisted = PluginInstallationStoreAdapter(
+            app.pluginInstallationRepository, app.databaseFactory.database, app.connectivitySettingsLock,
+        )
+        val bothSaving = CompletableDeferred<Unit>()
+        val releaseSaves = CompletableDeferred<Unit>()
+        val saves = AtomicInteger()
+        val store = object : PluginInstallationStore by persisted {
+            override suspend fun save(installation: PluginInstallation, expectedRevision: Long): Boolean {
+                assertEquals(baseline.revision, expectedRevision)
+                assertEquals(baseline.revision + 1, installation.revision)
+                if (saves.incrementAndGet() == 2) bothSaving.complete(Unit)
+                withTimeout(5_000) { releaseSaves.await() }
+                return persisted.save(installation, expectedRevision)
+            }
+        }
+        val hosts = List(2) { PluginRuntime(PluginCatalog(app.config.pluginCatalogDir), app.config.pluginInstallDir, store) }
+        try {
+            hosts.forEach { it.initialize() }
+            coroutineScope {
+                val requests = hosts.mapIndexed { index, host ->
+                    async(Dispatchers.Default) {
+                        runCatching {
+                            host.configure(PLUGIN_ID, buildJsonObject { put("defaultPrompt", "concurrent draft $index") },
+                                baseline.revision, requireNotNull(baseline.installedVersion))
+                        }
+                    }
+                }
+                try {
+                    withTimeout(5_000) { bothSaving.await() }
+                } finally {
+                    releaseSaves.complete(Unit)
+                }
+                val results = withTimeout(5_000) { requests.awaitAll() }
+                assertEquals(2, saves.get(), "Both runtimes must pass the revision check before either SQL update")
+                assertEquals(1, results.count { it.isSuccess })
+                val winner = results.single { it.isSuccess }.getOrThrow()
+                val loser = results.single { it.isFailure }.exceptionOrNull()
+                assertTrue(loser is PluginHostException)
+                assertEquals("PLUGIN_REVISION_CONFLICT", loser.code)
+                assertEquals(409, loser.statusCode)
+                val saved = assertNotNull(app.pluginInstallationRepository.find(PLUGIN_ID))
+                assertEquals(baseline.revision + 1, saved.revision)
+                assertEquals(winner.configuration, saved.configuration)
+                assertEquals(winner.revision, saved.revision)
+                hosts.forEach { assertEquals(saved.configuration, it.state(PLUGIN_ID).configuration) }
+            }
+        } finally {
+            releaseSaves.complete(Unit)
+            hosts.forEach { it.close() }
+        }
+        assertTrue(probes.isEmpty())
+        assertTrue(preparations.isEmpty())
         assertNoDiagnosticSettlement()
     }
 

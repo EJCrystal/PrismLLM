@@ -1912,7 +1912,12 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                     host.close()
                     // SDK contract: provider close may stop/unblock active calls; only loader
                     // release waits for the actual worker to exit as well as provider close.
-                    awaitProperty("${packaged.property}.closed", "1")
+                    val cleanup = PluginRuntime::class.java.getDeclaredField("cleanupWorkers").apply { isAccessible = true }
+                        .get(host) as java.util.concurrent.ThreadPoolExecutor
+                    withTimeout(3_000) {
+                        while (cleanup.completedTaskCount != 1L) delay(5)
+                    }
+                    assertEquals(1, packaged.count("closed"))
                     assertNotNull(loader(packaged).findResource("fixture/owned-resource.txt"))
                     assertEquals(0, packaged.count("resource-after-close"))
                 } finally {
