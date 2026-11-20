@@ -198,7 +198,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                         val current = DiagnosticPreparationDeadline.withinSynchronous(preparation) {
                             channelRepository.find(channelId) ?: throw notFound("channel_not_found", "系统端点渠道不存在")
                         } ?: throw oauthPreparationTimeout()
-                        if (current.kind != ChannelKind.PROVIDER || current.provider != initialAccount.provider) {
+                        if (current.kind != ChannelKind.PROVIDER || current.provider != initialAccount.provider || !current.enabled) {
                             throw badRequest("oauth_provider_channel_unavailable", "订阅账号的系统端点渠道不可用")
                         }
                         if (model !in current.models) throw badRequest("model_not_authorized", "系统端点渠道尚未配置模型「$model」")

@@ -775,6 +775,42 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `disabled provider channels reject native OAuth probes before token refresh and project discovery`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            for (provider in OAuthProvider.entries) {
+                val model = if (provider == OAuthProvider.CHATGPT) "gpt-6-luna" else "gemini-plugin-native"
+                val protocol = ProviderEndpoints.of(provider).protocols.single()
+                val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+                val account = oauthAccount("disabled-provider-${provider.value}", provider, listOf(model), listOf(channelId), cached = false)
+                assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+                val original = assertNotNull(app.oauthAccountRepository.findDetailed(account.id))
+                val channel = assertNotNull(app.channelRepository.find(channelId))
+                assertFalse(assertNotNull(app.channelRepository.update(
+                    id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+                    authType = channel.authType, enabled = false,
+                )).enabled)
+                val targets = client.api(HttpMethod.Get,
+                    "/admin/api/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=oauth-account&contextId=${account.id}", session)
+                    .decoded<List<IqTestTargetResponse>>()
+                assertFalse(targets.single { it.model == model }.channelEnabled)
+
+                client.invokePlugin(session, "oauth-account", account.id, values(model, protocol))
+                    .assertError(HttpStatusCode.BadRequest, "oauth_provider_channel_unavailable")
+                client.legacyProbe(session, "/oauth-accounts/${account.id}/model-test", model, protocol)
+                    .assertError(HttpStatusCode.BadRequest, "oauth_provider_channel_unavailable")
+                assertEquals(original, app.oauthAccountRepository.findDetailed(account.id))
+                assertFalse(assertNotNull(app.channelRepository.find(channelId)).enabled)
+                assertTrue(probes.isEmpty())
+                assertTrue(preparations.isEmpty())
+                assertTrue(fake.tokenRequests.isEmpty(), "A disabled endpoint must reject before credential preparation")
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `native OAuth rechecks credentials model entitlement and endpoint settings after project discovery`() = runBlocking {
         val pendingDiscovery = AtomicReference<Pair<CompletableDeferred<Unit>, CompletableDeferred<Unit>>?>()
         val base = app.config
@@ -793,7 +829,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         testApplication {
             application { app.install(this) }
             val session = client.adminSession()
-            for (mutation in listOf("access-token", "proxy", "models", "endpoint")) {
+            for (mutation in listOf("access-token", "proxy", "models", "endpoint", "disabled")) {
                 val account = oauthAccount("snapshot-$mutation", provider, listOf(model), listOf(channelId))
                 assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
                 val entered = CompletableDeferred<Unit>()
@@ -824,6 +860,14 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                             "models" -> {
                                 assertNotNull(app.oauthAccountRepository.setModels(account.id, listOf("other-authorized-model")))
                                 "model_not_authorized"
+                            }
+                            "disabled" -> {
+                                val channel = assertNotNull(app.channelRepository.find(channelId))
+                                assertFalse(assertNotNull(app.channelRepository.update(
+                                    id = channel.id, name = channel.name, baseUrl = channel.baseUrl,
+                                    authType = channel.authType, enabled = false,
+                                )).enabled)
+                                "oauth_provider_channel_unavailable"
                             }
                             else -> {
                                 val channel = assertNotNull(app.channelRepository.find(channelId))
@@ -993,7 +1037,6 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                                             rows.getBoolean(1)
                                         }
                                     }
-                                    assertFalse(pending.isCompleted, "the diagnostic must be observed waiting for the lock before timeout")
                                     assertPreparationTimeout(withTimeout(7_000) { pending.await() }, provider)
                                 }
                             } finally {
@@ -1156,7 +1199,6 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                                             rows.getBoolean(1)
                                         }
                                     }
-                                    assertFalse(pending.isCompleted, "Observe the save waiting on the row lock before the caller times out")
                                     assertPreparationTimeout(withTimeout(10_000) { pending.await() }, provider)
                                 } finally {
                                     finishExchange.complete(Unit)

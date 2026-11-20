@@ -25,6 +25,7 @@ import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.repo.OAuthProviderChannelLookup
 import dev.soven.prismllm.shared.crypto.CredentialCipher
 import dev.soven.prismllm.shared.domain.OAuthProvider
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -313,6 +314,48 @@ class OAuthTokenServiceTest {
             finishBody.complete(Unit)
             responseBodyStarted.set(null)
             finishResponseBody.set(null)
+        }
+    }
+
+    @Test
+    fun serviceDeadlineCancelsProviderWithoutItsOwnTimerAndReleasesExchangePermit() = runBlocking {
+        val accountId = createAccount("service-timeout", accountEmail = email("service-timeout"))
+        val original = accounts.find(accountId)!!
+        val entered = CompletableDeferred<Unit>()
+        val cancelled = CompletableDeferred<Unit>()
+        val release = CompletableDeferred<OAuthTokenResponse>()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                entered.complete(Unit)
+                try {
+                    return release.await()
+                } catch (cause: CancellationException) {
+                    cancelled.complete(Unit)
+                    throw cause
+                }
+            }
+        }, requestTimeoutMs = 250)
+        val request = async { runCatching { service.accessToken(accountId) } }
+        try {
+            withTimeout(5_000) { entered.await() }
+            val failure = assertIs<OAuthTokenUnavailableException>(withTimeout(5_000) { request.await() }.exceptionOrNull())
+            assertEquals(OAuthUnavailableReason.REFRESH_FAILED, failure.reason)
+            assertEquals("timeout", failure.errorCode)
+            withTimeout(5_000) { cancelled.await() }
+            val account = accounts.find(accountId)!!
+            assertEquals(OAuthAuthState.ACTIVE, account.authState)
+            assertEquals(1, account.refreshFailureCount)
+            assertEquals("timeout", account.lastRefreshError)
+            assertFalse(account.hasAccessToken)
+            assertEquals(original.refreshTokenCiphertext, account.refreshTokenCiphertext)
+            val field = OAuthTokenService::class.java.getDeclaredField("refreshPermits").apply { isAccessible = true }
+            assertEquals(4, (field.get(service) as kotlinx.coroutines.sync.Semaphore).availablePermits)
+        } finally {
+            release.complete(OAuthTokenResponse("test-cleanup-access", "test-cleanup-refresh"))
+            request.cancelAndJoin()
+            assertTrue(service.drainRefreshes())
         }
     }
 
@@ -1688,12 +1731,13 @@ class OAuthTokenServiceTest {
 
     private fun serviceWithProvider(
         provider: OAuthTokenProvider,
+        requestTimeoutMs: Long = 30_000,
         now: () -> Long = System::currentTimeMillis,
     ): OAuthTokenService = OAuthTokenService(
         repository = accounts,
         cipher = cipher,
         providers = OAuthTokenProviderRegistry(listOf(provider)),
-        config = OAuthConfig(refreshAheadMs = 900_000),
+        config = OAuthConfig(refreshAheadMs = 900_000, requestTimeoutMs = requestTimeoutMs),
         now = now,
     )
 

@@ -465,6 +465,7 @@ class PluginRuntime(
         probe: suspend (ProbePlan) -> ProbeOutcome,
     ): PluginExecution {
         checkOpen()
+        if (active[id]?.admissionOpen() == false) throw PluginHostException("PLUGIN_DISABLED", "Plugin admission is disabled", 409)
         if (!executions.tryAcquire()) throw PluginHostException("PLUGIN_BUSY", "Plugin invocation capacity is full", 503)
         try {
             val boundedLimits = limits(limits)

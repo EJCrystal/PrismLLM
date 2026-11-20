@@ -360,8 +360,9 @@ class OAuthTokenService(
                         if (admitted.none { it.force }) cachedRefreshOutcome(current)?.let { return@withLock it }
                         task.exchangeStarted = true
                     }
-                    // The service deadline starts before provider work. Its result slot closes
-                    // the cancellation/return race: once encryption succeeds, persist despite timer expiry.
+                    // NonCancellable isolates caller/shutdown cancellation; the inner timeout creates
+                    // its own cancellable Job for provider work. The result slot preserves an encrypted
+                    // rotation that wins the return/timeout race for the service-owned save below.
                     withContext(NonCancellable) {
                         val completed = AtomicReference<PendingRefresh?>()
                         withTimeoutOrNull(config.requestTimeoutMs) {

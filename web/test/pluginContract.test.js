@@ -394,7 +394,7 @@ describe('bounded declarative plugin contracts', () => {
           configuration.manifest.configuration = [mixed]
           assert.throws(() => parsePluginCatalogItem(configuration), invalidResponse)
           const action = catalog(SECOND_PLUGIN)
-          action.ui.entries[0].action.fields.push(mixed)
+          action.ui.entries[0].action.fields = action.ui.entries[0].action.fields.filter(item => item.key !== key).concat(mixed)
           assert.throws(() => parsePluginCatalogItem(action), invalidResponse)
         }
       }

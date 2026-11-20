@@ -860,8 +860,11 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                     if (uninstall) host.uninstall(packaged.manifest.id) else host.disable(packaged.manifest.id)
                 }
                 try {
-                    stopping.cancel()
+                    val planned = packaged.count("planned")
+                    withTimeout(1_500) { failure("PLUGIN_DISABLED") { invoke(host) } }
+                    assertEquals(planned, packaged.count("planned"), "A pending stop must reject before plugin planning")
                 } finally {
+                    stopping.cancel()
                     releaseSave.complete(Unit)
                 }
                 withTimeout(4_000) { configuring.await(); stopping.join() }

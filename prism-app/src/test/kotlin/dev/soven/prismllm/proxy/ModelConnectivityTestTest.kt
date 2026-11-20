@@ -1252,22 +1252,24 @@ class ModelConnectivityTestTest {
     }
 
     @Test
-    fun oversized_open_response_stream_is_cancelled_without_waiting_for_eof(): Unit = runBlocking {
-        val channel = ByteChannel(autoFlush = true)
-        val pending = async {
-            fingerprintDiagnosticTransport("open-stream-secret", "", maxResponseChars = 100, responseChannel = channel)
-        }
-        val writer = async {
-            runCatching { channel.writeStringUtf8("x".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() + 1)) }
-        }
-        try {
-            val execution = withTimeout(5_000) { pending.await() }
-            assertEquals("上游响应超过 1 MiB 上限", execution.result.errorMessage)
-            assertNull(execution.rawSample)
-            assertTrue(channel.isClosedForRead)
-            withTimeout(5_000) { writer.await() }
-        } finally {
-            channel.cancel(CancellationException("test cleanup"))
+    fun oversized_open_response_stream_is_cancelled_without_waiting_for_eof() {
+        runBlocking {
+            val channel = ByteChannel(autoFlush = true)
+            val pending = async {
+                fingerprintDiagnosticTransport("open-stream-secret", "", maxResponseChars = 100, responseChannel = channel)
+            }
+            val writer = async {
+                runCatching { channel.writeStringUtf8("x".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() + 1)) }
+            }
+            try {
+                val execution = withTimeout(5_000) { pending.await() }
+                assertEquals("上游响应超过 1 MiB 上限", execution.result.errorMessage)
+                assertNull(execution.rawSample)
+                assertTrue(channel.isClosedForRead)
+                withTimeout(5_000) { writer.await() }
+            } finally {
+                channel.cancel(CancellationException("test cleanup"))
+            }
         }
     }
 
