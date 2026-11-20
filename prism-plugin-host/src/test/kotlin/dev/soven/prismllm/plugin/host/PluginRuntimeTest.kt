@@ -2026,9 +2026,12 @@ internal class PluginRuntimeTest : PluginTestSupport() {
 
     @Test
     fun throwingProviderCloseCannotEscapeOrPreventOtherProvidersFromClosing(): Unit = runBlocking {
-        val throwing = fixture(id = "throwing.close", closePrefix = {
-            "mark(\"close-attempt\"); throw new IllegalStateException(\"synthetic provider close failure\");"
-        })
+        val throwing = fixture(
+            id = "throwing.close",
+            constructorPrefix = { property -> "System.getProperties().put(\"$property.loader\", getClass().getClassLoader());" },
+            closePrefix = { "mark(\"close-attempt\"); throw new IllegalStateException(\"synthetic provider close failure\");" },
+            jarEntries = listOf(ZipFixtureEntry("fixture/owned-resource.txt", "owned".toByteArray())),
+        )
         val healthy = ownedFixture(id = "healthy.close")
         publish(throwing, healthy)
         val store = MemoryInstallationStore()
@@ -2040,8 +2043,15 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         }
         val host = runtime(store)
         host.initialize()
+        val failedLoader = loader(throwing)
+        assertNotNull(failedLoader.findResource("fixture/owned-resource.txt"))
         host.close()
         assertEquals(1, throwing.count("close-attempt"))
+        withTimeout(1_500) {
+            while (failedLoader.findResource("fixture/owned-resource.txt") != null) delay(5)
+        }
+        assertNull(failedLoader.findResource("fixture/owned-resource.txt"))
+        assertEquals(1, throwing.count("closed"))
         assertDisposed(healthy)
         assertNoActive(host)
         host.close()

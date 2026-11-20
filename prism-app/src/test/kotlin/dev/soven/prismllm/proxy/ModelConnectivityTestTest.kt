@@ -50,6 +50,8 @@ import org.junit.jupiter.api.Assertions.assertNotNull
 import java.net.InetSocketAddress
 import java.util.concurrent.atomic.AtomicReference
 
+private const val DIAGNOSTIC_RESPONSE_BYTE_LIMIT = 1_048_576L
+
 @Tag("component")
 class ModelConnectivityTestTest {
     @Test
@@ -573,6 +575,10 @@ class ModelConnectivityTestTest {
             GatewayProtocol.RESPONSES -> payload["max_output_tokens"]?.jsonPrimitive?.int
             GatewayProtocol.MESSAGES -> payload["max_tokens"]?.jsonPrimitive?.int
             GatewayProtocol.GEMINI -> payload["generationConfig"]?.jsonObject?.get("maxOutputTokens")?.jsonPrimitive?.int
+        }
+        if (protocol == GatewayProtocol.CHAT_COMPLETIONS) {
+            assertEquals(1, listOf("max_tokens", "max_completion_tokens").count { it in payload },
+                "Chat requests must send exactly one mutually exclusive output-token field")
         }
         assertEquals(expectedTokenLimit, tokenLimit,
             "Diagnostic limits must cap at 128 while preserving stricter decoding overrides")
@@ -1250,7 +1256,7 @@ class ModelConnectivityTestTest {
             Triple(GatewayProtocol.RESPONSES, ContentType.Text.EventStream,
                 "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"complete $credential\"}}\n"),
         )) {
-            val padding = " ".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() - body.toByteArray().size)
+            val padding = " ".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() - body.toByteArray().size)
             val bounded = fingerprintDiagnosticTransport(
                 credential, body + padding, maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
             )
@@ -1281,9 +1287,9 @@ class ModelConnectivityTestTest {
             Triple(GatewayProtocol.RESPONSES, ContentType.Text.EventStream,
                 "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"$content\"}}\n"),
         )) {
-            val exactBody = body + " ".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() - body.toByteArray(Charsets.UTF_8).size)
-            assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt(), exactBody.toByteArray(Charsets.UTF_8).size)
-            assertTrue(exactBody.length < MAX_MODEL_TEST_RESPONSE_BYTES)
+            val exactBody = body + " ".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() - body.toByteArray(Charsets.UTF_8).size)
+            assertEquals(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt(), exactBody.toByteArray(Charsets.UTF_8).size)
+            assertTrue(exactBody.length < DIAGNOSTIC_RESPONSE_BYTE_LIMIT)
             val bounded = fingerprintDiagnosticTransport(
                 credential, exactBody, maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
             )
@@ -1292,8 +1298,8 @@ class ModelConnectivityTestTest {
             assertEquals(content, bounded.rawSample)
 
             val oversizedBody = exactBody + " "
-            assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() + 1, oversizedBody.toByteArray(Charsets.UTF_8).size)
-            assertTrue(oversizedBody.length < MAX_MODEL_TEST_RESPONSE_BYTES)
+            assertEquals(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() + 1, oversizedBody.toByteArray(Charsets.UTF_8).size)
+            assertTrue(oversizedBody.length < DIAGNOSTIC_RESPONSE_BYTE_LIMIT)
             val oversized = fingerprintDiagnosticTransport(
                 credential, oversizedBody, maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
             )
@@ -1310,7 +1316,7 @@ class ModelConnectivityTestTest {
     @Test
     fun oversized_error_responses_never_expose_a_partial_credential_preview() = runBlocking {
         val credential = "bounded-error-secret"
-        val body = """{"error":{"message":"$credential"}}""" + " ".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt())
+        val body = """{"error":{"message":"$credential"}}""" + " ".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt())
         val execution = fingerprintDiagnosticTransport(
             credential, body, maxResponseChars = 5, status = HttpStatusCode.Unauthorized,
         )
@@ -1329,7 +1335,7 @@ class ModelConnectivityTestTest {
                 fingerprintDiagnosticTransport("open-stream-secret", "", maxResponseChars = 100, responseChannel = channel)
             }
             val writer = async {
-                runCatching { channel.writeStringUtf8("x".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() + 1)) }
+                runCatching { channel.writeStringUtf8("x".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() + 1)) }
             }
             try {
                 val execution = withTimeout(5_000) { pending.await() }
@@ -1805,9 +1811,9 @@ class ModelConnectivityTestTest {
             runBlocking {
                 val credential = "a".repeat(1_023) + "b"
                 val empty = """{"choices":[{"message":{"content":""}}],"model":"public-model"}"""
-                val content = "a".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() - empty.length)
+                val content = "a".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() - empty.length)
                 val body = empty.replace("\"content\":\"\"", "\"content\":" + JsonPrimitive(content))
-                assertEquals(MAX_MODEL_TEST_RESPONSE_BYTES.toInt(), body.toByteArray().size)
+                assertEquals(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt(), body.toByteArray().size)
                 for (oauth in listOf(false, true)) {
                     val result = diagnosticTransport(credential, oauth = oauth, responseBody = body)
                     assertSuccessfulDiagnostic(result, "[REDACTED]", "[REDACTED]", usage = null)
@@ -1839,7 +1845,7 @@ class ModelConnectivityTestTest {
                     }.toString(),
                 )
                 for (body in bodies) {
-                    assertTrue(body.toByteArray().size <= MAX_MODEL_TEST_RESPONSE_BYTES)
+                    assertTrue(body.toByteArray().size <= DIAGNOSTIC_RESPONSE_BYTE_LIMIT)
                     for (oauth in listOf(false, true)) {
                         val result = diagnosticTransport(credential, oauth = oauth, responseBody = body, status = HttpStatusCode.BadGateway)
                         assertFailedDiagnostic(result, 502, "[REDACTED]")
