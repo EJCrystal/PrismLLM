@@ -1474,6 +1474,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       })
       await change(field(entry.container, '检测范围'), 'all')
       mock.invoke = call => {
+        // Settle extra calls so an unexpected dispatch reaches the count assertion.
+        if (pending.length >= 2) return responseFor(call)
         const result = deferred()
         pending.push({ ...result, call })
         return result.promise
