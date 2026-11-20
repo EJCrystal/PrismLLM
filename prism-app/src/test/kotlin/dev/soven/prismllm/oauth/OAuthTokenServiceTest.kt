@@ -46,6 +46,7 @@ import java.util.Base64
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -446,6 +447,186 @@ class OAuthTokenServiceTest {
         assertEquals(0, account.refreshFailureCount)
         assertNotNull(account.accessTokenCiphertext)
         assertEquals("free", account.accountPlan)
+    }
+
+    @Test
+    fun expiredProviderResponsesAreBoundedAndPersistEveryRefreshRotation() = runBlocking {
+        fun expiringProvider(
+            accountId: String,
+            expectedRefresh: AtomicReference<String>,
+            calls: AtomicInteger,
+            lastRotation: AtomicReference<String>,
+        ) = object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                val expected = expectedRefresh.get()
+                assertEquals(expected, refreshToken)
+                val persisted = accounts.loadRefreshContext(accountId)!!
+                assertEquals(
+                    expected,
+                    cipher.decrypt(persisted.refreshTokenCiphertext, persisted.refreshTokenNonce),
+                    "each exchange must use the refresh rotation committed by the previous exchange",
+                )
+                calls.incrementAndGet()
+                val rotation = UUID.randomUUID().toString()
+                expectedRefresh.set(rotation)
+                lastRotation.set(rotation)
+                return OAuthTokenResponse(
+                    accessToken = UUID.randomUUID().toString(),
+                    refreshToken = rotation,
+                    expiresInSeconds = 0,
+                )
+            }
+        }
+
+        val ordinaryRefresh = UUID.randomUUID().toString()
+        val ordinaryExpected = AtomicReference(ordinaryRefresh)
+        val ordinaryCalls = AtomicInteger()
+        val ordinaryRotation = AtomicReference<String>()
+        val ordinaryId = createAccount(ordinaryRefresh, accountEmail = email("expired-ordinary"))
+        val ordinaryService = serviceWithProvider(
+            expiringProvider(ordinaryId, ordinaryExpected, ordinaryCalls, ordinaryRotation),
+        )
+        val forcedRefresh = UUID.randomUUID().toString()
+        val forcedExpected = AtomicReference(forcedRefresh)
+        val forcedCalls = AtomicInteger()
+        val forcedRotation = AtomicReference<String>()
+        val forcedId = createAccount(forcedRefresh, accountEmail = email("expired-forced"))
+        val forcedService = serviceWithProvider(
+            expiringProvider(forcedId, forcedExpected, forcedCalls, forcedRotation),
+        )
+        val diagnosticRefresh = UUID.randomUUID().toString()
+        val diagnosticExpected = AtomicReference(diagnosticRefresh)
+        val diagnosticCalls = AtomicInteger()
+        val diagnosticRotation = AtomicReference<String>()
+        val diagnosticId = createAccount(diagnosticRefresh, accountEmail = email("expired-diagnostic"))
+        val diagnosticService = serviceWithProvider(
+            expiringProvider(diagnosticId, diagnosticExpected, diagnosticCalls, diagnosticRotation),
+        )
+
+        try {
+            val ordinaryFailure = assertFailsWith<OAuthTokenUnavailableException> {
+                withTimeout(5_000) { ordinaryService.accessToken(ordinaryId) }
+            }
+            assertEquals("access_token_expired", ordinaryFailure.errorCode)
+            assertEquals(3, ordinaryCalls.get(), "ordinary refresh must stop after bounded expired responses")
+            val ordinaryContext = accounts.loadRefreshContext(ordinaryId)!!
+            assertEquals(
+                ordinaryRotation.get(),
+                cipher.decrypt(ordinaryContext.refreshTokenCiphertext, ordinaryContext.refreshTokenNonce),
+            )
+
+            val forced = withTimeout(5_000) { forcedService.refreshNow(forcedId) }
+            val forcedFailure = assertIs<OAuthRefreshResult.Failed>(forced)
+            assertEquals("access_token_expired", forcedFailure.errorCode)
+            assertEquals(3, forcedCalls.get(), "refreshNow must share the expired-token bound")
+            val forcedContext = accounts.loadRefreshContext(forcedId)!!
+            assertEquals(
+                forcedRotation.get(),
+                cipher.decrypt(forcedContext.refreshTokenCiphertext, forcedContext.refreshTokenNonce),
+            )
+
+            val diagnosticAccount = accounts.find(diagnosticId)!!
+            val diagnosticFailure = assertFailsWith<OAuthTokenUnavailableException> {
+                withTimeout(5_000) {
+                    diagnosticService.accessTokenForDiagnostic(
+                        diagnosticAccount,
+                        DiagnosticPreparationDeadline.start(5_000),
+                    )
+                }
+            }
+            assertEquals("access_token_expired", diagnosticFailure.errorCode)
+            assertEquals(3, diagnosticCalls.get(), "diagnostic refresh must share the expired-token bound")
+            val diagnosticContext = accounts.loadRefreshContext(diagnosticId)!!
+            assertEquals(
+                diagnosticRotation.get(),
+                cipher.decrypt(diagnosticContext.refreshTokenCiphertext, diagnosticContext.refreshTokenNonce),
+            )
+        } finally {
+            assertTrue(ordinaryService.drainRefreshes())
+            assertTrue(forcedService.drainRefreshes())
+            assertTrue(diagnosticService.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun tokenThatExpiresDuringSaveIsPersistedThenReplacedByOneFreshExchange() = runBlocking {
+        val initialRefresh = UUID.randomUUID().toString()
+        val firstRotation = UUID.randomUUID().toString()
+        val secondRotation = UUID.randomUUID().toString()
+        val validAccess = UUID.randomUUID().toString()
+        val firstRequest = AtomicReference<String>()
+        val secondRequest = AtomicReference<String>()
+        val calls = AtomicInteger()
+        val baseTime = System.currentTimeMillis()
+        val clock = AtomicLong(baseTime)
+        val accountId = createAccount(initialRefresh, accountEmail = email("expired-during-save"))
+        val service = serviceWithProvider(
+            provider = object : OAuthTokenProvider {
+                override val provider = OAuthProvider.CHATGPT
+
+                override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                    when (calls.incrementAndGet()) {
+                        1 -> {
+                            assertEquals(initialRefresh, refreshToken)
+                            firstRequest.set(refreshToken)
+                            return OAuthTokenResponse(
+                                UUID.randomUUID().toString(),
+                                firstRotation,
+                                expiresInSeconds = 1,
+                            )
+                        }
+                        else -> {
+                            assertEquals(firstRotation, refreshToken)
+                            val persisted = accounts.loadRefreshContext(accountId)!!
+                            assertEquals(
+                                firstRotation,
+                                cipher.decrypt(persisted.refreshTokenCiphertext, persisted.refreshTokenNonce),
+                                "the recovery exchange must wait for the first rotation to commit",
+                            )
+                            secondRequest.set(refreshToken)
+                            return OAuthTokenResponse(validAccess, secondRotation, expiresInSeconds = 3_600)
+                        }
+                    }
+                }
+            },
+            now = clock::get,
+        )
+
+        try {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                val blockerPid = lock.createStatement().use { statement ->
+                    statement.executeQuery("select pg_backend_pid()").use { rows ->
+                        assertTrue(rows.next())
+                        rows.getInt(1)
+                    }
+                }
+                lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                    statement.setString(1, accountId)
+                    statement.executeQuery().use { assertTrue(it.next()) }
+                }
+                val caller = async(Dispatchers.IO) { service.accessToken(accountId) }
+                try {
+                    awaitBlockedAccountSave(blockerPid)
+                    clock.set(baseTime + 2_000)
+                    lock.rollback()
+                    val token = withTimeout(5_000) { caller.await() }
+                    assertEquals(validAccess, assertNotNull(token).accessToken)
+                    assertEquals(2, calls.get(), "one expired save must cause only one recovery exchange")
+                    assertEquals(initialRefresh, firstRequest.get())
+                    assertEquals(firstRotation, secondRequest.get())
+                    val context = accounts.loadRefreshContext(accountId)!!
+                    assertEquals(secondRotation, cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+                } finally {
+                    caller.cancelAndJoin()
+                    lock.rollback()
+                }
+            }
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
     }
 
     @Test
@@ -1232,11 +1413,15 @@ class OAuthTokenServiceTest {
         return method.invoke(service, accountId) as kotlinx.coroutines.sync.Mutex
     }
 
-    private fun serviceWithProvider(provider: OAuthTokenProvider): OAuthTokenService = OAuthTokenService(
+    private fun serviceWithProvider(
+        provider: OAuthTokenProvider,
+        now: () -> Long = System::currentTimeMillis,
+    ): OAuthTokenService = OAuthTokenService(
         repository = accounts,
         cipher = cipher,
         providers = OAuthTokenProviderRegistry(listOf(provider)),
         config = OAuthConfig(refreshAheadMs = 900_000),
+        now = now,
     )
 
     private fun service(now: () -> Long = System::currentTimeMillis): OAuthTokenService {
