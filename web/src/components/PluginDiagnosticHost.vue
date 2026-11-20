@@ -365,6 +365,7 @@ onBeforeUnmount(() => {
         <div class="test-form">
           <p class="test-form-note"><Icon name="info" :size="14" />{{ contribution.entry.action.label }}</p>
           <p v-if="channelEnabled === false" class="test-form-note">渠道已停用，仍可用已保存的凭据发起诊断。</p>
+          <p v-if="targets.length && !singleTargets.length" class="callout warning" role="status">当前目标的协议与此诊断动作不兼容，没有可执行的模型。请调整模型协议或选择其他诊断入口。</p>
           <div class="test-form-section">
             <h3 class="test-form-section-title">诊断配置</h3>
             <template v-for="field in fields" :key="field.key">

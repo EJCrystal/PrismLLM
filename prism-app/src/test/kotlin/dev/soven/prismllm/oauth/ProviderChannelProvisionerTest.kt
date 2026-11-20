@@ -602,6 +602,35 @@ class ProviderChannelProvisionerTest {
     }
 
     @Test
+    fun `stale catalog snapshot does not provision a missing provider channel`() = runBlocking {
+        val account = account()
+        val fetchedWith = accounts.findDetailed(account.id)!!
+        assertNull(channels.findProviderChannel(OAuthProvider.CHATGPT))
+
+        accounts.updateCredentials(account.id, dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate(
+            provider = account.provider,
+            refreshToken = cipher.encrypt("replacement-authorization"),
+        ), now = fetchedWith.authorizedAt + 1_000)
+        val current = accounts.findDetailed(account.id)!!
+
+        assertFalse(provisioner.syncModelCatalog(
+            account.id,
+            listOf(OAuthAccountModelCatalogEntry("stale-catalog")),
+            expectedAccount = fetchedWith,
+        ))
+        assertNull(channels.findProviderChannel(OAuthProvider.CHATGPT), "a rejected stale snapshot must not commit a new channel")
+        assertNull(accounts.findDetailed(account.id)!!.modelCatalog)
+
+        assertTrue(provisioner.syncModelCatalog(
+            account.id,
+            listOf(OAuthAccountModelCatalogEntry("current-catalog")),
+            expectedAccount = current,
+        ))
+        assertEquals(listOf("current-catalog"), accounts.findDetailed(account.id)!!.modelCatalog!!.map { it.upstreamModel })
+        assertEquals(listOf("current-catalog"), providerChannel().models)
+    }
+
+    @Test
     fun `catalog snapshot rejection preserves replacement catalog and current model grants`() = runBlocking {
         val first = account()
         sync(first, "old-model" to null, "still-authorized" to null)

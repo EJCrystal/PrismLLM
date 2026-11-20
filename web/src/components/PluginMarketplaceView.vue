@@ -19,6 +19,7 @@ const selectedVersion = ref('')
 const query = ref('')
 const loading = ref(true)
 const loadError = ref('')
+const installationStateKnown = ref(false)
 const catalogError = ref('')
 const busy = ref(false)
 const enableRefreshRequired = reactive(new Set<string>())
@@ -64,7 +65,7 @@ const draftConflict = computed(() => !!draftOwnerId.value && (
 ))
 const configurationFields = computed(() => draftFields.value)
 const configurationError = computed(() => pluginFormError(configurationFields.value, configuration))
-const canInstall = computed(() => !catalogError.value && !loading.value && !!selectedCatalog.value?.compatible && fullGrant.value && !busy.value && (!selectedState.value?.installed || selectedVersion.value !== selectedState.value.installedVersion))
+const canInstall = computed(() => installationStateKnown.value && !catalogError.value && !loading.value && !!selectedCatalog.value?.compatible && fullGrant.value && !busy.value && (!selectedState.value?.installed || selectedVersion.value !== selectedState.value.installedVersion))
 const pageEntries = computed(() => selectedState.value?.admissionEnabled ? selectedState.value.activeUi?.entries.filter((entry) => entry.placement === 'plugin-page') ?? [] : [])
 const diagnosticContribution = computed<PluginUiContribution | null>(() => {
   if (diagnosticRechecking.value || invalidDiagnosticKey.value) return null
@@ -199,11 +200,15 @@ async function load(preserveDraft = true): Promise<boolean> {
     catalog.value = catalogResult.status === 'fulfilled' ? catalogResult.value : []
     if (statesResult.status === 'fulfilled') {
       states.value = statesResult.value
+      installationStateKnown.value = true
       if (enableRefreshRequired.has(selectedId.value)) {
         approvedPermissions.value = [...(selectedState.value?.approvedPermissions ?? [])]
       }
       enableRefreshRequired.clear()
-    } else loadError.value = errorMessage(statesResult.reason)
+    } else {
+      installationStateKnown.value = false
+      loadError.value = errorMessage(statesResult.reason)
+    }
     if (!selectedId.value) selectedId.value = items.value[0]?.id ?? ''
     if (statesResult.status === 'fulfilled' && !hadDraft) syncVersion()
     settled = true
@@ -220,7 +225,7 @@ async function load(preserveDraft = true): Promise<boolean> {
   }
 }
 
-async function mutate(operation: () => Promise<PluginRuntimeState>, message: string, discardDraft = false, confirmDiscard = discardDraft) {
+async function mutate(operation: () => Promise<PluginRuntimeState>, message: string, discardDraft = false, confirmDiscard = discardDraft, configurationSave = false) {
   if (busy.value || (confirmDiscard && dirty.value && !canLeave())) return
   const id = selectedId.value
   busy.value = true
@@ -234,7 +239,13 @@ async function mutate(operation: () => Promise<PluginRuntimeState>, message: str
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
   } catch (cause) {
     if (!disposed && id === selectedId.value) {
-      if (cause instanceof ApiError && cause.status === 409 && discardDraft && !confirmDiscard) draftRejected.value = true
+      if (cause instanceof ApiError && cause.status === 409 && cause.code === 'PLUGIN_REVISION_CONFLICT') {
+        if (configurationSave) draftRejected.value = true
+        else {
+          installationStateKnown.value = false
+          loadError.value = '安装状态已变化，请重新读取后再操作。'
+        }
+      }
       notify(errorMessage(cause), 'error')
     }
   } finally {
@@ -281,7 +292,7 @@ function saveConfiguration() {
   const values = { ...configuration }
   const expectedRevision = draftRevision.value
   const installedVersion = draftInstalledVersion.value
-  void mutate(() => api.configurePlugin(state.id, { values, expectedRevision, installedVersion }), '插件配置已保存。', true, false)
+  void mutate(() => api.configurePlugin(state.id, { values, expectedRevision, installedVersion }), '插件配置已保存。', true, false, true)
 }
 
 function uninstall() {
@@ -331,8 +342,9 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
         <p v-if="selectedState?.loadError" class="callout danger" role="alert">{{ selectedState.loadError }}</p>
         <section class="plugin-market-section">
           <h3>版本与权限</h3>
-          <label v-if="versions.length" class="field"><span>目录版本</span><select v-model="selectedVersion" :disabled="busy"><option v-if="selectedState?.installed && selectedState.installedVersion && !versions.some((item) => item.manifest.version === selectedState?.installedVersion)" :value="selectedState.installedVersion">{{ selectedState.installedVersion }}（已安装）</option><option v-for="item in versions" :key="item.manifest.version" :value="item.manifest.version">{{ item.manifest.version }}{{ item.compatible ? '' : '（不兼容）' }}</option></select></label>
+          <label v-if="versions.length" class="field"><span>目录版本</span><select v-model="selectedVersion" :disabled="busy || loading || !installationStateKnown"><option v-if="selectedState?.installed && selectedState.installedVersion && !versions.some((item) => item.manifest.version === selectedState?.installedVersion)" :value="selectedState.installedVersion">{{ selectedState.installedVersion }}（已安装）</option><option v-for="item in versions" :key="item.manifest.version" :value="item.manifest.version">{{ item.manifest.version }}{{ item.compatible ? '' : '（不兼容）' }}</option></select></label>
           <p v-else class="muted small">安装记录仍在，但当前可信目录没有这个插件包。已暂存的版本仍可按原有安装选择加载。</p>
+          <p v-if="!installationStateKnown && !loading" class="callout warning" role="status">安装状态尚未读取成功，请重新读取后再选择或安装版本。</p>
           <p v-if="selectedCatalog && !selectedCatalog.compatible" class="callout danger">{{ selectedCatalog.compatibilityReason || '此版本不支持当前宿主。' }}</p>
           <p v-if="selectedCatalog" class="plugin-market-digest"><span class="muted small">目录校验 SHA-256</span><code>{{ selectedCatalog.sha256 }}</code></p>
           <fieldset class="plugin-market-permissions" :disabled="busy"><legend>明确授权下列诊断能力</legend><label v-for="permission in permissions" :key="permission"><input v-model="approvedPermissions" type="checkbox" :value="permission" /><span>{{ pluginPermissionLabel(permission) }}</span></label><p v-if="!permissions.length" class="muted small">此版本未请求诊断能力。</p></fieldset>

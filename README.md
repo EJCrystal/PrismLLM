@@ -76,7 +76,8 @@ cp extensions/connectivity-diagnostic/target/catalog.json \
    bundled-plugins/
 
 # 3. 构建并运行后端（首次启动会自动通过 Flyway 执行数据库表结构迁移）
-PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" mvn package
+PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
+  mvn package -Dprism.plugin.fixtureDirectory="$PWD/extensions/connectivity-diagnostic/target"
 java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 ```
 
@@ -138,7 +139,8 @@ java -jar prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar
 ```bash
 # 后端测试套件（含基于 Testcontainers 的全链路测试）
 # 首次先按「本地运行」安装 SDK 并 verify 独立插件，提供真实包测试夹具。
-PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" mvn test
+PRISM_TEST_PLUGIN_CATALOG_DIR="$PWD/extensions/connectivity-diagnostic/target" \
+  mvn test -Dprism.plugin.fixtureDirectory="$PWD/extensions/connectivity-diagnostic/target"
 
 # 前端轻量测试套件
 npm --prefix web test

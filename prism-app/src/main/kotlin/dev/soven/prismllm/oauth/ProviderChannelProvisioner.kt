@@ -9,6 +9,7 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import kotlinx.coroutines.CancellationException
+import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
 import org.slf4j.LoggerFactory
 
 /** 仅包含管理员本次修改的行，不替换整个 provider 目录。 */
@@ -130,10 +131,14 @@ class ProviderChannelProvisioner(
         expectedAccount: OAuthAccountRecord? = null,
     ): Boolean = channels.inTransaction {
         val existing = accounts.findDetailedInTransaction(accountId) ?: return@inTransaction false
-        val channel = channels.ensureProviderChannelInTransaction(existing.provider) ?: return@inTransaction false
+        TransactionManager.current().exec("SELECT pg_advisory_xact_lock(1347570253, ${existing.provider.value.hashCode()})") {
+            it.next()
+        }
+        val existingChannel = channels.findProviderChannelInTransaction(existing.provider, lock = true)
         val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction false
         // Discard a fetched catalog before it can overwrite the directory or prune the current grants.
         if (expectedAccount != null && !expectedAccount.matchesCredentialSnapshot(current)) return@inTransaction false
+        val channel = existingChannel ?: channels.ensureProviderChannelInTransaction(current.provider) ?: return@inTransaction false
         val oldDefaults = automaticDefaults(accounts.listProviderInTransaction(current.provider))
         if (!accounts.saveModelCatalogInTransaction(accountId, catalog)) return@inTransaction false
         val saved = requireNotNull(accounts.findDetailedInTransaction(accountId))

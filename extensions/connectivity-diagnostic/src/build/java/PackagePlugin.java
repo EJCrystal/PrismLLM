@@ -3,6 +3,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.attribute.PosixFilePermission;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.HashSet;
@@ -10,6 +11,7 @@ import java.util.HexFormat;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.zip.CRC32;
 import java.util.zip.ZipEntry;
@@ -67,6 +69,7 @@ final class PackagePlugin {
                     zip.closeEntry();
                 }
             }
+            makeGatewayReadable(temporary);
             Files.move(temporary, archive, StandardCopyOption.REPLACE_EXISTING);
         } finally {
             Files.deleteIfExists(temporary);
@@ -83,6 +86,20 @@ final class PackagePlugin {
         Files.writeString(catalog, catalogJson, StandardCharsets.UTF_8);
         System.out.println("Trusted package: " + archive.getFileName() + " (sha256 " + digest + ")");
         System.out.println("Local catalog: " + catalog.getFileName());
+    }
+
+    private static void makeGatewayReadable(Path path) throws IOException {
+        try {
+            Files.setPosixFilePermissions(path, Set.of(
+                    PosixFilePermission.OWNER_READ,
+                    PosixFilePermission.OWNER_WRITE,
+                    PosixFilePermission.GROUP_READ,
+                    PosixFilePermission.OTHERS_READ));
+        } catch (UnsupportedOperationException unsupported) {
+            if (!path.toFile().setReadable(true, false)) {
+                throw new IOException("Could not make plugin package readable by gateway deployments", unsupported);
+            }
+        }
     }
 
     private static void requireManifestValue(String json, String key, String expected) {

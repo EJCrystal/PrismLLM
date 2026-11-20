@@ -345,6 +345,12 @@ function inertData(value: unknown, depth = 0, budget = { keys: 0 }): JsonData {
   return parsed
 }
 
+function inertVersion(value: JsonData, key: string): number {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return 1
+  const candidate = value[key]
+  return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 1 ? candidate : 1
+}
+
 export function parsePluginCatalogItem(value: unknown): PluginCatalogItem {
   const data = record(value, ['manifest', 'ui', 'sha256', 'source', 'compatible', 'compatibilityReason'])
   const compatible = boolean(data.compatible, true)
@@ -361,21 +367,21 @@ export function parsePluginCatalogItem(value: unknown): PluginCatalogItem {
     }
   } else {
     // Keep future/incompatible packages visible for management, discarding all executable/config UI.
-    size(inertData(data.manifest))
-    size(inertData(data.ui))
-    const display = record(data.manifest, MANIFEST_KEYS)
-    const inactiveUi = record(data.ui, UI_KEYS)
-    array(display.configuration, 32, true)
-    array(inactiveUi.entries, 32, true)
+    const boundedManifest = inertData(data.manifest)
+    const boundedUi = inertData(data.ui)
+    size(boundedManifest)
+    size(boundedUi)
+    const display = record(boundedManifest, undefined, 4_096)
+    record(boundedUi, undefined, 4_096)
     parsedManifest = {
       // Deployment-reference fallback identities may themselves be invalid; they are display data only.
       id: text(display.id, 128, true), version: text(display.version, 128, true),
       displayName: text(display.displayName, 200, true), description: text(display.description, 4_000, false, ''),
-      schemaVersion: integer(display.schemaVersion, 1, Number.MAX_SAFE_INTEGER, 1),
-      apiVersion: integer(display.apiVersion, 1, Number.MAX_SAFE_INTEGER, 1),
-      permissions: strings(display.permissions, 2, 128, true), configuration: [],
+      schemaVersion: inertVersion(boundedManifest, 'schemaVersion'),
+      apiVersion: inertVersion(boundedManifest, 'apiVersion'),
+      permissions: [], configuration: [],
     }
-    parsedUi = { schemaVersion: integer(inactiveUi.schemaVersion, 1, Number.MAX_SAFE_INTEGER, 1), entries: [] }
+    parsedUi = { schemaVersion: inertVersion(boundedUi, 'schemaVersion'), entries: [] }
   }
   const digest = text(data.sha256, 64, true)
   requireContract(/^[0-9a-fA-F]{64}$/.test(digest), '摘要')

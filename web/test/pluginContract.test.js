@@ -153,16 +153,22 @@ describe('bounded declarative plugin contracts', () => {
     future.compatibilityReason = 'Unsupported API version 2'
     future.manifest.schemaVersion = 2
     future.manifest.apiVersion = 2
-    future.manifest.configuration = [{ kind: 'future-widget', expression: 'uninterpreted data' }]
-    future.ui = { schemaVersion: 2, entries: [{ kind: 'html', script: 'uninterpreted data' }] }
+    future.manifest.permissions = [CHANNEL_PERMISSION, ACCOUNT_PERMISSION, 'diagnostics.future.permission']
+    future.manifest.futureContract = { executable: 'uninterpreted data' }
+    future.manifest.configuration = { widgets: Array.from({ length: 33 }, () => ({ kind: 'future-widget', expression: 'uninterpreted data' })) }
+    future.ui = { schemaVersion: 2, entries: { future: true }, futurePresentation: 'inert' }
     const invalidHeader = catalog('x'.repeat(100))
     invalidHeader.compatible = false
     invalidHeader.compatibilityReason = 'Invalid plugin identity/version'
     invalidHeader.manifest.version = 'not-semver-' + 'x'.repeat(70)
     const items = parsePluginCatalog([catalog(), future, invalidHeader])
     assert.equal(items.length, 3)
+    assert.equal(items[0].compatible, true)
+    assert.equal(items[0].ui.entries[0].action.id, 'probe-channel')
+    assert.deepEqual(items[0].manifest.permissions, [CHANNEL_PERMISSION, ACCOUNT_PERMISSION])
     assert.equal(items[1].manifest.apiVersion, 2)
     assert.equal(items[1].ui.schemaVersion, 2)
+    assert.deepEqual(items[1].manifest.permissions, [])
     assert.equal(items[1].compatibilityReason, future.compatibilityReason)
     assert.equal(items[2].manifest.id, invalidHeader.manifest.id)
     assert.equal(items[2].manifest.version, invalidHeader.manifest.version)
@@ -173,6 +179,15 @@ describe('bounded declarative plugin contracts', () => {
     }
     delete future.compatibilityReason
     assert.equal(parsePluginCatalogItem(future).compatibilityReason, '该插件与当前宿主不兼容')
+    for (const mutate of [
+      data => { data.manifest.displayName = ' ' },
+      data => { data.manifest.description = 'x'.repeat(4_001) },
+      data => { data.manifest.id = 'x'.repeat(129) },
+    ]) {
+      const invalidDisplay = structuredClone(future)
+      mutate(invalidDisplay)
+      assert.throws(() => parsePluginCatalog([catalog(), invalidDisplay]), invalidResponse)
+    }
   })
 
   it('enforces plugin ID80/version64 independently of entry/action/field ID64', () => {

@@ -205,7 +205,10 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       calls.configuration.push({ id, payload: clonePluginData(payload) })
       if (mock.configure) return mock.configure(id, payload)
       const state = stateFor(id)
-      return setState(id, { configuration: payload.values,
+      if (payload.expectedRevision !== state.revision || payload.installedVersion !== state.installedVersion) {
+        throw new ApiError('configuration changed; refresh before saving', 409, 'PLUGIN_REVISION_CONFLICT')
+      }
+      return setState(id, { configuration: payload.values, revision: state.revision + 1,
         activeConfiguration: state.activeVersion === state.installedVersion ? payload.values : state.activeConfiguration })
     }
     api.uninstallPlugin = async id => {
@@ -1509,7 +1512,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       second.resolve(responseFor(second.call))
       await run; await settle()
       assert.equal(calls.invocations.length - invocationStart, 2, 'second worker completion does not dispatch another target')
-      assert.equal(inFlight.execution, null, 'the late success is ignored')
+      assert.equal(entry.state.rows.value.find(row => row.key === inFlight.key)?.execution, null, 'the current row ignores the late success')
+      assert.equal(entry.container.querySelectorAll('.plugin-result').length, 0, 'the late success is not rendered')
       assert.equal(toasts.length, 0, 'an interrupted batch does not publish a summary')
     })
   }
@@ -1664,6 +1668,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await entry.state.load(false); await settle()
     assert.equal(entry.state.selectedTargetKey.value, '')
     assert.equal(entry.state.form.protocol, '')
+    assert.match(text(entry.container.querySelector('[role="status"]')), /协议.*不兼容.*没有可执行的模型/)
     assert.equal(entry.container.querySelector('.test-workbench-actions .button.primary').disabled, true)
     await entry.state.run()
     assert.equal(calls.invocations.length, 3)
@@ -2250,6 +2255,74 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(entry.state.dirty.value, false)
     assert.equal(entry.state.canLeave(), true)
     assert.equal(confirmCalls.length, 0)
+  })
+
+  it('blocks installation and version selection until installation state is successfully read', async () => {
+    const first = makePluginFixture({ state: { installed: false, installedVersion: null, desiredEnabled: false, admissionEnabled: false } })
+    const second = makePluginFixture({ version: '2.0.0' })
+    setFixtures(first)
+    mock.catalog.push(clonePluginData(second.catalog))
+    mock.listPlugins = () => Promise.reject(new Error('installation state unreadable'))
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    const version = field(entry.container, '目录版本')
+    assert.equal(version.disabled, true)
+    assert.match(text(entry.container), /安装状态尚未读取成功/)
+    for (const permission of entry.container.querySelectorAll('.plugin-market-permissions input')) await change(permission, true)
+    assert.equal(entry.state.canInstall.value, false)
+    assert.equal(button(entry.container, '安装此版本').disabled, true)
+    entry.state.install()
+    assert.equal(calls.install.length, 0)
+
+    mock.listPlugins = undefined
+    await entry.state.load(); await settle()
+    assert.equal(version.disabled, false)
+    for (const permission of entry.container.querySelectorAll('.plugin-market-permissions input')) await change(permission, true)
+    assert.equal(entry.state.canInstall.value, true)
+    button(entry.container, '安装此版本').click()
+    await waitFor(() => calls.install.length === 1 && !entry.state.busy.value)
+    assert.equal(entry.state.selectedState.value.installed, true)
+  })
+
+  it('treats an uninstall revision conflict as unknown installation state without rejecting a clean draft', async () => {
+    const fixture = makePluginFixture()
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    api.uninstallPlugin = async id => { calls.uninstall.push(id); throw new ApiError('installation changed', 409, 'PLUGIN_REVISION_CONFLICT') }
+    confirmResult = true
+    button(entry.container, '卸载').click()
+    await waitFor(() => calls.uninstall.length === 1 && !entry.state.busy.value)
+    assert.equal(entry.state.draftRejected.value, false)
+    assert.equal(entry.state.draftConflict.value, false)
+    assert.equal(entry.state.dirty.value, false)
+    assert.match(text(entry.container), /安装状态已变化，请重新读取/)
+    assert.equal(field(entry.container, '目录版本').disabled, true)
+    await entry.state.load(); await settle()
+    await change(field(entry.container, '默认提示词'), 'fresh edit after uninstall conflict')
+    button(entry.container, '保存配置').click()
+    await waitFor(() => calls.configuration.length === 1 && !entry.state.busy.value)
+    assert.equal(entry.state.draftConflict.value, false)
+    assert.equal(entry.state.configuration.defaultPrompt, 'fresh edit after uninstall conflict')
+  })
+
+  it('adopts the server revision for two consecutive configuration saves without a refresh', async () => {
+    const fixture = makePluginFixture({ state: { revision: 7 } })
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    for (const [index, value] of ['first saved configuration', 'second saved configuration'].entries()) {
+      await change(field(entry.container, '默认提示词'), value)
+      button(entry.container, '保存配置').click()
+      await waitFor(() => calls.configuration.length === index + 1 && !entry.state.busy.value)
+      assert.equal(calls.configuration[index].payload.expectedRevision, 7 + index)
+      assert.equal(entry.state.draftRevision.value, 8 + index)
+      assert.equal(entry.state.draftConflict.value, false)
+      assert.equal(entry.state.dirty.value, false)
+    }
+    assert.equal(calls.plugins.length, 1, 'saving twice does not require a list refresh')
+    assert.equal(stateFor(fixture.manifest.id).revision, 9)
+    assert.equal(stateFor(fixture.manifest.id).configuration.defaultPrompt, 'second saved configuration')
   })
 
   it('cancels and invalidates list requests during mutations and blocks retry while busy', async () => {
