@@ -497,6 +497,116 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun everyWaiterKindRejectsReplacedCredentialsBeforeExchangeAfterPermitWaiting() = runBlocking {
+        for (kind in listOf("ordinary", "forced", "manual", "diagnostic")) {
+            val id = createAccount("queued-$kind-original", accountEmail = email("queued-$kind"))
+            val calls = AtomicInteger()
+            val service = serviceWithProvider(object : OAuthTokenProvider {
+                override val provider = OAuthProvider.CHATGPT
+                override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                    calls.incrementAndGet()
+                    return OAuthTokenResponse("unexpected-access", "unexpected-rotation")
+                }
+            })
+            val permits = OAuthTokenService::class.java.getDeclaredField("refreshPermits").apply { isAccessible = true }
+                .get(service) as kotlinx.coroutines.sync.Semaphore
+            repeat(4) { permits.acquire() }
+            val original = accounts.find(id)!!
+            var released = false
+            val caller = async(start = CoroutineStart.UNDISPATCHED) {
+                runCatching {
+                    when (kind) {
+                        "manual" -> service.refreshNow(id)
+                        "diagnostic" -> service.accessTokenForDiagnostic(original, DiagnosticPreparationDeadline.start(10_000))
+                        else -> service.accessToken(id, forceRefresh = kind == "forced")
+                    }
+                }
+            }
+            try {
+                awaitExchangePermitWait(service, id)
+                val changed = assertNotNull(accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                    provider = original.provider, refreshToken = cipher.encrypt("queued-$kind-replacement"),
+                )))
+                repeat(4) { permits.release() }
+                released = true
+                val result = withTimeout(5_000) { caller.await() }
+                if (kind == "manual") assertEquals("credential_replaced", assertIs<OAuthRefreshResult.Failed>(result.getOrThrow()).errorCode)
+                else assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(result.exceptionOrNull()).errorCode)
+                awaitRefreshTasksEnded(service)
+                assertEquals(0, calls.get(), "A stale $kind waiter cannot authorize a replacement exchange")
+                val unchanged = assertNotNull(accounts.find(id))
+                assertTrue(changed.matchesCredentialSnapshot(unchanged))
+                assertEquals(0, unchanged.refreshFailureCount)
+                assertNull(unchanged.lastRefreshError)
+            } finally {
+                if (!released) repeat(4) { permits.release() }
+                caller.cancelAndJoin()
+                assertTrue(service.drainRefreshes())
+            }
+        }
+    }
+
+    @Test
+    fun shutdownSaveFailureDoesNotDiscardAnotherAccountsOpportunityToPersistItsRotation() = runBlocking {
+        val first = createAccount("drain-first", accountEmail = email("drain-first"))
+        val second = createAccount("drain-second", accountEmail = email("drain-second"))
+        val calls = AtomicInteger()
+        val service = serviceWithProvider(object : OAuthTokenProvider {
+            override val provider = OAuthProvider.CHATGPT
+            override suspend fun refresh(refreshToken: String, proxyUrl: String?): OAuthTokenResponse {
+                calls.incrementAndGet()
+                return OAuthTokenResponse("access-$refreshToken", "rotated-$refreshToken")
+            }
+        })
+        val suffix = UUID.randomUUID().toString().replace("-", "")
+        val function = "drain_rotation_$suffix"
+        val trigger = "drain_rotation_trigger_$suffix"
+        fun blockWrites(ids: List<String>, create: Boolean = false) {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    val selected = ids.joinToString(",") { "'$it'" }
+                    statement.execute("CREATE OR REPLACE FUNCTION $function() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id IN ($selected) AND NEW.access_token_ciphertext IS NOT NULL THEN RAISE EXCEPTION 'synthetic independent save failure' USING ERRCODE = '42501'; END IF; RETURN NEW; END $$")
+                    if (create) statement.execute("CREATE TRIGGER $trigger BEFORE UPDATE ON oauth_accounts FOR EACH ROW EXECUTE FUNCTION $function()")
+                }
+            }
+        }
+        blockWrites(listOf(first, second), create = true)
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val pending = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }
+        try {
+            for (id in listOf(first, second)) {
+                val failure = assertFailsWith<OAuthTokenUnavailableException> { withTimeout(5_000) { service.accessToken(id) } }
+                assertEquals("refresh_save_pending", failure.errorCode)
+                awaitRefreshTasksEnded(service)
+            }
+            assertEquals(listOf(first, second), synchronized(monitor) { (pending.get(service) as Map<*, *>).keys.toList() })
+            val firstPending = synchronized(monitor) { (pending.get(service) as Map<*, *>)[first] }
+            assertNotNull(firstPending)
+            blockWrites(listOf(first))
+            assertFalse(withTimeout(10_000) { service.drainRefreshes(timeoutMs = 5_000) })
+            val saved = assertNotNull(accounts.find(second))
+            assertEquals("access-drain-second", cipher.decrypt(saved.accessTokenCiphertext!!, saved.accessTokenNonce!!))
+            val context = assertNotNull(accounts.loadRefreshContext(second))
+            assertEquals("rotated-drain-second", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
+            assertFalse(accounts.find(first)!!.hasAccessToken)
+            assertEquals(setOf(first), synchronized(monitor) { (pending.get(service) as Map<*, *>).keys.toSet() })
+            assertTrue(synchronized(monitor) { (pending.get(service) as Map<*, *>)[first] === firstPending })
+            assertEquals(2, calls.get(), "Shutdown saves retained rotations without a second provider exchange")
+        } finally {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("DROP TRIGGER IF EXISTS $trigger ON oauth_accounts")
+                    statement.execute("DROP FUNCTION IF EXISTS $function()")
+                }
+            }
+            assertTrue(withTimeout(10_000) { service.drainRefreshes() })
+        }
+        val recovered = assertNotNull(accounts.find(first))
+        assertEquals("access-drain-first", cipher.decrypt(recovered.accessTokenCiphertext!!, recovered.accessTokenNonce!!))
+        assertEquals(2, calls.get())
+    }
+
+    @Test
     fun ordinaryAndForcedWaitersRejectACompletedResultFromReplacedAuthorization() = runBlocking {
         val id = createAccount("late-result-old", accountEmail = email("late-result"))
         val service = service()
@@ -1341,8 +1451,10 @@ class OAuthTokenServiceTest {
             val failure = waiter.await().exceptionOrNull()
             assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
             mutex.unlock(owner)
-            withTimeout(5_000) { assertTrue(service.drainRefreshes()) }
+            awaitRefreshTasksEnded(service)
             assertEquals(0, tokenRequests.get(), "the shared task must recheck active waiters before exchange")
+            assertEquals("at-1", service.accessToken(keyId)!!.accessToken)
+            assertEquals(1, tokenRequests.get(), "The service must still accept refreshes after the abandoned task exits")
         } finally {
             if (mutex.holdsLock(owner)) mutex.unlock(owner)
             assertTrue(service.drainRefreshes())
@@ -1742,6 +1854,12 @@ class OAuthTokenServiceTest {
 
         val account = assertNotNull(accounts.find(keyId))
         assertEquals(Long.MAX_VALUE, account.accessTokenExpiresAt)
+    }
+
+    private suspend fun awaitRefreshTasksEnded(service: OAuthTokenService) = withTimeout(5_000) {
+        val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        while (synchronized(monitor) { (tasks.get(service) as Map<*, *>).isNotEmpty() }) delay(1)
     }
 
     private suspend fun awaitExchangePermitWait(service: OAuthTokenService, accountId: String) = withTimeout(5_000) {

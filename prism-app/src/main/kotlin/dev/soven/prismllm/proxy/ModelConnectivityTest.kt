@@ -51,6 +51,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.intOrNull
 
 internal const val MAX_MODEL_TEST_RESPONSE_BYTES = 1_048_576L
+private const val MAX_MODEL_TEST_JSON_DEPTH = 32
 private const val MAX_REDACTION_MATCH_WORK = 16 * MAX_MODEL_TEST_RESPONSE_BYTES
 
 /** 一次渠道模型连通性测试的结果。 */
@@ -220,7 +221,7 @@ private fun buildModelTestRequest(
         url(upstreamRequestUrl(channel.baseUrl, protocol, model, envelope = envelope))
         applyUpstreamAuthentication(credential, authType, protocol)
         header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-        policy.applyHeaders(this)
+        policy.applyHeaders(this, protectedHeaders = MANAGED_HEADERS)
         if (envelope == UpstreamEnvelope.CODE_ASSIST) applyCodeAssistIdentity(codeAssistUserAgent)
         setBody(TextContent(body, ContentType.Application.Json))
     }
@@ -244,26 +245,41 @@ private suspend fun runModelConnectivityTest(
             val prepared = request()
             currentCoroutineContext().ensureActive()
             httpClient.preparePost(prepared).execute { response ->
+                fun rejectedResponse(message: String) = ModelConnectivityExecution(ModelConnectivityTestResult(
+                    success = false, statusCode = response.status.value,
+                    latencyMs = System.currentTimeMillis() - startedAt,
+                    responseText = null, errorMessage = message, usage = null,
+                ))
                 val channel = response.bodyAsChannel()
                 val packet = channel.readRemaining(MAX_MODEL_TEST_RESPONSE_BYTES + 1)
                 if (packet.remaining > MAX_MODEL_TEST_RESPONSE_BYTES) {
                     channel.cancel()
                     packet.close()
-                    return@execute ModelConnectivityExecution(ModelConnectivityTestResult(
-                        success = false, statusCode = response.status.value,
-                        latencyMs = System.currentTimeMillis() - startedAt,
-                        responseText = null, errorMessage = "上游响应超过 1 MiB 上限", usage = null,
-                    ))
+                    return@execute rejectedResponse("上游响应超过 1 MiB 上限")
                 }
                 currentCoroutineContext().ensureActive()
                 val rawBody = (response.charset() ?: Charsets.UTF_8).newDecoder().decode(packet)
                 val latencyMs = System.currentTimeMillis() - startedAt
                 val status = response.status.value
                 val ok = status in 200..299
-                val body = if (!ok && envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(rawBody) else rawBody
-                val parsedBody = runCatching { Json.parseToJsonElement(body) }.getOrNull()
+                val jsonBodies = if (protocol == GatewayProtocol.RESPONSES && !rawBody.trimStart().startsWith('{') && !rawBody.trimStart().startsWith('[')) {
+                    rawBody.lineSequence().filter { it.startsWith("data:") }.map { it.removePrefix("data:").trim() }
+                } else sequenceOf(rawBody)
+                if (jsonBodies.any { !modelTestJsonTextIsBounded(it) }) {
+                    return@execute rejectedResponse("上游响应 JSON 超过 32 层深度上限")
+                }
+                val rawJson = runCatching { Json.parseToJsonElement(rawBody) }.getOrNull()
+                if (rawJson != null && !modelTestJsonIsBounded(rawJson)) {
+                    return@execute rejectedResponse("上游响应 JSON 超过 32 层深度上限")
+                }
+                val parsedBody = if (!ok && envelope == UpstreamEnvelope.CODE_ASSIST && rawJson is JsonObject) {
+                    rawJson["error"]?.let { buildJsonObject { put("error", it) } } ?: rawJson
+                } else rawJson
                 val parsed = parsedBody as? JsonObject
-                    ?: if (ok && protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(body) else null
+                    ?: if (ok && protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(rawBody) else null
+                if (parsed != null && !modelTestJsonIsBounded(parsed)) {
+                    return@execute rejectedResponse("上游响应 JSON 超过 32 层深度上限")
+                }
                 val json = if (ok && envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) CodeAssistEnvelope.unwrap(parsed) else parsed
                 // Parse status and usage on the original JSON. Redact only the decoded display values.
                 val responseState = (json?.get("status") as? JsonPrimitive)?.contentOrNull
@@ -281,7 +297,7 @@ private suspend fun runModelConnectivityTest(
                         if (ok && incompleteResponse) {
                             "上游 Responses 尚未成功完成：${redactModelTestCredential(responseState.orEmpty(), credential, budget = redactionBudget)}"
                         } else {
-                            redactModelTestErrorPreview(body, parsedBody ?: parsed, credential, redactionBudget)
+                            redactModelTestErrorPreview(rawBody, parsedBody ?: parsed, credential, redactionBudget)
                         }
                     } else null,
                     usage = if (ok) extractModelTestUsage(protocol, json) else null,
@@ -289,7 +305,8 @@ private suspend fun runModelConnectivityTest(
                 )
                 ModelConnectivityExecution(
                     result = result,
-                    rawSample = if (captureRawSample && result.success && (!requireCompleteSample || !isModelTestOutputTruncated(protocol, json))) {
+                    rawSample = if (captureRawSample && result.success && (!requireCompleteSample ||
+                        (!isModelTestOutputTruncated(protocol, json) && displayText != null && displayText.length <= maxResponseChars))) {
                         displayText?.take(maxResponseChars)
                     } else null,
                     sanitize = { redactModelTestCredential(it, credential, budget = redactionBudget) },
@@ -550,6 +567,32 @@ private fun redactModelTestCredential(text: String, credential: String, multilin
         }
         append(display, copied, display.length)
     }
+}
+
+private fun modelTestJsonTextIsBounded(text: String): Boolean {
+    if (text.firstOrNull { !it.isWhitespace() } !in listOf('{', '[')) return true
+    var depth = 0
+    var quoted = false
+    var escaped = false
+    for (character in text) {
+        if (quoted) {
+            if (escaped) escaped = false
+            else if (character == '\\') escaped = true
+            else if (character == '"') quoted = false
+        } else when (character) {
+            '"' -> quoted = true
+            '{', '[' -> if (++depth > MAX_MODEL_TEST_JSON_DEPTH) return false
+            '}', ']' -> depth--
+        }
+    }
+    return true
+}
+
+private fun modelTestJsonIsBounded(element: JsonElement, depth: Int = 0): Boolean = when {
+    depth > MAX_MODEL_TEST_JSON_DEPTH -> false
+    element is JsonObject -> element.values.all { modelTestJsonIsBounded(it, depth + 1) }
+    element is JsonArray -> element.all { modelTestJsonIsBounded(it, depth + 1) }
+    else -> true
 }
 
 private fun redactModelTestErrorPreview(body: String, json: JsonElement?, credential: String, budget: ModelTestRedactionBudget): String {

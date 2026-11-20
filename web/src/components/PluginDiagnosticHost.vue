@@ -45,6 +45,7 @@ const targets = ref<ModelTestTarget[]>([])
 const state = ref<PluginRuntimeState | null>(null)
 const selectedTargetKey = ref('')
 const form = reactive<PluginValues>({})
+const editedFields = new Set<string>()
 const loading = ref(true)
 const loadError = ref('')
 const runError = ref('')
@@ -131,11 +132,16 @@ function fieldOptions(field: PluginField): PluginChoice[] | undefined {
 
 function setField(field: PluginField, value: PluginValue) {
   if (field.kind === 'model') selectedTargetKey.value = String(value ?? '')
-  else form[field.key] = value
+  else {
+    form[field.key] = value
+    if (value === defaultValues.value[field.key]) editedFields.delete(field.key)
+    else editedFields.add(field.key)
+  }
 }
 
 function resetField(field: PluginField) {
   form[field.key] = defaultValues.value[field.key] ?? ''
+  editedFields.delete(field.key)
 }
 
 function stopWaiting() {
@@ -186,9 +192,10 @@ async function load(reset = true) {
         : target.protocols,
     })).filter((target) => target.protocols.length && target.credentials.length)
     const previous = { ...form }
+    if (reset) editedFields.clear()
     for (const fieldKey of Object.keys(form)) delete form[fieldKey]
     Object.assign(form, pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}, true))
-    if (!reset) for (const field of fields.value) if (Object.hasOwn(previous, field.key)) form[field.key] = previous[field.key]!
+    if (!reset) for (const field of fields.value) if (editedFields.has(field.key) && Object.hasOwn(previous, field.key)) form[field.key] = previous[field.key]!
     if (!selectedTarget.value) {
       const preferred = singleTargets.value.find((target) => target.model === props.initialModel) ?? singleTargets.value[0]
       selectedTargetKey.value = preferred ? modelTestTargetKey(preferred.channelId, preferred.model) : ''

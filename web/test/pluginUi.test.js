@@ -613,7 +613,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     setState(fixture.manifest.id, { configuration: newConfiguration, activeConfiguration: newConfiguration })
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
     await waitFor(() => !entry.state.loading.value && entry.state.defaultValues.value.prompt === newConfiguration.defaultPrompt)
-    assert.equal(entry.state.form.prompt, oldPrompt, 'Refresh preserves the current invocation input')
+    assert.equal(entry.state.form.prompt, newConfiguration.defaultPrompt, 'Unedited future input follows the active configuration')
     assert.equal(oldCall.payload.values.prompt, oldPrompt)
     pending.resolve(responseFor(oldCall))
     await run; await settle()
@@ -624,6 +624,123 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await entry.state.run(); await settle()
     assert.equal(calls.invocations[1].payload.values.prompt, newConfiguration.defaultPrompt)
     assert.equal(oldCall.payload.values.prompt, oldPrompt)
+  })
+
+  for (const edited of [false, true]) {
+    it(`refreshes untouched diagnostic defaults while ${edited ? 'retaining explicit zero, false and prompt edits' : 'following all active defaults'}`, async () => {
+      const fixture = makePluginFixture({ extraFields: [
+        makeField('threshold', '本次阈值', 'number', { defaultValue: 0.5, min: 0, max: 1 }),
+        makeField('flag', '本次开关', 'boolean', { defaultValue: true }),
+        makeField('label', '本次标签', 'text', { defaultValue: 'old label' }),
+      ] })
+      const entry = await hostFor(fixture)
+      if (edited) {
+        await change(field(entry.container, '本次提示词'), 'explicit draft')
+        await change(field(entry.container, '本次阈值'), 0)
+        await change(field(entry.container, '本次开关'), false)
+      }
+      const updated = { defaultPrompt: 'fresh default', threshold: 0.8, flag: true, label: 'fresh label' }
+      setState(fixture.manifest.id, { activeConfiguration: updated })
+      await entry.state.load(false); await settle()
+      assert.equal(entry.state.form.prompt, edited ? 'explicit draft' : updated.defaultPrompt)
+      assert.equal(entry.state.form.threshold, edited ? 0 : updated.threshold)
+      assert.equal(entry.state.form.flag, edited ? false : updated.flag)
+      assert.equal(entry.state.form.label, 'fresh label')
+      const prompt = fixture.contribution.entry.action.fields.find(item => item.key === 'prompt')
+      entry.state.resetField(prompt)
+      setState(fixture.manifest.id, { activeConfiguration: { ...updated, defaultPrompt: 'newer default' } })
+      await entry.state.load(false); await settle()
+      assert.equal(entry.state.form.prompt, 'newer default', 'Reset removes the local override and resumes following defaults')
+      await entry.state.run(); await settle()
+      assert.equal(calls.invocations.at(-1).payload.values.prompt, 'newer default')
+    })
+  }
+
+  for (const surface of ['ChannelTestDrawer', 'ChannelConnectivityPanel', 'OAuthModelTestModal']) {
+    it(`prunes unavailable historical versions before showing the replacement on ${surface}`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      const entry = await mountDiagnosticSurface(surface, fixture)
+      await waitFor(() => captures.get('PluginDiagnosticHost').loading.value === false)
+      const contribution = surface === 'OAuthModelTestModal' ? fixture.accountContribution : fixture.contribution
+      entry.state.markUnavailable({ pluginId: contribution.pluginId, activeVersion: contribution.activeVersion, entryId: contribution.entry.id })
+      await settle()
+      assert.equal(entry.state.invalidContributions.value.size, 1)
+      const next = makeOfficialPluginFixture({ version: '2.0.0' })
+      mock.states.set(next.state.id, clonePluginData(next.state))
+      mock.contributions = clonePluginData(next.contributions)
+      await entry.state.load(true); await settle()
+      assert.equal(entry.state.invalidContributions.value.size, 0)
+      assert.doesNotMatch(text(entry.container), /此生效版本.*已不可用/)
+      if (surface === 'ChannelTestDrawer') button(entry.container, next.contribution.entry.label).click()
+      await waitFor(() => captures.get('PluginDiagnosticHost').props.contribution.activeVersion === '2.0.0' &&
+        captures.get('PluginDiagnosticHost').loading.value === false)
+      await captures.get('PluginDiagnosticHost').run(); await settle()
+      assert.equal(calls.invocations.at(-1).payload.expectedActiveVersion, '2.0.0')
+    })
+
+    it(`does not let a late confirmation clear a newer unavailability event on ${surface}`, async () => {
+      const fixture = makeOfficialPluginFixture()
+      const entry = await mountDiagnosticSurface(surface, fixture)
+      await waitFor(() => captures.get('PluginDiagnosticHost').loading.value === false)
+      const contribution = surface === 'OAuthModelTestModal' ? fixture.accountContribution : fixture.contribution
+      const unavailable = { pluginId: contribution.pluginId, activeVersion: contribution.activeVersion, entryId: contribution.entry.id }
+      entry.state.markUnavailable(unavailable); await settle()
+      const other = makePluginFixture({ id: 'example.concurrent-unavailable' })
+      if (surface === 'ChannelTestDrawer') {
+        mock.states.set(other.state.id, clonePluginData(other.state))
+        mock.contributions.push(clonePluginData(other.contribution))
+      }
+      const live = deferred()
+      mock.getState = () => live.promise
+      const reads = calls.state.length
+      const loading = entry.state.load(true)
+      await waitFor(() => calls.state.length === reads + 1)
+      entry.state.markUnavailable(surface === 'ChannelTestDrawer' ? {
+        pluginId: other.manifest.id, activeVersion: other.manifest.version, entryId: other.contribution.entry.id,
+      } : unavailable); await settle()
+      live.resolve(clonePluginData(fixture.state))
+      await loading; await settle()
+      assert.equal(entry.state.invalidContributions.value.size, surface === 'ChannelTestDrawer' ? 2 : 1)
+      assert.equal(entry.state.diagnosticGenerations.value.size, 0)
+      assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
+    })
+  }
+
+  it('commits a new drawer list before slow rechecks and isolates a failed entry from other recoveries', async () => {
+    const removed = makePluginFixture({ id: 'example.removed' })
+    const failing = makePluginFixture({ id: 'example.failing' })
+    const recovered = makePluginFixture({ id: 'example.recovered' })
+    setFixtures(removed, failing, recovered)
+    const entry = await mount('ChannelTestDrawer', { channel })
+    await waitFor(() => captures.get('PluginDiagnosticHost').loading.value === false)
+    for (const fixture of [failing, recovered]) entry.state.markUnavailable({
+      pluginId: fixture.manifest.id, activeVersion: '1.0.0', entryId: fixture.contribution.entry.id,
+    })
+    await settle()
+    const removedTab = entry.container.querySelector('[role=tab][aria-selected=true]')
+    removedTab.focus()
+    setState(removed.manifest.id, { admissionEnabled: false })
+    const live = deferred()
+    mock.getState = id => id === failing.manifest.id ? live.promise : stateFor(id)
+    const reads = calls.state.length
+    const loading = entry.state.load(true)
+    await waitFor(() => calls.state.length === reads + 1)
+    assert.equal(entry.state.contributions.value.some(item => item.pluginId === removed.manifest.id), false)
+    assert.equal(removedTab.isConnected, false, 'An already removed plugin must leave before a slow recheck settles')
+    assert.equal(document.activeElement.textContent, '智商')
+    live.reject(new Error('isolated confirmation failure'))
+    await loading; await settle()
+    const failingKey = entry.state.contributionVersionKey(failing.contribution)
+    const recoveredKey = entry.state.contributionVersionKey(recovered.contribution)
+    assert.equal(entry.state.invalidContributions.value.has(failingKey), true)
+    assert.equal(entry.state.invalidContributions.value.has(recoveredKey), false)
+    assert.equal(entry.state.availableContributions.value.some(item => item.pluginId === recovered.manifest.id), true)
+    assert.equal(entry.state.availableContributions.value.some(item => item.pluginId === failing.manifest.id), false)
+    assert.match(entry.state.loadError.value, /isolated confirmation failure/)
+    mock.getState = undefined
+    await entry.state.load(true); await settle()
+    assert.equal(entry.state.invalidContributions.value.size, 0)
+    assert.equal(entry.state.loadError.value, '')
   })
 
   it('preserves the pre-resolved account model and protocol subset without a credential selector', async () => {
@@ -857,7 +974,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       const reads = calls.contributions.length
       window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
       await waitFor(() => calls.contributions.length === reads + 1 && !entry.state.loading.value)
-      assert.equal(entry.state.invalidContributions.value.size, 1)
+      assert.equal(entry.state.invalidContributions.value.size, mismatch === 'absent' ? 0 : 1)
       assert.equal(entry.state.diagnosticGenerations.value.size, 0)
       assert.equal(diagnosticHostSetups, setups)
       assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
@@ -1106,7 +1223,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
         live.resolve(liveState)
       }
       await waitFor(() => !entry.state.loading.value)
-      assert.equal(entry.state.invalidContributions.value.has(key), true)
+      assert.equal(entry.state.invalidContributions.value.has(key), mismatch !== 'absent')
       assert.equal(entry.state.diagnosticGenerations.value.size, 0)
       assert.equal(diagnosticHostSetups, setups)
       assert.equal(entry.container.querySelector('.plugin-diagnostic-host'), null)
@@ -1207,7 +1324,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(captures.get('PluginDiagnosticHost'), host)
     assert.equal(diagnosticHostSetups, setups)
     assert.equal(entry.state.hostKey.value, hostKey)
-    assert.equal(entry.state.diagnosticGenerations.value.get(`${second.manifest.id}:${second.accountContribution.entry.id}:${second.accountContribution.activeVersion}`), 1)
+    assert.equal(entry.state.diagnosticGenerations.value.get(entry.state.contributionVersionKey(second.accountContribution)), 1)
     assert.equal(entry.state.diagnosticGenerations.value.size, 1)
     assert.equal(call.options.signal.aborted, false)
     assert.equal(host.running.value, true)

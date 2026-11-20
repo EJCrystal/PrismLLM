@@ -4,6 +4,7 @@ import { api } from '../api'
 import type { Channel, PluginUiContribution } from '../types/api'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import { PLUGIN_STATE_CHANGED } from '../utils/pluginForm'
+import { currentInvalidPluginContributions, pluginContributionVersionKey, recheckPluginContributions } from '../utils/pluginDiscovery'
 import PluginDiagnosticHost from './PluginDiagnosticHost.vue'
 import TestEmptyState from './TestEmptyState.vue'
 
@@ -16,7 +17,7 @@ let controller: AbortController | null = null
 let disposed = false
 const invalidContributions = ref(new Set<string>())
 const diagnosticGenerations = ref(new Map<string, number>())
-const contributionKey = (item: PluginUiContribution) => `${item.pluginId}:${item.activeVersion}:${item.entry.id}`
+function contributionKey(item: PluginUiContribution) { return pluginContributionVersionKey(item) }
 const contribution = computed<PluginUiContribution | undefined>((previous) => {
   const available = contributions.value.filter((item) => item.pluginId === 'prism.connectivity' && item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel') && !invalidContributions.value.has(contributionKey(item)))
   return available.find((item) => previous && contributionKey(item) === contributionKey(previous)) ?? available[0]
@@ -34,29 +35,24 @@ async function load(recheck = false) {
   loading.value = true
   loadError.value = ''
   try {
-    const invalid = new Set(invalidContributions.value)
-    const result = await guard.run(async () => {
-      const available = await api.getPluginContributions({ signal: current.signal })
-      const recovered: string[] = []
-      if (recheck) {
-        for (const item of available) {
-          const key = contributionKey(item)
-          if (!invalid.has(key) || item.pluginId !== 'prism.connectivity' || item.entry.placement !== 'channel-tests' || !item.entry.contexts.includes('channel')) continue
-          const live = await api.getPlugin(item.pluginId, { signal: current.signal })
-          if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
-            live.activeUi?.entries.some((entry) => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
-              entry.placement === 'channel-tests' && entry.contexts.includes('channel'))) recovered.push(key)
-        }
-      }
-      return { available, recovered }
-    })
+    const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
     if (!result.isLatest || disposed) return
-    const remaining = new Set(invalidContributions.value)
-    for (const key of result.value.recovered) {
-      if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+    invalidContributions.value = currentInvalidPluginContributions(result.value, invalidContributions.value)
+    contributions.value = result.value
+    if (recheck) {
+      const invalidSnapshot = invalidContributions.value
+      const checked = await recheckPluginContributions(result.value.filter(item => item.pluginId === 'prism.connectivity' &&
+        item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel')), invalidSnapshot, current.signal)
+      if (disposed || controller !== current || current.signal.aborted) return
+      if (invalidContributions.value === invalidSnapshot) {
+        const remaining = new Set(invalidSnapshot)
+        for (const key of checked.recovered) {
+          if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+        }
+        invalidContributions.value = remaining
+      }
+      loadError.value = checked.error
     }
-    invalidContributions.value = remaining
-    contributions.value = result.value.available
     loading.value = false
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {

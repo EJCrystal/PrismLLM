@@ -551,9 +551,13 @@ class OAuthTokenService(
                         expectedAccount = pending.context.account, now = now(),
                     ))
                 }
-            } catch (_: Exception) { null }
-            if (write != null) synchronized(refreshLifecycleLock) { pendingRefreshes.remove(id, pending) }
-            else break // Keep the remaining encrypted results and report an incomplete drain.
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (_: Exception) {
+                continue
+            }
+            if (write == null) break
+            synchronized(refreshLifecycleLock) { pendingRefreshes.remove(id, pending) }
         }
         val unsaved = synchronized(refreshLifecycleLock) { pendingRefreshes.size }
         if (unsaved != 0) logger.warn("OAuth shutdown retains {} unsaved encrypted rotation results", unsaved)
@@ -762,7 +766,7 @@ class OAuthTokenService(
     }
 
     private fun eligibleWaiters(task: RefreshTask, latest: OAuthAccountRecord): List<RefreshWaiter> =
-        task.waiters.filter { it.active() && (it.preparation == null || acceptsSnapshot(it.account, latest)) }
+        task.waiters.filter { it.active() && acceptsSnapshot(it.account, latest) }
 
     private fun cachedRefreshOutcome(account: OAuthAccountRecord): RefreshOutcome? {
         if (account.authState != OAuthAuthState.ACTIVE) {

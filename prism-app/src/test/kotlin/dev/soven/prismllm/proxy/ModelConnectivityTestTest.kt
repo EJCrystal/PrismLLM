@@ -621,11 +621,11 @@ class ModelConnectivityTestTest {
     ): CapturedDiagnosticRequest {
         val captured = ConcurrentLinkedQueue<CapturedDiagnosticRequest>()
         val channelOverrides = UpstreamRequestOverrides(
-            headers = mapOf("X-Diagnostic-Channel" to "kept-channel-header"),
+            headers = mapOf("X-Diagnostic-Channel" to "kept-channel-header", "Authorization" to "Bearer synthetic-channel-override"),
             body = Json.parseToJsonElement("""{"metadata":{"source":"channel"},"tools":[{"type":"function","name":"injected-tool"}]}""").jsonObject,
             protocols = mapOf(
                 protocol.value to UpstreamProtocolOverrides(
-                    headers = mapOf("X-Diagnostic-Protocol" to "kept-protocol-header"),
+                    headers = mapOf("X-Diagnostic-Protocol" to "kept-protocol-header", "aUtHoRiZaTiOn" to "Bearer synthetic-protocol-override"),
                     body = hostileDiagnosticBody(protocol).let { body ->
                         if (tokenOverride == null) body
                         else if (protocol == GatewayProtocol.GEMINI) kotlinx.serialization.json.JsonObject(body +
@@ -658,6 +658,7 @@ class ModelConnectivityTestTest {
                 addHandler { request ->
                     val content = request.body as? OutgoingContent.ByteArrayContent
                         ?: error("Expected synthetic diagnostic JSON content")
+                    assertEquals(listOf("Bearer diagnostic-token"), request.headers.getAll(HttpHeaders.Authorization))
                     captured.add(
                         CapturedDiagnosticRequest(
                             path = request.url.encodedPath,
@@ -676,7 +677,7 @@ class ModelConnectivityTestTest {
         client.use {
             val globalOverrides = UpstreamRequestOverrides(
                 userAgent = "diagnostic-global-UA",
-                headers = mapOf("X-Diagnostic-Global" to "kept-global-header"),
+                headers = mapOf("X-Diagnostic-Global" to "kept-global-header", "authorization" to "Bearer synthetic-global-override"),
                 body = Json.parseToJsonElement("""{"metadata":{"source":"global"},"tools":[{"type":"function","name":"injected-tool"}]}""").jsonObject,
             )
             if (provider == null) {
@@ -1261,6 +1262,120 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun diagnostic_json_depth_is_bounded_before_preview_and_text_extraction_for_every_entry() = runBlocking {
+        val credential = "json-depth-credential"
+        for ((oauth, provider, protocol) in listOf(
+            Triple(false, null, GatewayProtocol.CHAT_COMPLETIONS),
+            Triple(true, OAuthProvider.CHATGPT, GatewayProtocol.RESPONSES),
+            Triple(true, OAuthProvider.ANTIGRAVITY, GatewayProtocol.GEMINI),
+        )) {
+            for (objects in listOf(false, true)) for (depth in listOf(32, 33, 8_000)) {
+                val open = if (objects) """{"content":""" else "["
+                val close = if (objects) "}" else "]"
+                val nested = open.repeat(depth - 1) + JsonPrimitive("deep-$credential").toString() + close.repeat(depth - 1)
+                val body = """{"error":$nested}"""
+                assertTrue(body.toByteArray(Charsets.UTF_8).size < DIAGNOSTIC_RESPONSE_BYTE_LIMIT)
+                val result = diagnosticTransport(credential, oauth = oauth, protocol = protocol, responseBody = body,
+                    status = HttpStatusCode.BadGateway, provider = provider)
+                assertFalse(result.success)
+                assertEquals(502, result.statusCode)
+                assertNull(result.responseText)
+                assertFalse(result.errorMessage.orEmpty().contains(credential))
+                if (depth > 32) assertEquals("上游响应 JSON 超过 32 层深度上限", result.errorMessage)
+                else assertTrue(result.errorMessage.orEmpty().contains("deep-[REDACTED]"))
+            }
+        }
+    }
+
+    @Test
+    fun responses_sse_depth_limit_applies_before_serializing_nested_error_events() = runBlocking {
+        val credential = "sse-depth-credential"
+        for (oauth in listOf(false, true)) for (depth in listOf(32, 33, 5_000)) {
+            val nested = "[".repeat(depth - 2) + JsonPrimitive("safe-$credential").toString() + "]".repeat(depth - 2)
+            val body = """data: {"type":"error","detail":$nested}"""
+            val result = diagnosticTransport(credential, protocol = GatewayProtocol.RESPONSES, oauth = oauth,
+                responseBody = body, contentType = ContentType.Text.EventStream, provider = OAuthProvider.CHATGPT)
+            assertFalse(result.success)
+            assertEquals(200, result.statusCode)
+            assertNull(result.responseText)
+            assertFalse(result.errorMessage.orEmpty().contains(credential))
+            if (depth > 32) assertEquals("上游响应 JSON 超过 32 层深度上限", result.errorMessage)
+            else assertTrue(result.errorMessage.orEmpty().contains("safe-[REDACTED]"))
+        }
+    }
+
+    @Test
+    fun fingerprint_local_character_limit_never_supplies_a_truncated_sample() = runBlocking {
+        for (protocol in GatewayProtocol.entries) for (length in listOf(40, 41)) {
+            val sample = "界".repeat(length)
+            val encoded = JsonPrimitive(sample).toString()
+            val body = when (protocol) {
+                GatewayProtocol.CHAT_COMPLETIONS -> """{"choices":[{"message":{"content":$encoded},"finish_reason":"stop"}]}"""
+                GatewayProtocol.RESPONSES -> """{"status":"completed","output_text":$encoded}"""
+                GatewayProtocol.MESSAGES -> """{"content":[{"type":"text","text":$encoded}],"stop_reason":"end_turn"}"""
+                GatewayProtocol.GEMINI -> """{"candidates":[{"content":{"parts":[{"text":$encoded}]},"finishReason":"STOP"}]}"""
+            }
+            val variants = if (protocol == GatewayProtocol.RESPONSES) listOf(
+                body to ContentType.Application.Json,
+                "data: {\"type\":\"response.completed\",\"response\":$body}" to ContentType.Text.EventStream,
+            ) else listOf(body to ContentType.Application.Json)
+            for ((response, type) in variants) {
+                val complete = fingerprintDiagnosticTransport("unrelated-credential", response, 40, protocol, type)
+                assertTrue(complete.result.success)
+                assertEquals(sample.take(40), complete.result.responseText)
+                if (length == 40) assertEquals(sample, complete.rawSample) else assertNull(complete.rawSample)
+                val preview = fingerprintDiagnosticTransport("unrelated-credential", response, 40, protocol, type, requireCompleteSample = false)
+                assertEquals(sample.take(40), preview.rawSample)
+            }
+        }
+    }
+
+    @Test
+    fun native_oauth_json_and_sse_obey_exact_response_byte_limits() = runBlocking {
+        val text = "OAuth 完整响应界"
+        val encoded = JsonPrimitive(text).toString()
+        val response = """{"status":"completed","output_text":$encoded}"""
+        for ((provider, type, body) in listOf(
+            Triple(OAuthProvider.CHATGPT, ContentType.Application.Json, response),
+            Triple(OAuthProvider.CHATGPT, ContentType.Text.EventStream, "data: {\"type\":\"response.completed\",\"response\":$response}"),
+            Triple(OAuthProvider.ANTIGRAVITY, ContentType.Application.Json,
+                """{"response":{"candidates":[{"content":{"parts":[{"text":$encoded}]},"finishReason":"STOP"}]}}"""),
+        )) {
+            val protocol = if (provider == OAuthProvider.CHATGPT) GatewayProtocol.RESPONSES else GatewayProtocol.GEMINI
+            val bounded = body + " ".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() - body.toByteArray(Charsets.UTF_8).size)
+            assertEquals(DIAGNOSTIC_RESPONSE_BYTE_LIMIT, bounded.toByteArray(Charsets.UTF_8).size.toLong())
+            assertTrue(bounded.length < DIAGNOSTIC_RESPONSE_BYTE_LIMIT)
+            val result = diagnosticTransport("oauth-byte-credential", oauth = true, protocol = protocol, responseBody = bounded, contentType = type, provider = provider)
+            assertTrue(result.success)
+            assertEquals(text, result.responseText)
+            val oversized = diagnosticTransport("oauth-byte-credential", oauth = true, protocol = protocol, responseBody = bounded + " ", contentType = type, provider = provider)
+            assertFalse(oversized.success)
+            assertEquals("上游响应超过 1 MiB 上限", oversized.errorMessage)
+            assertNull(oversized.responseText)
+        }
+    }
+
+    @Test
+    fun native_oauth_oversized_open_stream_is_cancelled_without_waiting_for_eof() = runBlocking {
+        for (provider in listOf(OAuthProvider.CHATGPT, OAuthProvider.ANTIGRAVITY)) {
+            val protocol = if (provider == OAuthProvider.CHATGPT) GatewayProtocol.RESPONSES else GatewayProtocol.GEMINI
+            val channel = ByteChannel(autoFlush = true)
+            val pending = async { diagnosticTransport("oauth-open-credential", oauth = true, protocol = protocol, provider = provider, responseChannel = channel) }
+            val writer = async { runCatching { channel.writeStringUtf8("x".repeat(DIAGNOSTIC_RESPONSE_BYTE_LIMIT.toInt() + 1)) } }
+            try {
+                val result = withTimeout(5_000) { pending.await() }
+                assertFalse(result.success)
+                assertEquals("上游响应超过 1 MiB 上限", result.errorMessage)
+                assertNull(result.responseText)
+                assertTrue(channel.isClosedForRead)
+                withTimeout(5_000) { writer.await() }
+            } finally {
+                channel.cancel(CancellationException("test cleanup"))
+            }
+        }
+    }
+
+    @Test
     fun diagnostic_response_byte_limit_preserves_complete_json_and_sse_at_the_boundary() = runBlocking {
         val credential = "bounded-response-secret"
         for ((protocol, contentType, body) in listOf(
@@ -1415,7 +1530,7 @@ class ModelConnectivityTestTest {
         val result = execution.result
         val rawSample = execution.rawSample
 
-        assertEquals(originalText.take(24), rawSample)
+        assertNull(rawSample, "A complete upstream response is still ineligible if the local sample would be truncated")
         assertFalse(result.responseText.orEmpty().contains(credential))
         assertFalse(result.upstreamReportedModel.orEmpty().contains(credential))
         assertEquals("sample [REDACTED] remain", result.responseText)
@@ -1967,6 +2082,7 @@ class ModelConnectivityTestTest {
         maxResponseChars: Int = MAX_RESPONSE_CHARS,
         failure: Throwable? = null,
         provider: OAuthProvider? = null,
+        responseChannel: ByteReadChannel? = null,
     ): ModelConnectivityTestResult {
         val channel = ChannelRecord(
             id = "diagnostic-channel",
@@ -2001,7 +2117,7 @@ class ModelConnectivityTestTest {
                     assertEquals("diagnostic.example.test", request.url.host)
                     assertEquals("Bearer $credential", request.headers[HttpHeaders.Authorization])
                     failure?.let { throw it }
-                    respond(responseBody, status, headersOf(HttpHeaders.ContentType, contentType.toString()))
+                    respond(responseChannel ?: ByteReadChannel(responseBody), status, headersOf(HttpHeaders.ContentType, contentType.toString()))
                 }
             }
         }.use { client ->

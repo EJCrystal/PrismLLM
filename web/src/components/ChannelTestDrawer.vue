@@ -4,6 +4,7 @@ import { api } from '../api'
 import type { Channel, PluginUiContribution } from '../types/api'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import { PLUGIN_STATE_CHANGED } from '../utils/pluginForm'
+import { currentInvalidPluginContributions, pluginContributionVersionKey, recheckPluginContributions } from '../utils/pluginDiscovery'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import PluginDiagnosticHost from './PluginDiagnosticHost.vue'
@@ -28,7 +29,7 @@ let userSelectedTab = false
 let controller: AbortController | null = null
 
 function contributionKey(item: PluginUiContribution) { return `plugin:${item.pluginId}:${item.entry.id}` }
-function contributionVersionKey(item: PluginUiContribution) { return `${item.pluginId}:${item.activeVersion}:${item.entry.id}` }
+function contributionVersionKey(item: PluginUiContribution) { return pluginContributionVersionKey(item) }
 const availableContributions = computed(() => contributions.value.filter((item) =>
   item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel') && !invalidContributions.value.has(contributionVersionKey(item))))
 const tabs = computed(() => [
@@ -134,22 +135,7 @@ async function load(recheck = false) {
   const retryElement = typeof document !== 'undefined' && document.activeElement === retryAction.value ? retryAction.value : null
   loadError.value = ''
   try {
-    const result = await guard.run(async () => {
-      const available = await api.getPluginContributions({ signal: current.signal })
-      const invalidSnapshot = invalidContributions.value
-      const recovered: string[] = []
-      if (recheck) {
-        for (const item of available) {
-          const key = contributionVersionKey(item)
-          if (!invalidSnapshot.has(key) || item.entry.placement !== 'channel-tests' || !item.entry.contexts.includes('channel')) continue
-          const live = await api.getPlugin(item.pluginId, { signal: current.signal })
-          if (live.id === item.pluginId && live.admissionEnabled && live.activeVersion === item.activeVersion &&
-            live.activeUi?.entries.some((entry) => entry.id === item.entry.id && entry.action.id === item.entry.action.id &&
-              entry.placement === 'channel-tests' && entry.contexts.includes('channel'))) recovered.push(key)
-        }
-      }
-      return { available, recovered, invalidSnapshot }
-    })
+    const result = await guard.run(() => api.getPluginContributions({ signal: current.signal }))
     if (!result.isLatest || disposed) return
     const previousAvailable = availableContributions.value
     const previousActiveTab = activeTab.value
@@ -157,16 +143,8 @@ async function load(recheck = false) {
     const activeElement = typeof document === 'undefined' ? null : document.activeElement
     const focusedTabId = activeElement && tabList.value?.contains(activeElement) ? activeElement.id : ''
     const focusWasInPanel = !!activeElement && !!tabPanel.value?.contains(activeElement)
-    if (recheck) {
-      const remaining = new Set(invalidContributions.value)
-      if (invalidContributions.value === result.value.invalidSnapshot) {
-        for (const key of result.value.recovered) {
-          if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
-        }
-      }
-      invalidContributions.value = remaining
-    }
-    contributions.value = result.value.available
+    invalidContributions.value = currentInvalidPluginContributions(result.value, invalidContributions.value)
+    contributions.value = result.value
     const removedContributions = previousAvailable.filter((item) =>
       !availableContributions.value.some((next) => contributionKey(next) === contributionKey(item)))
     const removedTabIds = removedContributions.map((item) => `${tabId}-${contributionKey(item)}`)
@@ -181,6 +159,20 @@ async function load(recheck = false) {
     else if (!initialized && !userSelectedTab) activeTab.value = tabs.value[0]?.id ?? 'iq'
     initialized = true
     await focusIqIfRemoved(focusedTabId, focusWasInPanel, removedTabIds, activeTabWasRemoved, activeContributionReplaced)
+    if (recheck && !disposed && controller === current && !current.signal.aborted) {
+      const invalidSnapshot = invalidContributions.value
+      const checked = await recheckPluginContributions(result.value.filter(item =>
+        item.entry.placement === 'channel-tests' && item.entry.contexts.includes('channel')), invalidSnapshot, current.signal)
+      if (disposed || controller !== current || current.signal.aborted) return
+      if (invalidContributions.value === invalidSnapshot) {
+        const remaining = new Set(invalidSnapshot)
+        for (const key of checked.recovered) {
+          if (remaining.delete(key)) diagnosticGenerations.value.set(key, (diagnosticGenerations.value.get(key) ?? 0) + 1)
+        }
+        invalidContributions.value = remaining
+      }
+      loadError.value = checked.error
+    }
   } catch (cause) {
     if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
       loadError.value = cause instanceof Error ? cause.message : String(cause)
