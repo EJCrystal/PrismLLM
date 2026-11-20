@@ -5,12 +5,15 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import org.junit.jupiter.api.Tag
 import java.util.concurrent.CompletableFuture
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertIs
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -59,5 +62,13 @@ class OAuthTokenHandoffTest {
         assertTrue(future.isCancelled)
         assertFalse(future.complete("late-synthetic-response"))
         assertNull(received)
+    }
+
+    @Test
+    fun realDeadlineCancelsPendingResponseAndReportsTimeout() = runBlocking {
+        val future = CompletableFuture<String>()
+        val failure = withTimeout(2_000) { runCatching { awaitTokenResponse(future, 50) }.exceptionOrNull() }
+        assertEquals("timeout", assertIs<OAuthRefreshException>(failure).errorCode)
+        assertTrue(future.isCancelled)
     }
 }

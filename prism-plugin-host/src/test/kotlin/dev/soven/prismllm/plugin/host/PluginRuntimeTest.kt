@@ -1185,6 +1185,27 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun committedStopResponseFailureKeepsAdmissionClosed(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        for (uninstall in listOf(false, true)) {
+            val store = MemoryInstallationStore()
+            val host = runtime(store)
+            host.initialize(packaged.manifest.id)
+            store.afterSave = { throw PluginHostException("TEST_RESPONSE_FAILED", "The committed response was lost", 503) }
+            failure("TEST_RESPONSE_FAILED") {
+                if (uninstall) host.uninstall(packaged.manifest.id) else host.disable(packaged.manifest.id)
+            }
+            store.afterSave = null
+            val stopped = host.state(packaged.manifest.id)
+            assertFalse(stopped.desiredEnabled)
+            assertFalse(stopped.admissionEnabled)
+            failure("PLUGIN_DISABLED") { invoke(host) }
+            host.close()
+        }
+    }
+
+    @Test
     fun `cancelled stop waiting for the mutex restores admission after checking committed state`(): Unit = runBlocking {
         val packaged = fixture()
         publish(packaged)

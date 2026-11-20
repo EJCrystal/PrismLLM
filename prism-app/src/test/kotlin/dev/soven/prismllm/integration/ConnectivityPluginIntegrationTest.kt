@@ -121,6 +121,100 @@ import kotlin.test.assertTrue
 @Tag("channel")
 @Timeout(60)
 class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
+    @Test
+    fun nativeOAuthDisableDuringPreparationPreventsTheNextCredentialStage() = runBlocking {
+        val provider = OAuthProvider.ANTIGRAVITY
+        val model = "gemini-plugin-native"
+        val protocol = GatewayProtocol.GEMINI
+        val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+        val account = oauthAccount("disable-during-native-preparation", provider, listOf(model), listOf(channelId), cached = false)
+        assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+        val repository = app.oauthAccountRepository
+        val repositoryRead = CompletableDeferred<Unit>()
+        val releaseRepositoryRead = CompletableDeferred<Unit>()
+        val reads = AtomicInteger()
+        val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
+        val refreshes = AtomicInteger()
+        mockkObject(repository)
+        mockkObject(tokens)
+        coEvery { repository.findDetailed(account.id) } coAnswers {
+            val current = callOriginal()
+            if (reads.incrementAndGet() == 2) {
+                repositoryRead.complete(Unit)
+                releaseRepositoryRead.await()
+            }
+            current
+        }
+        coEvery { tokens.refresh(any(), any()) } coAnswers {
+            refreshes.incrementAndGet()
+            OAuthTokenResponse(accessToken(provider), refreshToken = "rotated-${provider.value}")
+        }
+
+        try {
+            testApplication {
+                application { app.install(this) }
+                val session = client.adminSession()
+                coroutineScope {
+                    val response = async { client.invokePlugin(session, "oauth-account", account.id, values(model, protocol)) }
+                    withTimeout(5_000) { repositoryRead.await() }
+                    assertFalse(app.pluginRuntime.disable(PLUGIN_ID).admissionEnabled)
+                    releaseRepositoryRead.complete(Unit)
+                    withTimeout(5_000) { response.await() }.assertError(HttpStatusCode.Conflict, "PLUGIN_DISABLED")
+                }
+            }
+            assertEquals(0, refreshes.get(), "A disabled plugin cannot start token refresh after preparation")
+            assertTrue(preparations.isEmpty(), "A disabled plugin cannot start project discovery")
+            assertTrue(probes.isEmpty())
+        } finally {
+            releaseRepositoryRead.complete(Unit)
+            unmockkObject(tokens)
+            unmockkObject(repository)
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
+    fun nativeOAuthDisableDuringRefreshPreventsProjectDiscovery() = runBlocking {
+        val provider = OAuthProvider.ANTIGRAVITY
+        val model = "gemini-plugin-native"
+        val protocol = GatewayProtocol.GEMINI
+        val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
+        val account = oauthAccount("disable-during-native-refresh", provider, listOf(model), listOf(channelId), cached = false)
+        assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
+        val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
+        val refreshStarted = CompletableDeferred<Unit>()
+        val releaseRefresh = CompletableDeferred<Unit>()
+        val refreshes = AtomicInteger()
+        mockkObject(tokens)
+        coEvery { tokens.refresh(any(), any()) } coAnswers {
+            refreshes.incrementAndGet()
+            refreshStarted.complete(Unit)
+            releaseRefresh.await()
+            OAuthTokenResponse(accessToken(provider), refreshToken = "rotated-${provider.value}")
+        }
+
+        try {
+            testApplication {
+                application { app.install(this) }
+                val session = client.adminSession()
+                coroutineScope {
+                    val response = async { client.invokePlugin(session, "oauth-account", account.id, values(model, protocol)) }
+                    withTimeout(5_000) { refreshStarted.await() }
+                    assertFalse(app.pluginRuntime.disable(PLUGIN_ID).admissionEnabled)
+                    releaseRefresh.complete(Unit)
+                    withTimeout(5_000) { response.await() }.assertError(HttpStatusCode.Conflict, "PLUGIN_DISABLED")
+                }
+            }
+            assertEquals(1, refreshes.get(), "The already-started exchange completes once and is retained")
+            assertTrue(preparations.isEmpty(), "A disabled plugin cannot continue to project discovery")
+            assertTrue(probes.isEmpty())
+        } finally {
+            releaseRefresh.complete(Unit)
+            unmockkObject(tokens)
+        }
+        assertNoDiagnosticSettlement()
+    }
+
     override val requiresConnectivityPluginPackage = true
 
     @TempDir
@@ -589,9 +683,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             val outcome = body["outcome"]!!.jsonObject["responseText"]!!.jsonPrimitive.content
             val report = body["report"]!!.jsonObject["text"]!!.jsonPrimitive.content
             for (text in listOf(outcome, report)) {
-                assertTrue(text.startsWith(prefix))
-                assertTrue(text.endsWith("[REDACTED]"))
-                assertFalse(text.contains(STATIC_TOKEN.take(8)), "a credential prefix must not survive preview truncation")
+                assertEquals(prefix + "[REDACTED]", text, "No credential fragment may survive preview truncation")
             }
         }
     }

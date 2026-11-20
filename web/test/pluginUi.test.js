@@ -684,6 +684,29 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
+  it('uses the newest observed revision when an older run preflight returns late', async () => {
+    const fixture = makePluginFixture()
+    const entry = await hostFor(fixture)
+    const stale = { ...stateFor(fixture.manifest.id), revision: 1 }
+    const latestConfiguration = { defaultPrompt: 'newer observed default', threshold: 0.9 }
+    const latest = { ...stateFor(fixture.manifest.id), revision: 2, activeConfiguration: latestConfiguration, configuration: latestConfiguration }
+    const pendingPreflight = deferred()
+    mock.getState = () => pendingPreflight.promise
+    const initialReads = calls.state.length
+    const run = entry.state.run()
+    await waitFor(() => calls.state.length > initialReads)
+
+    mock.getState = () => Promise.resolve(clonePluginData(latest))
+    await entry.state.load(false)
+    assert.equal(entry.state.form.prompt, latestConfiguration.defaultPrompt)
+    pendingPreflight.resolve(stale)
+    await run
+
+    assert.equal(calls.invocations.length, 1)
+    assert.equal(calls.invocations[0].payload.values.prompt, latestConfiguration.defaultPrompt)
+    assert.equal(entry.state.form.prompt, latestConfiguration.defaultPrompt)
+  })
+
   it('preserves same-context diagnostic edits when re-reading after a background refresh failure', async () => {
     const entry = await hostFor()
     await change(field(entry.container, '本次提示词'), 'unsent retry draft')
@@ -792,9 +815,9 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     setState(removed.manifest.id, { admissionEnabled: false })
     const live = deferred()
     mock.getState = id => id === failing.manifest.id ? live.promise : stateFor(id)
-    const reads = calls.state.length
+    const failingReads = calls.state.filter(call => call.id === failing.manifest.id).length
     const loading = entry.state.load(true)
-    await waitFor(() => calls.state.length === reads + 1)
+    await waitFor(() => calls.state.filter(call => call.id === failing.manifest.id).length > failingReads)
     assert.equal(entry.state.contributions.value.some(item => item.pluginId === removed.manifest.id), false)
     assert.equal(removedTab.isConnected, false, 'An already removed plugin must leave before a slow recheck settles')
     assert.equal(document.activeElement.textContent, '智商')
@@ -2314,6 +2337,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
   for (const [binding, mismatch] of [
     ['plugin', execution => { execution.pluginId = 'acme.wrong-plugin' }],
     ['version', execution => { execution.activeVersion = '2.0.0' }],
+    ['context kind', execution => { execution.target.kind = 'oauth-account' }],
     ['context', execution => { execution.target.id = 'wrong-channel' }],
     ['model', execution => { execution.target.model = 'wrong-model' }],
     ['protocol', execution => { execution.target.protocol = 'responses' }],

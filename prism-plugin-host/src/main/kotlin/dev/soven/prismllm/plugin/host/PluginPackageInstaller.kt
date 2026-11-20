@@ -41,7 +41,9 @@ class PluginPackageInstaller internal constructor(
         ensureDirectory(pluginRoot)
         val destination = pluginRoot.resolve(manifest.version)
         PluginPackages.ensureNoLinks(destination)
-        if (Files.exists(destination, NOFOLLOW_LINKS)) return@io existing(validated, destination)
+        if (Files.exists(destination, NOFOLLOW_LINKS)) {
+            return@io existing(validated, destination)
+        }
         val temporary = pluginRoot.resolve(".${manifest.version}-${UUID.randomUUID()}.staging")
         Files.createDirectory(temporary)
         try {
@@ -118,7 +120,9 @@ class PluginPackageInstaller internal constructor(
         PluginPackages.ensureNoLinks(path)
         Files.createDirectories(path)
         PluginValidation.requireData(Files.isDirectory(path, NOFOLLOW_LINKS), "Managed plugin path must be a directory")
-        generateSequence(path.parent) { it.parent }.toList().asReversed().forEach(syncDirectory)
+        generateSequence(path.parent) { it.parent }.toList().asReversed()
+            .filter { Files.isReadable(it) }
+            .forEach(syncDirectory)
     }
 
     private fun write(path: Path, bytes: ByteArray) {

@@ -40,4 +40,34 @@ describe('request-local plugin contribution rechecks', () => {
     assert.deepEqual(result.recovered, second.contributions.map(pluginContributionVersionKey))
     assert.deepEqual(reads, [first.manifest.id, second.manifest.id])
   })
+
+  it('bounds parallel grouped reads so one stalled plugin cannot block other recoveries', async t => {
+    const stalled = makePluginFixture({ id: 'stalled.plugin' })
+    const healthy = makePluginFixture({ id: 'healthy.plugin' })
+    const later = makePluginFixture({ id: 'later.plugin' })
+    const available = [...stalled.contributions, ...healthy.contributions, ...later.contributions]
+    const invalid = new Set(available.map(pluginContributionVersionKey))
+    const reads = []
+    let stalledSignal
+    const old = api.getPlugin
+    t.after(() => { api.getPlugin = old })
+    api.getPlugin = (id, options = {}) => {
+      reads.push(id)
+      if (id === stalled.manifest.id) {
+        stalledSignal = options.signal
+        return new Promise(() => {})
+      }
+      if (id === healthy.manifest.id) return Promise.resolve(healthy.state)
+      return Promise.resolve(later.state)
+    }
+
+    const result = await recheckPluginContributions(available, invalid, new AbortController().signal, { timeoutMs: 20, concurrency: 2 })
+    assert.equal(result.error, '插件状态复核超时')
+    assert.deepEqual(new Set(result.recovered), new Set([
+      ...healthy.contributions.map(pluginContributionVersionKey),
+      ...later.contributions.map(pluginContributionVersionKey),
+    ]))
+    assert.deepEqual(reads.sort(), [stalled.manifest.id, healthy.manifest.id, later.manifest.id].sort())
+    assert.equal(stalledSignal.aborted, true)
+  })
 })

@@ -68,6 +68,7 @@ internal class MemoryInstallationStore : PluginInstallationStore {
     val failNextSave = AtomicBoolean(false)
     var beforeInsert: ((PluginInstallation) -> Unit)? = null
     var beforeSave: ((PluginInstallation) -> Unit)? = null
+    var afterSave: ((PluginInstallation) -> Unit)? = null
     var writes = 0
         private set
 
@@ -85,6 +86,7 @@ internal class MemoryInstallationStore : PluginInstallationStore {
             assertEquals(expectedRevision + 1, installation.revision)
             records[installation.id] = installation
             writes++
+            afterSave?.invoke(installation)
             true
         }
     }

@@ -313,7 +313,7 @@ class OAuthTokenServiceTest {
                 }
             }
             withTimeout(5_000) { bodyStarted.await() }
-            val failure = assertIs<OAuthRefreshException>(request.await().exceptionOrNull())
+            val failure = assertIs<OAuthRefreshException>(withTimeout(2_000) { request.await() }.exceptionOrNull())
             assertEquals("timeout", failure.errorCode)
         } finally {
             finishBody.complete(Unit)
@@ -1291,7 +1291,7 @@ class OAuthTokenServiceTest {
             val outcomeType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshOutcome" }
             val oldOutcome = outcomeType.getDeclaredConstructor(OAuthAccountRecord::class.java, Boolean::class.javaPrimitiveType)
                 .apply { isAccessible = true }.newInstance(old, true)
-            for (manual in listOf(false, true)) {
+            for (kind in listOf("ordinary", "forced", "manual")) {
                 // Represent the post-save, pre-completion window without a scheduler-dependent sleep.
                 val task = taskType.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
                 val work = CompletableDeferred<Any>()
@@ -1299,8 +1299,11 @@ class OAuthTokenServiceTest {
                 synchronized(monitor) { tasks[id] = task }
                 try {
                     val pending = async {
-                        if (manual) service.refreshNow(id)
-                        else runCatching { service.accessToken(id) }.exceptionOrNull()
+                        when (kind) {
+                            "manual" -> service.refreshNow(id)
+                            "forced" -> runCatching { service.accessToken(id, forceRefresh = true) }.exceptionOrNull()
+                            else -> runCatching { service.accessToken(id) }.exceptionOrNull()
+                        }
                     }
                     val waiters = taskType.getDeclaredField("waiters").apply { isAccessible = true }
                     withTimeout(5_000) {
@@ -1308,7 +1311,7 @@ class OAuthTokenServiceTest {
                     }
                     work.complete(oldOutcome)
                     val result = withTimeout(5_000) { pending.await() }
-                    if (manual) assertEquals("credential_replaced", assertIs<OAuthRefreshResult.Failed>(result).errorCode)
+                    if (kind == "manual") assertEquals("credential_replaced", assertIs<OAuthRefreshResult.Failed>(result).errorCode)
                     else assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(result).errorCode)
                     assertEquals(current, accounts.find(id))
                 } finally {
@@ -1838,33 +1841,33 @@ class OAuthTokenServiceTest {
             runBlocking { withTimeout(10_000) { finishExchange.await() } }
         }
 
-        DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
-            lock.autoCommit = false
-            try {
-                lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
-                    statement.setString(1, keyId)
-                    statement.executeQuery().use { assertTrue(it.next()) }
-                }
-                val blockerPid = lock.createStatement().use { statement ->
-                    statement.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) }
-                }
-                val waiter = async {
-                    runCatching {
-                        service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(1_500))
-                    }
-                }
-                withTimeout(5_000) { exchangeStarted.await() }
-                val failure = waiter.await().exceptionOrNull()
-                assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
-                finishExchange.complete(Unit)
-                awaitBlockedAccountSave(blockerPid)
-            } finally {
-                finishExchange.complete(Unit)
-                lock.rollback()
-            }
-        }
-
         try {
+            DriverManager.getConnection(postgres.jdbcUrl, postgres.username, postgres.password).use { lock ->
+                lock.autoCommit = false
+                try {
+                    lock.prepareStatement("select id from oauth_accounts where id = ? for update").use { statement ->
+                        statement.setString(1, keyId)
+                        statement.executeQuery().use { assertTrue(it.next()) }
+                    }
+                    val blockerPid = lock.createStatement().use { statement ->
+                        statement.executeQuery("select pg_backend_pid()").use { row -> row.next(); row.getInt(1) }
+                    }
+                    val waiter = async {
+                        runCatching {
+                            service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(1_500))
+                        }
+                    }
+                    withTimeout(5_000) { exchangeStarted.await() }
+                    val failure = waiter.await().exceptionOrNull()
+                    assertTrue(DiagnosticPreparationDeadline.isTimeout(assertNotNull(failure)))
+                    finishExchange.complete(Unit)
+                    awaitBlockedAccountSave(blockerPid)
+                } finally {
+                    finishExchange.complete(Unit)
+                    lock.rollback()
+                }
+            }
+
             val saved = awaitSavedAccessToken(keyId)
             val context = accounts.loadRefreshContext(keyId)!!
             assertEquals("rt-2", cipher.decrypt(context.refreshTokenCiphertext, context.refreshTokenNonce))
@@ -1872,6 +1875,7 @@ class OAuthTokenServiceTest {
             assertEquals("at-1", reused.accessToken)
             assertEquals(1, tokenRequests.get())
         } finally {
+            finishExchange.complete(Unit)
             assertTrue(service.drainRefreshes())
         }
     }
@@ -2045,6 +2049,17 @@ class OAuthTokenServiceTest {
             withTimeout(5_000) { exchangeStarted.await() }
             val second = async(start = CoroutineStart.UNDISPATCHED) {
                 service.accessTokenForDiagnostic(account, DiagnosticPreparationDeadline.start(5_000))
+            }
+            val lifecycleLock = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+            val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+                .get(service) as Map<String, Any>
+            val taskType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshTask" }
+            val waiters = taskType.getDeclaredField("waiters").apply { isAccessible = true }
+            withTimeout(5_000) {
+                while (synchronized(lifecycleLock) {
+                    val task = tasks[keyId] ?: return@synchronized false
+                    (waiters.get(task) as List<*>).size < 2
+                }) delay(1)
             }
             finishExchange.complete(Unit)
 

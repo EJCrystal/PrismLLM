@@ -112,6 +112,8 @@ internal object PluginValidation {
 
     fun descriptors(manifest: PluginManifest, ui: PluginUiDescriptor): String? {
         identity(manifest.id, manifest.version)
+        requireData(json.encodeToString(PluginManifest.serializer(), manifest).toByteArray(Charsets.UTF_8).size <= MAX_METADATA_BYTES, "Plugin manifest is too large after applying defaults")
+        requireData(json.encodeToString(PluginUiDescriptor.serializer(), ui).toByteArray(Charsets.UTF_8).size <= MAX_METADATA_BYTES, "Plugin UI is too large after applying defaults")
         text(manifest.displayName, 200, "Plugin display name", required = true)
         text(manifest.description, 4_000, "Plugin description")
         requireData(manifest.permissions.size <= PluginApi.permissions.size && manifest.permissions.distinct().size == manifest.permissions.size, "Invalid permission list")

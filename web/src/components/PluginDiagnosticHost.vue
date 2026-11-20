@@ -258,15 +258,16 @@ async function run() {
   try {
     const currentState = await api.getPlugin(pluginId, { signal: controller.signal })
     if (!isCurrent()) return
-    if (!currentState.admissionEnabled || currentState.activeVersion !== version ||
-      !currentState.activeUi?.entries.some((entry) => entry.id === entryId)) {
+    const observedState = state.value && state.value.revision > currentState.revision ? state.value : currentState
+    if (!observedState.admissionEnabled || observedState.activeVersion !== version ||
+      !observedState.activeUi?.entries.some((entry) => entry.id === entryId)) {
       notifyUnavailable()
       throw new Error('插件已停用、生效版本已改变或入口已失效，请重新打开诊断入口。')
     }
-    const latestDefaults = pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}, true)
+    const latestDefaults = pluginFieldDefaults(fields.value, observedState.activeConfiguration ?? {}, true)
     for (const { key: fieldKey } of inherited) values[fieldKey] = latestDefaults[fieldKey] ?? null
-    if (!state.value || currentState.revision >= state.value.revision) {
-      state.value = currentState
+    if (!state.value || observedState.revision >= state.value.revision) {
+      state.value = observedState
       for (const { key: fieldKey } of inherited) {
         if (!editedFields.has(fieldKey)) form[fieldKey] = values[fieldKey]!
       }

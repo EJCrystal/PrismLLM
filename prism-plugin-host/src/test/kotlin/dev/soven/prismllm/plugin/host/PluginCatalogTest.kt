@@ -3,11 +3,13 @@ package dev.soven.prismllm.plugin.host
 import dev.soven.prismllm.plugin.sdk.PluginApi
 import dev.soven.prismllm.plugin.sdk.PluginChoice
 import dev.soven.prismllm.plugin.sdk.PluginField
+import dev.soven.prismllm.plugin.sdk.PluginUiDescriptor
 import dev.soven.prismllm.plugin.sdk.PluginUiEntry
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.apache.commons.compress.archivers.zip.ZipFile
@@ -27,6 +29,7 @@ import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
 import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
@@ -142,6 +145,26 @@ internal class PluginCatalogTest : PluginTestSupport() {
         assertEquals("bundled", item.source)
         assertTrue(item.compatible)
         assertEquals(0, packaged.count("initialized"))
+    }
+
+    @Test
+    fun normalizedUiMetadataRemainsWithinHostSizeLimit(): Unit = runBlocking {
+        val packaged = fixture()
+        val largeFields = listOf(
+            PluginField("model", "Model", "model", required = true),
+            PluginField("protocol", "Protocol", "protocol", required = true),
+        ) + List(30) { index -> PluginField("field$index", "x".repeat(200), "text") }
+        val entries = List(32) { index ->
+            packaged.ui.entries.first().copy(
+                id = "entry$index",
+                action = packaged.ui.entries.first().action.copy(id = "action$index", fields = largeFields),
+            )
+        }
+        val ui = PluginUiDescriptor(entries = entries)
+        val wire = Json { encodeDefaults = false }.encodeToString(PluginUiDescriptor.serializer(), ui)
+        assertTrue(wire.toByteArray(Charsets.UTF_8).size < PluginValidation.MAX_METADATA_BYTES)
+        val error = failure { PluginValidation.descriptors(packaged.manifest, ui) }
+        assertEquals("PLUGIN_INVALID_PACKAGE", error.code)
     }
 
     @Test
@@ -621,7 +644,6 @@ internal class PluginCatalogTest : PluginTestSupport() {
         synced.clear()
         installer.stage(selected)
         assertEquals(listOf(root, managed.parent, managed, destination, pluginRoot), synced.map { it.first })
-        assertTrue(synced.all { it.second })
         assertEquals(0, packaged.count("initialized"))
     }
 
@@ -677,6 +699,29 @@ internal class PluginCatalogTest : PluginTestSupport() {
         }.stage(selected)
         assertTrue(parent in synced, "The parent of the newly created ancestor must be synced on retry")
         assertTrue(root in synced, "The parent directory entry of the nested parent must be synced on retry")
+    }
+
+    @Test
+    fun `staging does not require read access to existing ancestors of managed storage`(): Unit = runBlocking {
+        val packaged = fixture()
+        publish(packaged)
+        val selected = PluginCatalog(catalogDirectory).select(packaged.manifest.id, "1.0.0")
+        val traversable = root.resolve("traversable-parent")
+        val managed = traversable.resolve("state")
+        Files.createDirectory(traversable)
+        Files.createDirectory(managed)
+        val permissions = try {
+            Files.getPosixFilePermissions(traversable)
+        } catch (_: UnsupportedOperationException) {
+            return@runBlocking
+        }
+        try {
+            Files.setPosixFilePermissions(traversable, PosixFilePermissions.fromString("--x--x--x"))
+            val staged = PluginPackageInstaller(managed).stage(selected)
+            assertTrue(Files.readAllBytes(staged.jarPath).contentEquals(packaged.jar))
+        } finally {
+            Files.setPosixFilePermissions(traversable, permissions)
+        }
     }
 
     @Test

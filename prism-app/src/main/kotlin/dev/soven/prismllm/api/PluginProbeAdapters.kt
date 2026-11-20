@@ -254,6 +254,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     } ?: throw oauthPreparationTimeout()
                     var currentAccount = revalidateAccount()
                     var channel = revalidateSystemChannel(channelId)
+                    revalidatePluginGrant()
                     val token = try {
                         oauthTokenService.accessTokenForDiagnostic(currentAccount, preparation)
                     } catch (cause: CancellationException) {
@@ -273,6 +274,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                     }
                     val proxy = (resolvedProxy ?: throw oauthPreparationTimeout()).address
                     channel = revalidateSystemChannel(channelId)
+                    revalidatePluginGrant()
                     val project = if (channel.upstreamEnvelope == UpstreamEnvelope.CODE_ASSIST) {
                         try {
                             codeAssistProjectResolver.contextForDiagnostic(currentAccount, token.accessToken, proxy, preparation).project
