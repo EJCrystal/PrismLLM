@@ -72,7 +72,7 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 | `GET /admin/api/plugins`、`GET /admin/api/plugins/{id}` | 期望状态、活动版本、准入、重启与错误状态 |
 | `GET /admin/api/plugins/ui` | 仅返回当前活动且准入的通用 UI 贡献 |
 | `PUT /admin/api/plugins/{id}/installation` | 安装指定版本，提交完整 `approvedPermissions` 与已审阅目录的 `expectedSha256` |
-| `PUT /admin/api/plugins/{id}/enabled` | 更新期望启用状态；启用提交明确批准的权限 |
+| `PUT /admin/api/plugins/{id}/enabled` | 启用时提交已确认的 `installedVersion`、`expectedRevision` 和批准的权限；禁用不要求版本前提 |
 | `PUT /admin/api/plugins/{id}/configuration` | 提交 `values`、草稿 `expectedRevision` 与 `installedVersion`；陈旧基准返回冲突 |
 | `DELETE /admin/api/plugins/{id}` | 写入卸载 tombstone，保留恢复所需选择与配置 |
 | `GET /admin/api/plugins/{id}/resources/model-test-targets` | 按授权上下文提供安全结构化模型、凭据、协议选择 |
@@ -91,7 +91,9 @@ Docker 分开构建网关核心（包含 SDK / host）与独立扩展；最终�
 }
 ```
 
-启用请求体在同一完整权限列表之外增加 `"enabled": true`；禁用使用 `{"enabled":false}`。配置示例是 `{"values":{"defaultPrompt":"请只回复 OK"},"expectedRevision":7,"installedVersion":"1.0.0"}`，版本和修订须来自草稿加载时的安装状态，不能临时重读后替换旧草稿基准。安装摘要变化或配置基准过期会返回 409，需刷新后重新确认。配置为管理员可读回的普通 JSON，不能存放密钥、access token、任意地址或可执行表达式。
+启用请求示例：`{"enabled":true,"installedVersion":"1.0.0","expectedRevision":7,"approvedPermissions":["diagnostics.channel.probe","diagnostics.oauth-account.probe"]}`。版本和修订必须来自管理员已确认的安装状态。安装记录变化时返回 `409 / PLUGIN_REVISION_CONFLICT`，需刷新后重新确认版本和权限。禁用仍使用 `{"enabled":false}`，不要求版本前提。
+
+配置示例：`{"values":{"defaultPrompt":"请只回复 OK"},"expectedRevision":7,"installedVersion":"1.0.0"}`。版本和修订须来自草稿加载时的安装状态，不能临时重读后替换旧草稿基准。安装摘要变化或配置基准过期会返回 409，需刷新后重新确认。配置为管理员可读回的普通 JSON，不能存放密钥、access token、任意地址或可执行表达式。
 
 ## 检测动作、设置与结果边界
 

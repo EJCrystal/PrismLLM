@@ -330,24 +330,45 @@ class PluginRuntime(
         render(next)
     }
 
-    suspend fun setEnabled(id: String, enabled: Boolean, approvedPermissions: List<String>? = null): PluginRuntimeState {
-        // Close before waiting for the mutex/database: a concurrent plan must not prepare credentials.
-        if (!enabled) active[id]?.admission?.set(false)
-        return mutex.withLock {
-            checkReady()
-            val previous = find(id)
-            if (!previous.installed) throw PluginHostException("PLUGIN_NOT_INSTALLED", "Restore the plugin installation before enabling it", 409)
-            val grants = if (enabled) {
-                val staged = packageFor(previous)
-                configuration(staged, previous.configuration)
-                PluginValidation.grants(staged.item.manifest, approvedPermissions ?: previous.approvedPermissions)
-            } else previous.approvedPermissions
-            if (previous.desiredEnabled == enabled && previous.approvedPermissions == grants) return@withLock render(previous)
-            val next = previous.copy(desiredEnabled = enabled, approvedPermissions = grants.toList(), updatedAt = now(previous), revision = nextRevision(previous))
-            persist(next, previous)
-            // Enabling never changes the process's admission latch, even when this class is loaded.
-            render(next)
+    /** Enable only the installation selection the administrator reviewed. */
+    suspend fun enable(
+        id: String,
+        expectedRevision: Long,
+        installedVersion: String,
+        approvedPermissions: List<String>? = null,
+    ): PluginRuntimeState = changeEnabled(id, true, approvedPermissions) { previous ->
+        validateExpectedRevision(expectedRevision)
+        if (previous.revision != expectedRevision || previous.version != installedVersion) {
+            throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin installation changed; refresh and confirm the version and permissions again", 409)
         }
+    }
+
+    suspend fun disable(id: String): PluginRuntimeState {
+        // Close before waiting for the mutex/database: a concurrent plan must not prepare credentials.
+        active[id]?.admission?.set(false)
+        return changeEnabled(id, false, null) {}
+    }
+
+    private suspend fun changeEnabled(
+        id: String,
+        enabled: Boolean,
+        approvedPermissions: List<String>?,
+        validateSelection: (PluginInstallation) -> Unit,
+    ): PluginRuntimeState = mutex.withLock {
+        checkReady()
+        val previous = find(id)
+        validateSelection(previous)
+        if (!previous.installed) throw PluginHostException("PLUGIN_NOT_INSTALLED", "Restore the plugin installation before changing enablement", 409)
+        val grants = if (enabled) {
+            val staged = packageFor(previous)
+            configuration(staged, previous.configuration)
+            PluginValidation.grants(staged.item.manifest, approvedPermissions ?: previous.approvedPermissions)
+        } else previous.approvedPermissions
+        if (previous.desiredEnabled == enabled && previous.approvedPermissions == grants) return@withLock render(previous)
+        val next = previous.copy(desiredEnabled = enabled, approvedPermissions = grants.toList(), updatedAt = now(previous), revision = nextRevision(previous))
+        persist(next, previous)
+        // Enabling never changes the process's admission latch, even when this class is loaded.
+        render(next)
     }
 
     suspend fun configure(id: String, values: JsonObject): PluginRuntimeState = configureUsing(id) { values }
@@ -369,9 +390,7 @@ class PluginRuntime(
     ): PluginRuntimeState = mutex.withLock {
         checkReady()
         val previous = find(id)
-        if (expectedRevision != null && (expectedRevision < 0 || expectedRevision == Long.MAX_VALUE)) {
-            throw PluginHostException("PLUGIN_INVALID_REVISION", "Expected revision must be a nonnegative writable revision")
-        }
+        expectedRevision?.let(::validateExpectedRevision)
         if ((expectedRevision != null && previous.revision != expectedRevision) ||
             (installedVersion != null && previous.version != installedVersion)) {
             throw PluginHostException("PLUGIN_REVISION_CONFLICT", "Plugin configuration changed since this draft was loaded; refresh and discard the stale draft", 409)
@@ -795,6 +814,12 @@ class PluginRuntime(
     private fun checkReady() {
         checkOpen()
         if (!initialized) throw PluginHostException("PLUGIN_RUNTIME_NOT_INITIALIZED", "Plugin runtime has not been initialized", 503)
+    }
+
+    private fun validateExpectedRevision(revision: Long) {
+        if (revision !in 0 until Long.MAX_VALUE) {
+            throw PluginHostException("PLUGIN_INVALID_REVISION", "Expected revision must be a nonnegative writable revision")
+        }
     }
 
     private fun nextRevision(previous: PluginInstallation?): Long {

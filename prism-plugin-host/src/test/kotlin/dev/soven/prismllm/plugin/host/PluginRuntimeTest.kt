@@ -84,8 +84,8 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val installer = runtime(store)
         installer.initialize()
         packages.forEach {
-            installer.install(it.manifest.id, it.manifest.version, it.manifest.permissions)
-            installer.setEnabled(it.manifest.id, true)
+            val installed = installer.install(it.manifest.id, it.manifest.version, it.manifest.permissions)
+            installer.enable(it.manifest.id, installed.revision, it.manifest.version)
         }
         installer.close()
         return store
@@ -188,8 +188,8 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertFalse(installed.desiredEnabled)
         assertFalse(installed.admissionEnabled)
         assertNull(installed.activeVersion)
-        host.configure(packaged.manifest.id, config("manual prompt"))
-        val pending = host.setEnabled(packaged.manifest.id, true)
+        val configured = host.configure(packaged.manifest.id, config("manual prompt"))
+        val pending = host.enable(packaged.manifest.id, configured.revision, packaged.manifest.version)
         assertTrue(pending.requiresRestart)
         assertNull(pending.activeUi)
         assertEquals(emptyList(), host.contributions())
@@ -474,13 +474,13 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         val store = MemoryInstallationStore()
         val host = runtime(store)
         host.initialize(packaged.manifest.id)
-        val disabled = host.setEnabled(packaged.manifest.id, false)
+        val disabled = host.disable(packaged.manifest.id)
         assertFalse(disabled.admissionEnabled)
         assertFalse(disabled.requiresRestart)
         assertEquals("1.0.0", disabled.activeVersion)
         assertNull(disabled.activeUi)
         failure("PLUGIN_DISABLED") { invoke(host) }
-        val enabled = host.setEnabled(packaged.manifest.id, true, packaged.manifest.permissions)
+        val enabled = host.enable(packaged.manifest.id, disabled.revision, packaged.manifest.version, packaged.manifest.permissions)
         assertTrue(enabled.desiredEnabled && enabled.requiresRestart)
         assertFalse(enabled.admissionEnabled)
         failure("PLUGIN_DISABLED") { invoke(host) }
@@ -576,7 +576,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     fun `concurrent disable before startup listing disposes the pending bootstrap provider`(): Unit = runBlocking {
         val original = ownedFixture()
         publish(original)
-        val host = initializeWithConcurrentBootstrapUpdate(original) { it.setEnabled(original.manifest.id, false) }
+        val host = initializeWithConcurrentBootstrapUpdate(original) { it.disable(original.manifest.id) }
 
         assertDisposed(original)
         val state = host.state(original.manifest.id)
@@ -638,7 +638,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         failure("PLUGIN_ACTIVE_VERSION_CONFLICT") {
             host.requireActivePermission(previous.manifest.id, "2.0.0", PluginApi.OAUTH_ACCOUNT_PROBE)
         }
-        host.setEnabled(previous.manifest.id, false)
+        host.disable(previous.manifest.id)
         failure("PLUGIN_DISABLED") {
             host.requireActivePermission(previous.manifest.id, "1.0.0", PluginApi.OAUTH_ACCOUNT_PROBE)
         }
@@ -774,7 +774,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             val invocation = async(Dispatchers.Default) { runCatching { host.execute(packaged.manifest.id, "1.0.0", input, target) { probes.incrementAndGet(); ok } } }
             try {
                 awaitProperty("${packaged.property}.ready")
-                host.setEnabled(packaged.manifest.id, false)
+                host.disable(packaged.manifest.id)
             } finally {
                 System.setProperty("${packaged.property}.release", "true")
             }
@@ -799,7 +799,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         host.configure(packaged.manifest.id, config("next revision"))
         assertEquals(1L, store.find(packaged.manifest.id)?.revision)
         store.failNextSave.set(true)
-        failure("PLUGIN_REVISION_CONFLICT") { host.setEnabled(packaged.manifest.id, false) }
+        failure("PLUGIN_REVISION_CONFLICT") { host.disable(packaged.manifest.id) }
         val state = host.state(packaged.manifest.id)
         assertTrue(state.desiredEnabled && state.requiresRestart)
         assertFalse(state.admissionEnabled)
@@ -873,7 +873,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertEquals(JsonPrimitive("new"), installed.configuration["defaultPrompt"])
         assertNull(installed.configuration["newRequired"])
         assertFalse(installed.desiredEnabled)
-        failure("PLUGIN_INVALID_CONFIGURATION") { original.setEnabled(oldVersion.manifest.id, true) }
+        failure("PLUGIN_INVALID_CONFIGURATION") { original.enable(oldVersion.manifest.id, installed.revision, nextVersion.manifest.version) }
         val incomplete = assertNotNull(store.find(oldVersion.manifest.id))
         store.seed(incomplete.copy(desiredEnabled = true))
         original.close()
@@ -882,9 +882,9 @@ internal class PluginRuntimeTest : PluginTestSupport() {
         assertFalse(incompleteHost.state(oldVersion.manifest.id).admissionEnabled)
         assertNull(incompleteHost.state(oldVersion.manifest.id).activeVersion)
         assertEquals(0, nextVersion.count("constructed"))
-        incompleteHost.setEnabled(oldVersion.manifest.id, false)
-        incompleteHost.configure(oldVersion.manifest.id, buildJsonObject { put("defaultPrompt", "new"); put("newRequired", "repaired") })
-        incompleteHost.setEnabled(oldVersion.manifest.id, true)
+        incompleteHost.disable(oldVersion.manifest.id)
+        val configured = incompleteHost.configure(oldVersion.manifest.id, buildJsonObject { put("defaultPrompt", "new"); put("newRequired", "repaired") })
+        incompleteHost.enable(oldVersion.manifest.id, configured.revision, nextVersion.manifest.version)
         incompleteHost.close()
         val repaired = runtime(store)
         repaired.initialize()

@@ -194,7 +194,9 @@ export const api = {
     request<unknown>(`/plugins/${encodeURIComponent(id)}/installation`, {
       method: 'PUT', body: JSON.stringify(payload),
     }).then(parsePluginRuntimeState),
-  setPluginEnabled: (id: string, payload: { enabled: boolean; approvedPermissions?: string[] }) =>
+  setPluginEnabled: (id: string, payload: { enabled: false } | {
+    enabled: true; expectedRevision: number; installedVersion: string; approvedPermissions?: string[]
+  }) =>
     request<unknown>(`/plugins/${encodeURIComponent(id)}/enabled`, {
       method: 'PUT', body: JSON.stringify(payload),
     }).then(parsePluginRuntimeState),

@@ -662,7 +662,7 @@ describe('generic plugin API paths and existing session semantics', () => {
     const signal = new AbortController().signal
     const csrf = `csrf ${globalThis.crypto.randomUUID()}/+&=`
     const install = { version: '1.0.0', approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION], expectedSha256: 'a'.repeat(64) }
-    const enable = { enabled: true, approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION] }
+    const enable = { enabled: true, expectedRevision: 7, installedVersion: '1.0.0', approvedPermissions: [CHANNEL_PERMISSION, ACCOUNT_PERMISSION] }
     const configure = { values: { defaultPrompt: 'saved prompt', flag: false, count: 0, optional: null }, expectedRevision: 7, installedVersion: '1.0.0' }
     const invoke = invocation(context)
     const hostExecution = execution()

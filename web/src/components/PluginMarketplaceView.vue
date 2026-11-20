@@ -21,6 +21,7 @@ const loading = ref(true)
 const loadError = ref('')
 const catalogError = ref('')
 const busy = ref(false)
+const enableRefreshRequired = reactive(new Set<string>())
 const approvedPermissions = ref<string[]>([])
 const configuration = reactive<PluginValues>({})
 const originalConfiguration = ref<PluginValues>({})
@@ -52,6 +53,8 @@ const selectedName = computed(() => selectedState.value?.displayName || selected
 const currentVersionSelected = computed(() => !!selectedState.value?.installed && selectedVersion.value === selectedState.value.installedVersion)
 const permissions = computed(() => currentVersionSelected.value ? selectedState.value!.permissions : selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
 const fullGrant = computed(() => permissions.value.every((permission) => approvedPermissions.value.includes(permission)))
+const canEnable = computed(() => !busy.value && !loading.value && !enableRefreshRequired.has(selectedId.value) &&
+  currentVersionSelected.value && fullGrant.value)
 const dirty = computed(() => Object.keys(configuration).length !== Object.keys(originalConfiguration.value).length ||
   Object.keys(configuration).some((key) => !Object.hasOwn(originalConfiguration.value, key) || !Object.is(configuration[key], originalConfiguration.value[key])))
 const draftConflict = computed(() => !!draftOwnerId.value && (
@@ -85,7 +88,7 @@ function resetConfiguration() {
 }
 
 function discardVersionConflict() {
-  if (busy.value || !draftConflict.value) return
+  if (busy.value || loading.value || !draftConflict.value) return
   if (draftRejected.value) { void load(false); return }
   syncVersion()
 }
@@ -194,10 +197,15 @@ async function load(preserveDraft = true): Promise<boolean> {
     const [catalogResult, statesResult] = result.value
     catalogError.value = catalogResult.status === 'rejected' ? errorMessage(catalogResult.reason) : ''
     catalog.value = catalogResult.status === 'fulfilled' ? catalogResult.value : []
-    if (statesResult.status === 'fulfilled') states.value = statesResult.value
-    else loadError.value = errorMessage(statesResult.reason)
+    if (statesResult.status === 'fulfilled') {
+      states.value = statesResult.value
+      if (enableRefreshRequired.has(selectedId.value)) {
+        approvedPermissions.value = [...(selectedState.value?.approvedPermissions ?? [])]
+      }
+      enableRefreshRequired.clear()
+    } else loadError.value = errorMessage(statesResult.reason)
     if (!selectedId.value) selectedId.value = items.value[0]?.id ?? ''
-    if (!hadDraft) syncVersion()
+    if (statesResult.status === 'fulfilled' && !hadDraft) syncVersion()
     settled = true
     return statesResult.status === 'fulfilled'
   } catch (cause) {
@@ -245,11 +253,26 @@ function install() {
 function toggleEnabled() {
   const state = selectedState.value
   if (!state?.installed || busy.value) return
-  const enabled = !state.desiredEnabled
-  if (enabled && (!currentVersionSelected.value || !state.permissions.every((permission) => approvedPermissions.value.includes(permission)))) return
-  const grants = state.permissions.filter((permission) => approvedPermissions.value.includes(permission))
-  void mutate(() => api.setPluginEnabled(state.id, { enabled, ...(enabled ? { approvedPermissions: grants } : {}) }),
-    enabled ? '启用意图已保存，请重启宿主使其生效。' : '已禁用，新的诊断调用已停止准入。')
+  if (state.desiredEnabled) {
+    void mutate(() => api.setPluginEnabled(state.id, { enabled: false }), '已禁用，新的诊断调用已停止准入。')
+    return
+  }
+  const installedVersion = state.installedVersion
+  if (!installedVersion || !canEnable.value) return
+  const expectedRevision = state.revision
+  const grants = [...state.permissions]
+  void mutate(async () => {
+    try {
+      return await api.setPluginEnabled(state.id, {
+        enabled: true, installedVersion, expectedRevision, approvedPermissions: grants,
+      })
+    } catch (cause) {
+      if (!disposed && cause instanceof ApiError && cause.status === 409 && cause.code === 'PLUGIN_REVISION_CONFLICT') {
+        enableRefreshRequired.add(state.id)
+      }
+      throw cause
+    }
+  }, '启用意图已保存，请重启宿主使其生效。')
 }
 
 function saveConfiguration() {
@@ -316,7 +339,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
           <small class="muted">JVM 插件是可信同进程代码，不是恶意代码沙箱；目录摘要校验不等同于发布者签名。</small>
           <div class="plugin-market-actions">
             <button v-if="selectedCatalog" type="button" class="button primary" :disabled="!canInstall" @click="install">{{ !selectedState?.installed ? '安装此版本' : selectedVersion === selectedState.installedVersion ? '已安装此版本' : '选择此版本' }}</button>
-            <button v-if="selectedState?.installed" type="button" class="button" :disabled="busy || (!selectedState.desiredEnabled && (!currentVersionSelected || !fullGrant))" @click="toggleEnabled">{{ selectedState.desiredEnabled ? '禁用' : '启用（重启生效）' }}</button>
+            <button v-if="selectedState?.installed" type="button" class="button" :disabled="selectedState.desiredEnabled ? busy : !canEnable" @click="toggleEnabled">{{ selectedState.desiredEnabled ? '禁用' : '启用（重启生效）' }}</button>
             <button v-if="selectedState?.installed" type="button" class="button ghost danger-text" :disabled="busy" @click="uninstall">卸载</button>
           </div>
         </section>

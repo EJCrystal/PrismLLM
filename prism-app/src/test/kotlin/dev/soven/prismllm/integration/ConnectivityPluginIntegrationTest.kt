@@ -344,6 +344,38 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `enable requires the reviewed installation version and revision even when permissions match`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val path = "/admin/api/plugins/$PLUGIN_ID/enabled"
+            val disabled = client.api(HttpMethod.Put, path, session, """{"enabled":false}""").decoded<PluginRuntimeState>()
+            val reviewed = Json.parseToJsonElement(enabledPayload(disabled)).jsonObject
+            client.api(HttpMethod.Put, path, session, JsonObject(reviewed - "expectedRevision").toString())
+                .assertError(HttpStatusCode.BadRequest, "plugin_revision_required")
+            client.api(HttpMethod.Put, path, session, JsonObject(reviewed - "installedVersion").toString())
+                .assertError(HttpStatusCode.BadRequest, "plugin_version_required")
+
+            val winner = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/configuration", session,
+                configurationPayload("changed after approval")).decoded<PluginRuntimeState>()
+            assertEquals(disabled.approvedPermissions, winner.approvedPermissions)
+            client.api(HttpMethod.Put, path, session, reviewed.toString())
+                .assertError(HttpStatusCode.Conflict, "PLUGIN_REVISION_CONFLICT")
+            client.api(HttpMethod.Put, path, session, enabledPayload(winner.copy(installedVersion = "2.0.0")))
+                .assertError(HttpStatusCode.Conflict, "PLUGIN_REVISION_CONFLICT")
+            assertEquals(winner, client.pluginState(session))
+
+            val enabled = client.api(HttpMethod.Put, path, session, enabledPayload(winner)).decoded<PluginRuntimeState>()
+            assertEquals(winner.revision + 1, enabled.revision)
+            assertTrue(enabled.desiredEnabled)
+            assertFalse(enabled.admissionEnabled)
+            assertTrue(enabled.requiresRestart)
+            assertNoPreparation()
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `legacy default prompt settings bridge plugin configuration immediately and invocation overrides never persist`() = runBlocking {
         app.modelTestSettingsRepository.save("legacy startup prompt")
         testApplication {
@@ -1173,7 +1205,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 .assertError(HttpStatusCode.BadRequest, "invalid_plugin_context")
             client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, installationPayload(approvedPermissions = emptyList()))
                 .assertError(HttpStatusCode.Forbidden, "PLUGIN_PERMISSION_REQUIRED")
-            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, """{"enabled":true,"approvedPermissions":[]}""")
+            client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, enabledPayload(client.pluginState(session), emptyList()))
                 .assertError(HttpStatusCode.Forbidden, "PLUGIN_PERMISSION_REQUIRED")
             client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session,
                 installationPayload(approvedPermissions = listOf("arbitrary.network")))
@@ -1402,7 +1434,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals("disabled", disabled.status)
             assertNull(disabled.activeUi)
             client.assertGated(session, direct.id, account.id)
-            val enabled = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, enabledPayload()).decoded<PluginRuntimeState>()
+            val enabled = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, enabledPayload(disabled)).decoded<PluginRuntimeState>()
             assertTrue(enabled.desiredEnabled)
             assertFalse(enabled.admissionEnabled)
             assertTrue(enabled.requiresRestart)
@@ -1473,7 +1505,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
             val replay = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/installation", session, installationPayload()).decoded<PluginRuntimeState>()
             assertEquals(restored, replay)
             assertEquals(persisted, app.pluginInstallationRepository.find(PLUGIN_ID), "Same version/digest replay must not increment revision or reset config")
-            val pending = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, enabledPayload()).decoded<PluginRuntimeState>()
+            val pending = client.api(HttpMethod.Put, "/admin/api/plugins/$PLUGIN_ID/enabled", session, enabledPayload(restored)).decoded<PluginRuntimeState>()
             assertTrue(pending.desiredEnabled)
             assertFalse(pending.admissionEnabled)
             assertTrue(pending.requiresRestart)
@@ -1722,7 +1754,15 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
         put("approvedPermissions", kotlinx.serialization.json.JsonArray(approvedPermissions.map(::JsonPrimitive)))
     }.toString()
 
-    private fun enabledPayload(): String = """{"enabled":true,"approvedPermissions":["${PluginApi.CHANNEL_PROBE}","${PluginApi.OAUTH_ACCOUNT_PROBE}"]}"""
+    private fun enabledPayload(
+        baseline: PluginRuntimeState,
+        approvedPermissions: List<String> = listOf(PluginApi.CHANNEL_PROBE, PluginApi.OAUTH_ACCOUNT_PROBE),
+    ): String = buildJsonObject {
+        put("enabled", true)
+        put("expectedRevision", baseline.revision)
+        put("installedVersion", baseline.installedVersion)
+        put("approvedPermissions", kotlinx.serialization.json.JsonArray(approvedPermissions.map(::JsonPrimitive)))
+    }.toString()
 
     private suspend fun configurationPayload(prompt: String): String {
         val baseline = app.pluginRuntime.state(PLUGIN_ID)

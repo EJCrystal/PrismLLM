@@ -25,7 +25,12 @@ data class PluginInstallationRequest(
 )
 
 @Serializable
-data class PluginEnabledRequest(val enabled: Boolean, val approvedPermissions: List<String>? = null)
+data class PluginEnabledRequest(
+    val enabled: Boolean,
+    val approvedPermissions: List<String>? = null,
+    val expectedRevision: Long? = null,
+    val installedVersion: String? = null,
+)
 
 @Serializable
 data class PluginConfigurationRequest(
@@ -88,7 +93,13 @@ internal fun Route.pluginAdminRoutes(app: GatewayApplication) {
         call.requireAdmin(app)
         val id = call.requiredParam("id", "缺少插件 id")
         val request = call.receive<PluginEnabledRequest>()
-        val state = app.pluginRuntime.setEnabled(id, request.enabled, request.approvedPermissions)
+        val state = if (request.enabled) {
+            val expectedRevision = request.expectedRevision
+                ?: throw badRequest("plugin_revision_required", "启用插件必须提供已确认安装状态的 revision")
+            val installedVersion = request.installedVersion
+                ?: throw badRequest("plugin_version_required", "启用插件必须提供已确认的安装版本")
+            app.pluginRuntime.enable(id, expectedRevision, installedVersion, request.approvedPermissions)
+        } else app.pluginRuntime.disable(id)
         call.markAdminAuditDetails(buildJsonObject { put("pluginId", id); put("enabled", request.enabled) })
         call.respond(state)
     }

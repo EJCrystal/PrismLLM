@@ -181,6 +181,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       const next = {
         id, displayName: item.manifest.displayName, description: item.manifest.description, source: item.source,
         installed: true, installedVersion: payload.version, activeVersion: old?.activeVersion ?? null,
+        revision: old ? old.revision + 1 : 0,
         desiredEnabled: old?.installed ? old.desiredEnabled : false, admissionEnabled: old?.admissionEnabled ?? false,
         requiresRestart: !!old?.desiredEnabled, status: old?.desiredEnabled ? 'pending-restart' : 'disabled', loadError: null,
         permissions: [...item.manifest.permissions], approvedPermissions: [...payload.approvedPermissions],
@@ -192,8 +193,12 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     }
     api.setPluginEnabled = async (id, payload) => {
       calls.enabled.push({ id, payload: clonePluginData(payload) })
+      const state = stateFor(id)
+      if (payload.enabled && (payload.expectedRevision !== state.revision || payload.installedVersion !== state.installedVersion)) {
+        throw new ApiError('installation changed; refresh and confirm again', 409, 'PLUGIN_REVISION_CONFLICT')
+      }
       return setState(id, { desiredEnabled: payload.enabled, admissionEnabled: false, requiresRestart: payload.enabled,
-        status: payload.enabled ? 'pending-restart' : 'disabled', activeUi: null,
+        revision: state.revision + 1, status: payload.enabled ? 'pending-restart' : 'disabled', activeUi: null,
         ...(payload.approvedPermissions ? { approvedPermissions: payload.approvedPermissions } : {}) })
     }
     api.configurePlugin = async (id, payload) => {
@@ -1618,33 +1623,50 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     })
   }
 
-  it('dispatches only protocols shared by each target and the action descriptor', async () => {
-    const fixture = makePluginFixture()
-    fixture.contribution.entry.action.fields.find(item => item.kind === 'protocol').options = [{ value: 'responses', label: 'Responses' }]
+  it('defaults single diagnostics to a compatible model while keeping skipped batch targets', async () => {
+    const fields = makePluginFixture().contribution.entry.action.fields
+    fields.find(item => item.kind === 'protocol').options = [{ value: 'responses', label: 'Responses' }]
+    const fixture = makePluginFixture({ channelFields: fields })
     mock.targets = [
       makeTarget({ model: 'no-shared-protocol', protocols: ['gemini'] }),
       makeTarget({ model: 'shared-protocol', protocols: ['chat_completions', 'responses'] }),
       makeTarget({ model: 'other-shared-protocol', protocols: ['responses'] }),
     ]
-    const entry = await hostFor(fixture)
-    assert.deepEqual([...field(entry.container, '协议').options].map(option => option.value).filter(Boolean), [])
-    assert.equal(entry.container.querySelector('.test-workbench-actions .button.primary').disabled, true)
-    await change(field(entry.container, '检测范围'), 'all')
+    const entry = await hostFor(fixture, { initialModel: 'no-shared-protocol' })
+    const model = field(entry.container, '模型')
+    assert.deepEqual([...model.options].map(option => option.textContent), ['shared-protocol', 'other-shared-protocol'])
+    assert.equal(model.value, modelTestTargetKey(channel.id, 'shared-protocol'))
     assert.deepEqual([...field(entry.container, '协议').options].map(option => option.value), ['responses'])
-    assert.equal(entry.state.form.protocol, 'responses', 'switching into batch mode selects a protocol shared by at least one target')
+    assert.equal(entry.container.querySelector('.test-workbench-actions .button.primary').disabled, false)
     await entry.state.run(); await settle()
-    assert.deepEqual(calls.invocations.map(call => call.payload.values.model), ['shared-protocol', 'other-shared-protocol'])
-    assert.ok(calls.invocations.every(call => call.payload.values.protocol === 'responses'))
+    assert.deepEqual(calls.invocations.map(call => call.payload.values.model), ['shared-protocol'])
+
+    const scope = field(entry.container, '检测范围')
+    assert.match([...scope.options].find(option => option.value === 'all').textContent, /（3）/)
+    await change(scope, 'all')
+    assert.deepEqual([...field(entry.container, '协议').options].map(option => option.value), ['responses'])
+    await entry.state.run(); await settle()
+    assert.deepEqual(calls.invocations.slice(1).map(call => call.payload.values.model), ['shared-protocol', 'other-shared-protocol'])
+    assert.ok(calls.invocations.every(call => call.payload.values.protocol === 'responses' && call.payload.values.scope === 'single'))
     const skipped = [...entry.container.querySelectorAll('.plugin-diagnostic-pending')].find(row => text(row).includes('no-shared-protocol'))
     assert.match(text(skipped), /未发送/)
     assert.match(text(skipped), /协议/)
     assert.equal(entry.container.querySelectorAll('.plugin-result').length, 2)
 
     await change(field(entry.container, '检测范围'), 'single')
-    await change(field(entry.container, '模型'), modelTestTargetKey(channel.id, 'no-shared-protocol'))
+    await change(field(entry.container, '本次提示词'), 'preserved prompt')
+    mock.targets[1].protocols = ['gemini']
+    await entry.state.load(false); await settle()
+    assert.equal(field(entry.container, '模型').value, modelTestTargetKey(channel.id, 'other-shared-protocol'))
+    assert.equal(entry.state.form.prompt, 'preserved prompt')
+
+    mock.targets[2].protocols = ['gemini']
+    await entry.state.load(false); await settle()
+    assert.equal(entry.state.selectedTargetKey.value, '')
+    assert.equal(entry.state.form.protocol, '')
     assert.equal(entry.container.querySelector('.test-workbench-actions .button.primary').disabled, true)
     await entry.state.run()
-    assert.equal(calls.invocations.length, 2)
+    assert.equal(calls.invocations.length, 3)
   })
 
   it('orchestrates all targets with at most two workers and publishes incremental reactive DOM progress', async () => {
@@ -2150,7 +2172,9 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await change(installedGrants[1], true)
     button(entry.container, '启用（重启生效）').click()
     await waitFor(() => calls.enabled.length === 1 && !entry.state.busy.value)
-    assert.deepEqual(calls.enabled[0].payload, { enabled: true, approvedPermissions: fixture.manifest.permissions })
+    assert.deepEqual(calls.enabled[0].payload, {
+      enabled: true, installedVersion: '1.0.0', expectedRevision: 0, approvedPermissions: fixture.manifest.permissions,
+    })
     assert.equal(entry.state.selectedState.value.admissionEnabled, false)
     assert.equal(entry.state.selectedState.value.activeVersion, null)
     assert.equal(entry.state.pageEntries.value.length, 0)
@@ -2166,6 +2190,31 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(entry.state.selectedState.value.installedVersion, '1.0.0')
     assert.match(text(entry.container), /已卸载，保留历史选择/)
     assert.deepEqual(entry.state.selectedState.value.configuration, fixture.state.configuration)
+  })
+
+  it('requires a fresh installation revision after an enable conflict', async () => {
+    const fixture = makePluginFixture({ state: {
+      activeVersion: null, desiredEnabled: false, admissionEnabled: false, status: 'disabled',
+      activeConfiguration: null, activeUi: null,
+    } })
+    setFixtures(fixture)
+    const entry = await mount('PluginMarketplaceView')
+    await waitFor(() => !entry.state.loading.value)
+    setState(fixture.manifest.id, { revision: 1 })
+    button(entry.container, '启用（重启生效）').click()
+    await waitFor(() => calls.enabled.length === 1 && !entry.state.busy.value)
+    assert.equal(calls.enabled[0].payload.expectedRevision, 0)
+    assert.equal(button(entry.container, '启用（重启生效）').disabled, true)
+    assert.match(toasts.at(-1).message, /installation changed/)
+
+    button(entry.container, '刷新').click()
+    await waitFor(() => calls.plugins.length === 2 && !entry.state.loading.value)
+    assert.equal(entry.state.selectedState.value.revision, 1)
+    assert.equal(button(entry.container, '启用（重启生效）').disabled, false)
+    button(entry.container, '启用（重启生效）').click()
+    await waitFor(() => calls.enabled.length === 2 && !entry.state.busy.value)
+    assert.equal(calls.enabled[1].payload.expectedRevision, 1)
+    assert.equal(entry.state.selectedState.value.desiredEnabled, true)
   })
 
   it('keeps configuration prompt fields on their own keys and treats a clean empty snapshot as unchanged', async () => {
@@ -2456,7 +2505,10 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       assert.equal(button(entry.container, '启用（重启生效）').disabled, false)
       button(entry.container, '启用（重启生效）').click()
       await waitFor(() => calls.enabled.length === 1 && !entry.state.busy.value)
-      assert.deepEqual(calls.enabled[0], { id: installed.manifest.id, payload: { enabled: true, approvedPermissions: installed.state.permissions } })
+      assert.deepEqual(calls.enabled[0], { id: installed.manifest.id, payload: {
+        enabled: true, installedVersion: installed.state.installedVersion, expectedRevision: installed.state.revision,
+        approvedPermissions: installed.state.permissions,
+      } })
       assert.equal(calls.install.length, 0, 'reenabling the staged package never reinstalls from the catalogue')
       assert.equal(entry.state.selectedVersion.value, installed.state.installedVersion)
       assert.equal(selector.value, installed.state.installedVersion)
@@ -2563,10 +2615,33 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(button(entry.container, '保存配置').disabled, true)
     entry.state.saveConfiguration()
     assert.equal(calls.configuration.length, 1)
+    const reload = deferred()
+    mock.listPlugins = () => reload.promise
+    button(entry.container, '放弃旧草稿并载入当前配置').click()
+    await waitFor(() => entry.state.loading.value)
+    reload.reject(new Error('installation state unavailable'))
+    await waitFor(() => !entry.state.loading.value)
+    assert.match(text(entry.container), /installation state unavailable/)
+    assert.equal(entry.state.draftRejected.value, true)
+    assert.equal(entry.state.draftConflict.value, true)
+    assert.equal(entry.state.configuration.defaultPrompt, 'stale local draft')
+    assert.equal(entry.state.draftRevision.value, 3)
+    assert.equal(field(entry.container, '默认提示词').disabled, true)
+    assert.equal(button(entry.container, '保存配置').disabled, true)
+    entry.state.saveConfiguration()
+    assert.equal(calls.configuration.length, 1)
+
+    mock.listPlugins = undefined
+    mock.listCatalog = () => Promise.reject(new Error('catalogue unavailable'))
     button(entry.container, '放弃旧草稿并载入当前配置').click()
     await waitFor(() => !entry.state.loading.value && !entry.state.draftConflict.value)
     assert.equal(entry.state.configuration.defaultPrompt, 'saved elsewhere')
     assert.equal(entry.state.draftRevision.value, 4)
+    assert.equal(calls.configuration.length, 1, 'recovery does not automatically save the stale draft')
+    await change(field(entry.container, '默认提示词'), 'revision four edit')
+    button(entry.container, '保存配置').click()
+    await waitFor(() => calls.configuration.length === 2 && !entry.state.busy.value)
+    assert.equal(calls.configuration[1].payload.expectedRevision, 4)
   })
 
   it('validates configuration scalars and sends an immutable save snapshot with numeric zero and false', async () => {

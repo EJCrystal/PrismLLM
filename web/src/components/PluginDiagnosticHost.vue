@@ -66,7 +66,6 @@ const contextKey = computed(() => JSON.stringify([
 ]))
 const fields = computed(() => props.contribution.entry.action.fields)
 const protocolField = computed(() => fields.value.find((field) => field.kind === 'protocol'))
-const selectedTarget = computed(() => targets.value.find((target) => modelTestTargetKey(target.channelId, target.model) === selectedTargetKey.value))
 const isAccount = computed(() => props.context?.kind === 'oauth-account')
 const batch = computed(() => form.scope === 'all' && props.contribution.entry.action.supportsBatch && !isAccount.value)
 const defaultValues = computed(() => pluginFieldDefaults(fields.value, state.value?.activeConfiguration ?? {}, true))
@@ -77,12 +76,16 @@ function protocolsFor(target: ModelTestTarget | undefined): string[] {
   return (target?.protocols ?? []).filter((protocol) => !declared.length || declared.includes(protocol))
 }
 
+// Keep incompatible targets in the batch so it can report them as not sent.
+const singleTargets = computed(() => targets.value.filter((target) => protocolsFor(target).length > 0))
+const selectedTarget = computed(() => singleTargets.value.find((target) => modelTestTargetKey(target.channelId, target.model) === selectedTargetKey.value))
+
 const availableProtocols = computed(() => {
   const choices = batch.value ? targets.value.flatMap((target) => protocolsFor(target)) : protocolsFor(selectedTarget.value)
   return [...new Set(choices)]
 })
 const canRun = computed(() => !loading.value && !loadError.value && !running.value && !formError.value &&
-  targets.value.length > 0 && !!selectedTarget.value && availableProtocols.value.length > 0 && !!form.protocol)
+  (batch.value || !!selectedTarget.value) && availableProtocols.value.length > 0 && !!form.protocol)
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
@@ -114,7 +117,7 @@ function fieldValue(field: PluginField): PluginValue {
 }
 
 function fieldOptions(field: PluginField): PluginChoice[] | undefined {
-  if (field.kind === 'model') return targets.value.map((target) => ({
+  if (field.kind === 'model') return singleTargets.value.map((target) => ({
     value: modelTestTargetKey(target.channelId, target.model),
     label: props.context ? target.model : `${target.model} · ${target.channelName}`,
   }))
@@ -186,8 +189,8 @@ async function load(reset = true) {
     for (const fieldKey of Object.keys(form)) delete form[fieldKey]
     Object.assign(form, pluginFieldDefaults(fields.value, currentState.activeConfiguration ?? {}, true))
     if (!reset) for (const field of fields.value) if (Object.hasOwn(previous, field.key)) form[field.key] = previous[field.key]!
-    if (!targets.value.some((target) => modelTestTargetKey(target.channelId, target.model) === selectedTargetKey.value)) {
-      const preferred = targets.value.find((target) => target.model === props.initialModel) ?? targets.value[0]
+    if (!selectedTarget.value) {
+      const preferred = singleTargets.value.find((target) => target.model === props.initialModel) ?? singleTargets.value[0]
       selectedTargetKey.value = preferred ? modelTestTargetKey(preferred.channelId, preferred.model) : ''
     }
     syncSelection()
