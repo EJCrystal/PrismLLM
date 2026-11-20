@@ -54,7 +54,7 @@ const selectedName = computed(() => selectedState.value?.displayName || selected
 const currentVersionSelected = computed(() => !!selectedState.value?.installed && selectedVersion.value === selectedState.value.installedVersion)
 const permissions = computed(() => currentVersionSelected.value ? selectedState.value!.permissions : selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
 const fullGrant = computed(() => permissions.value.every((permission) => approvedPermissions.value.includes(permission)))
-const canEnable = computed(() => !busy.value && !loading.value && !enableRefreshRequired.has(selectedId.value) &&
+const canEnable = computed(() => installationStateKnown.value && !busy.value && !loading.value && !enableRefreshRequired.has(selectedId.value) &&
   currentVersionSelected.value && fullGrant.value)
 const dirty = computed(() => Object.keys(configuration).length !== Object.keys(originalConfiguration.value).length ||
   Object.keys(configuration).some((key) => !Object.hasOwn(originalConfiguration.value, key) || !Object.is(configuration[key], originalConfiguration.value[key])))
@@ -263,7 +263,7 @@ function install() {
 
 function toggleEnabled() {
   const state = selectedState.value
-  if (!state?.installed || busy.value) return
+  if (!state?.installed || busy.value || !installationStateKnown.value) return
   if (state.desiredEnabled) {
     void mutate(() => api.setPluginEnabled(state.id, { enabled: false }), '已禁用，新的诊断调用已停止准入。')
     return
@@ -297,7 +297,7 @@ function saveConfiguration() {
 
 function uninstall() {
   const state = selectedState.value
-  if (!state?.installed || busy.value || !window.confirm(`卸载「${selectedName.value}」并停止新的诊断调用？已保存配置会保留，不会在重启时自动装回。${dirty.value ? '未保存的修改会丢弃。' : ''}`)) return
+  if (!state?.installed || busy.value || !installationStateKnown.value || !window.confirm(`卸载「${selectedName.value}」并停止新的诊断调用？已保存配置会保留，不会在重启时自动装回。${dirty.value ? '未保存的修改会丢弃。' : ''}`)) return
   void mutate(() => api.uninstallPlugin(state.id), '已卸载并保留配置；重启不会自动装回。', true, false)
 }
 
@@ -351,8 +351,8 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
           <small class="muted">JVM 插件是可信同进程代码，不是恶意代码沙箱；目录摘要校验不等同于发布者签名。</small>
           <div class="plugin-market-actions">
             <button v-if="selectedCatalog" type="button" class="button primary" :disabled="!canInstall" @click="install">{{ !selectedState?.installed ? '安装此版本' : selectedVersion === selectedState.installedVersion ? '已安装此版本' : '选择此版本' }}</button>
-            <button v-if="selectedState?.installed" type="button" class="button" :disabled="selectedState.desiredEnabled ? busy : !canEnable" @click="toggleEnabled">{{ selectedState.desiredEnabled ? '禁用' : '启用（重启生效）' }}</button>
-            <button v-if="selectedState?.installed" type="button" class="button ghost danger-text" :disabled="busy" @click="uninstall">卸载</button>
+            <button v-if="selectedState?.installed" type="button" class="button" :disabled="selectedState.desiredEnabled ? busy || !installationStateKnown : !canEnable" @click="toggleEnabled">{{ selectedState.desiredEnabled ? '禁用' : '启用（重启生效）' }}</button>
+            <button v-if="selectedState?.installed" type="button" class="button ghost danger-text" :disabled="busy || !installationStateKnown" @click="uninstall">卸载</button>
           </div>
         </section>
         <section v-if="configurationFields.length || draftConflict" class="plugin-market-section">

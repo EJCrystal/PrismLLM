@@ -21,14 +21,19 @@ import dev.soven.prismllm.shared.domain.KeyCredentialResolver
 import io.ktor.client.HttpClient
 import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.header
-import io.ktor.client.request.post
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
 import io.ktor.client.request.url
-import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.charset
 import io.ktor.http.content.TextContent
+import io.ktor.utils.io.cancel
+import io.ktor.utils.io.charsets.decode
+import io.ktor.utils.io.core.remaining
+import io.ktor.utils.io.readRemaining
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
@@ -44,6 +49,8 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.intOrNull
+
+internal const val MAX_MODEL_TEST_RESPONSE_BYTES = 1_048_576L
 
 /** 一次渠道模型连通性测试的结果。 */
 data class ModelConnectivityTestResult(
@@ -234,45 +241,58 @@ private suspend fun runModelConnectivityTest(
         withTimeoutOrNull(timeoutMs) {
             val prepared = request()
             currentCoroutineContext().ensureActive()
-            val response = httpClient.post(prepared)
-            val rawBody = response.bodyAsText()
-            val latencyMs = System.currentTimeMillis() - startedAt
-            val status = response.status.value
-            val ok = status in 200..299
-            val body = if (!ok && envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(rawBody) else rawBody
-            val parsedBody = runCatching { Json.parseToJsonElement(body) }.getOrNull()
-            val parsed = parsedBody as? JsonObject
-                ?: if (ok && protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(body) else null
-            val json = if (ok && envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) CodeAssistEnvelope.unwrap(parsed) else parsed
-            // Parse status and usage on the original JSON. Redact only the decoded display values.
-            val responseState = (json?.get("status") as? JsonPrimitive)?.contentOrNull
-            val incompleteResponse = protocol == GatewayProtocol.RESPONSES &&
-                responseState in setOf("incomplete", "failed", "cancelled", "queued", "in_progress")
-            val responsesError = ok && protocol == GatewayProtocol.RESPONSES &&
-                (json?.get("error") is JsonObject || incompleteResponse)
-            val displayText = if (ok) extractModelTestResponseText(protocol, json) else null
-            val result = ModelConnectivityTestResult(
-                success = ok && !responsesError,
-                statusCode = status,
-                latencyMs = latencyMs,
-                responseText = displayText?.let { redactModelTestCredential(it, credential).take(maxResponseChars) },
-                errorMessage = if (!ok || responsesError) extractModelTestError(json, status, credential) {
-                    if (ok && incompleteResponse) {
-                        "上游 Responses 尚未成功完成：${redactModelTestCredential(responseState.orEmpty(), credential)}"
-                    } else {
-                        redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
-                    }
-                } else null,
-                usage = if (ok) extractModelTestUsage(protocol, json) else null,
-                upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential, multiline = false) } else null,
-            )
-            ModelConnectivityExecution(
-                result = result,
-                rawSample = if (captureRawSample && result.success && (!requireCompleteSample || !isModelTestOutputTruncated(protocol, json))) {
-                    displayText?.take(maxResponseChars)
-                } else null,
-                sanitize = { redactModelTestCredential(it, credential) },
-            )
+            httpClient.preparePost(prepared).execute { response ->
+                val channel = response.bodyAsChannel()
+                val packet = channel.readRemaining(MAX_MODEL_TEST_RESPONSE_BYTES + 1)
+                if (packet.remaining > MAX_MODEL_TEST_RESPONSE_BYTES) {
+                    channel.cancel()
+                    packet.close()
+                    return@execute ModelConnectivityExecution(ModelConnectivityTestResult(
+                        success = false, statusCode = response.status.value,
+                        latencyMs = System.currentTimeMillis() - startedAt,
+                        responseText = null, errorMessage = "上游响应超过 1 MiB 上限", usage = null,
+                    ))
+                }
+                currentCoroutineContext().ensureActive()
+                val rawBody = (response.charset() ?: Charsets.UTF_8).newDecoder().decode(packet)
+                val latencyMs = System.currentTimeMillis() - startedAt
+                val status = response.status.value
+                val ok = status in 200..299
+                val body = if (!ok && envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(rawBody) else rawBody
+                val parsedBody = runCatching { Json.parseToJsonElement(body) }.getOrNull()
+                val parsed = parsedBody as? JsonObject
+                    ?: if (ok && protocol == GatewayProtocol.RESPONSES) parseResponsesStreamText(body) else null
+                val json = if (ok && envelope == UpstreamEnvelope.CODE_ASSIST && parsed != null) CodeAssistEnvelope.unwrap(parsed) else parsed
+                // Parse status and usage on the original JSON. Redact only the decoded display values.
+                val responseState = (json?.get("status") as? JsonPrimitive)?.contentOrNull
+                val incompleteResponse = protocol == GatewayProtocol.RESPONSES &&
+                    responseState in setOf("incomplete", "failed", "cancelled", "queued", "in_progress")
+                val responsesError = ok && protocol == GatewayProtocol.RESPONSES &&
+                    (json?.get("error") is JsonObject || incompleteResponse)
+                val displayText = if (ok) extractModelTestResponseText(protocol, json) else null
+                val result = ModelConnectivityTestResult(
+                    success = ok && !responsesError,
+                    statusCode = status,
+                    latencyMs = latencyMs,
+                    responseText = displayText?.let { redactModelTestCredential(it, credential).take(maxResponseChars) },
+                    errorMessage = if (!ok || responsesError) extractModelTestError(json, status, credential) {
+                        if (ok && incompleteResponse) {
+                            "上游 Responses 尚未成功完成：${redactModelTestCredential(responseState.orEmpty(), credential)}"
+                        } else {
+                            redactModelTestErrorPreview(body, parsedBody ?: parsed, credential)
+                        }
+                    } else null,
+                    usage = if (ok) extractModelTestUsage(protocol, json) else null,
+                    upstreamReportedModel = if (ok) extractReportedModel(protocol, json) { redactModelTestCredential(it, credential, multiline = false) } else null,
+                )
+                ModelConnectivityExecution(
+                    result = result,
+                    rawSample = if (captureRawSample && result.success && (!requireCompleteSample || !isModelTestOutputTruncated(protocol, json))) {
+                        displayText?.take(maxResponseChars)
+                    } else null,
+                    sanitize = { redactModelTestCredential(it, credential) },
+                )
+            }
         } ?: ModelConnectivityExecution(
             result = ModelConnectivityTestResult(
                 success = false,

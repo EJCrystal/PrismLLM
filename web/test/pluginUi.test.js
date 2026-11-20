@@ -2284,6 +2284,32 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(entry.state.selectedState.value.installed, true)
   })
 
+  it('blocks enable disable and uninstall after installation state refresh fails until a successful read', async () => {
+    for (const desiredEnabled of [true, false]) {
+      const fixture = makePluginFixture({ state: { desiredEnabled } })
+      setFixtures(fixture)
+      const entry = await mount('PluginMarketplaceView')
+      await waitFor(() => !entry.state.loading.value)
+      mock.listPlugins = () => Promise.reject(new Error('installation refresh unavailable'))
+      await entry.state.load(); await settle()
+      const label = desiredEnabled ? '禁用' : '启用（重启生效）'
+      assert.equal(button(entry.container, label).disabled, true)
+      assert.equal(button(entry.container, '卸载').disabled, true)
+      const enabledCalls = calls.enabled.length
+      const uninstallCalls = calls.uninstall.length
+      const prompts = confirmCalls.length
+      entry.state.toggleEnabled()
+      entry.state.uninstall()
+      assert.equal(calls.enabled.length, enabledCalls)
+      assert.equal(calls.uninstall.length, uninstallCalls)
+      assert.equal(confirmCalls.length, prompts, 'unknown state does not prompt for a mutation')
+      mock.listPlugins = undefined
+      await entry.state.load(); await settle()
+      assert.equal(button(entry.container, label).disabled, false)
+      assert.equal(button(entry.container, '卸载').disabled, false)
+    }
+  })
+
   it('treats an uninstall revision conflict as unknown installation state without rejecting a clean draft', async () => {
     const fixture = makePluginFixture()
     setFixtures(fixture)

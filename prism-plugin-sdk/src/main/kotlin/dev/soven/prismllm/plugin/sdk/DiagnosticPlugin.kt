@@ -70,6 +70,7 @@ data class ProbeOutcome(
     val upstreamReportedModel: String? = null,
 )
 
+/** Report fields are bounded presentation; host outcome.success remains the probe verdict. */
 @Serializable
 data class DiagnosticReport(
     val success: Boolean,

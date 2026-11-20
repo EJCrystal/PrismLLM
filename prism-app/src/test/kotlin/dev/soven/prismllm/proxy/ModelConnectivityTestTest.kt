@@ -24,6 +24,10 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.headersOf
+import io.ktor.utils.io.ByteChannel
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.writeStringUtf8
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
@@ -1204,6 +1208,101 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun diagnostic_response_byte_limit_preserves_complete_json_and_sse_at_the_boundary() = runBlocking {
+        val credential = "bounded-response-secret"
+        for ((protocol, contentType, body) in listOf(
+            Triple(GatewayProtocol.CHAT_COMPLETIONS, ContentType.Application.Json,
+                """{"choices":[{"message":{"content":"complete $credential"}}]}"""),
+            Triple(GatewayProtocol.RESPONSES, ContentType.Text.EventStream,
+                "data: {\"type\":\"response.completed\",\"response\":{\"output_text\":\"complete $credential\"}}\n"),
+        )) {
+            val padding = " ".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() - body.toByteArray().size)
+            val bounded = fingerprintDiagnosticTransport(
+                credential, body + padding, maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
+            )
+            assertTrue(bounded.result.success)
+            assertEquals("complete [REDACTED]", bounded.result.responseText)
+            assertEquals("complete $credential", bounded.rawSample)
+
+            val oversized = fingerprintDiagnosticTransport(
+                credential, body + padding + " ", maxResponseChars = 100, protocol = protocol, responseContentType = contentType,
+            )
+            assertFalse(oversized.result.success)
+            assertEquals(200, oversized.result.statusCode)
+            assertEquals("上游响应超过 1 MiB 上限", oversized.result.errorMessage)
+            assertNull(oversized.result.responseText)
+            assertNull(oversized.result.usage)
+            assertNull(oversized.result.upstreamReportedModel)
+            assertNull(oversized.rawSample)
+        }
+    }
+
+    @Test
+    fun oversized_error_responses_never_expose_a_partial_credential_preview() = runBlocking {
+        val credential = "bounded-error-secret"
+        val body = """{"error":{"message":"$credential"}}""" + " ".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt())
+        val execution = fingerprintDiagnosticTransport(
+            credential, body, maxResponseChars = 5, status = HttpStatusCode.Unauthorized,
+        )
+        assertFalse(execution.result.success)
+        assertEquals(401, execution.result.statusCode)
+        assertEquals("上游响应超过 1 MiB 上限", execution.result.errorMessage)
+        assertNull(execution.result.responseText)
+        assertNull(execution.rawSample)
+    }
+
+    @Test
+    fun oversized_open_response_stream_is_cancelled_without_waiting_for_eof(): Unit = runBlocking {
+        val channel = ByteChannel(autoFlush = true)
+        val pending = async {
+            fingerprintDiagnosticTransport("open-stream-secret", "", maxResponseChars = 100, responseChannel = channel)
+        }
+        val writer = async {
+            runCatching { channel.writeStringUtf8("x".repeat(MAX_MODEL_TEST_RESPONSE_BYTES.toInt() + 1)) }
+        }
+        try {
+            val execution = withTimeout(5_000) { pending.await() }
+            assertEquals("上游响应超过 1 MiB 上限", execution.result.errorMessage)
+            assertNull(execution.rawSample)
+            assertTrue(channel.isClosedForRead)
+            withTimeout(5_000) { writer.await() }
+        } finally {
+            channel.cancel(CancellationException("test cleanup"))
+        }
+    }
+
+    @Test
+    fun caller_cancellation_interrupts_a_bounded_response_read() = runBlocking {
+        val channel = ByteChannel(autoFlush = true)
+        val entered = CompletableDeferred<Unit>()
+        val pending = async {
+            fingerprintDiagnosticTransport("cancelled-read-secret", "", maxResponseChars = 100,
+                requestEntered = entered, responseChannel = channel)
+        }
+        try {
+            withTimeout(5_000) { entered.await() }
+            pending.cancel(CancellationException("caller stopped waiting"))
+            withTimeout(5_000) { pending.join() }
+            assertTrue(pending.isCancelled)
+        } finally {
+            channel.cancel(CancellationException("test cleanup"))
+        }
+    }
+
+    @Test
+    fun bounded_response_read_preserves_the_declared_charset() = runBlocking {
+        val body = """{"choices":[{"message":{"content":"réponse charset-secret"}}]}"""
+        val execution = fingerprintDiagnosticTransport(
+            "charset-secret", "", maxResponseChars = 100,
+            responseContentType = ContentType.parse("application/json; charset=ISO-8859-1"),
+            responseChannel = ByteReadChannel(body.toByteArray(Charsets.ISO_8859_1)),
+        )
+        assertTrue(execution.result.success)
+        assertEquals("réponse [REDACTED]", execution.result.responseText)
+        assertEquals("réponse charset-secret", execution.rawSample)
+    }
+
+    @Test
     fun fingerprint_execution_returns_bounded_original_response_with_redacted_result() = runBlocking {
         val credential = "fingerprint-synthetic-secret"
         val originalText = "sample $credential remains unchanged"
@@ -1653,6 +1752,7 @@ class ModelConnectivityTestTest {
         responseDelayMs: Long = 0,
         requestEntered: CompletableDeferred<Unit>? = null,
         requireCompleteSample: Boolean = true,
+        responseChannel: ByteReadChannel? = null,
     ): ModelConnectivityExecution {
         val channel = ChannelRecord(
             id = "fingerprint-channel", name = "fingerprint-channel",
@@ -1673,7 +1773,7 @@ class ModelConnectivityTestTest {
                     failure?.let { throw it }
                     requestEntered?.complete(Unit)
                     if (responseDelayMs > 0) delay(responseDelayMs)
-                    respond(responseBody, status, headersOf(HttpHeaders.ContentType, responseContentType.toString()))
+                    respond(responseChannel ?: ByteReadChannel(responseBody), status, headersOf(HttpHeaders.ContentType, responseContentType.toString()))
                 }
             }
         }

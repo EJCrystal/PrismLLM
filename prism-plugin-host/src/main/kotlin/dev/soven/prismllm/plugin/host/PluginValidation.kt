@@ -196,6 +196,7 @@ internal object PluginValidation {
         else -> invalid("Unsupported diagnostic context")
     }
 
+    /** Permissions are a complete package approval, not a per-action subset grant. */
     fun grants(manifest: PluginManifest, approved: List<String>): List<String> {
         if (approved.size > PluginApi.permissions.size || approved.distinct().size != approved.size || approved.any { it !in manifest.permissions || it !in PluginApi.permissions }) {
             throw PluginHostException("PLUGIN_INVALID_GRANTS", "Only the package's declared permissions may be approved")

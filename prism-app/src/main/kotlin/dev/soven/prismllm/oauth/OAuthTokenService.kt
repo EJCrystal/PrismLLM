@@ -89,14 +89,7 @@ internal class DiagnosticOAuthAccess internal constructor(
     private val exchangeProxyUrl: String?,
 ) {
     fun matches(account: OAuthAccountRecord): Boolean =
-        account.id == this.account.id && account.provider == this.account.provider &&
-            account.authorizedAt == this.account.authorizedAt && account.authState == this.account.authState &&
-            account.refreshTokenCiphertext == this.account.refreshTokenCiphertext &&
-            account.refreshTokenNonce == this.account.refreshTokenNonce &&
-            account.refreshTokenKeyVersion == this.account.refreshTokenKeyVersion &&
-            account.accessTokenCiphertext == this.account.accessTokenCiphertext &&
-            account.accessTokenNonce == this.account.accessTokenNonce &&
-            account.accessTokenKeyVersion == this.account.accessTokenKeyVersion && account.proxyUrl == exchangeProxyUrl
+        this.account.matchesCredentialSnapshot(account) && account.proxyUrl == exchangeProxyUrl
 
     override fun toString(): String = "DiagnosticOAuthAccess(<redacted>)"
 }
@@ -131,6 +124,7 @@ class OAuthTokenService(
     private val accountLocks = mutableMapOf<String, Mutex>()
     private val rotations = linkedMapOf<String, ArrayDeque<Rotation>>()
     private val refreshPermits = Semaphore(MAX_CONCURRENT_DIAGNOSTIC_REFRESHES)
+    private val pendingPruneMutex = Mutex()
     private var refreshAdmissionClosed = false
     @Volatile private var stopPersistenceRetries = false
 
@@ -225,9 +219,11 @@ class OAuthTokenService(
 
         suspend fun awaitLoop(): RefreshOutcome {
             while (true) {
-                if (synchronized(refreshLifecycleLock) { (pendingRefreshes.keys + refreshTasks.keys).size >= MAX_PENDING_REFRESH_RESULTS }) {
-                    prunePendingResults()
+                val needsCapacity = synchronized(refreshLifecycleLock) {
+                    account.id !in pendingRefreshes && refreshTasks[account.id]?.work?.isCompleted != false &&
+                        (pendingRefreshes.keys + refreshTasks.keys).size >= MAX_PENDING_REFRESH_RESULTS
                 }
+                if (needsCapacity) prunePendingResults()
                 val waiter = RefreshWaiter(account, currentCoroutineContext().job, preparation, force)
                 val (task, registered) = synchronized(refreshLifecycleLock) {
                     check(!refreshAdmissionClosed) { "OAuth refresh service is closing" }
@@ -286,6 +282,7 @@ class OAuthTokenService(
                         if (!task.exchangeStarted && task.waiters.none { it.active() }) task.work.cancel()
                     }
                 }
+                if (!acceptsSnapshot(waiter.account, outcome.account)) throw credentialReplaced()
                 // A forced caller may join a normal task which decided to return its cached token.
                 // That is not a refresh; loop and join/start a task that must exchange instead.
                 if (outcome.account.hasAccessToken && (outcome.account.accessTokenExpiresAt ?: 0) <= now()) {
@@ -710,15 +707,21 @@ class OAuthTokenService(
     }
 
     private suspend fun prunePendingResults() {
-        val retained = synchronized(refreshLifecycleLock) { pendingRefreshes.toMap() }
-        val budget = DiagnosticPreparationDeadline.start(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS)
-        for ((id, pending) in retained) {
-            val current = DiagnosticPreparationDeadline.withinSynchronous(budget) {
-                PendingAccount(repository.find(id))
-            } ?: return
-            if (current.account == null) synchronized(refreshLifecycleLock) {
-                if (refreshTasks[id]?.work?.isCompleted != false) pendingRefreshes.remove(id, pending)
-            } else discardReplacedPending(current.account, pending)
+        // A concurrent capacity request rechecks admission instead of starting the same DB scan.
+        if (!pendingPruneMutex.tryLock()) return
+        try {
+            val retained = synchronized(refreshLifecycleLock) { pendingRefreshes.toMap() }
+            val budget = DiagnosticPreparationDeadline.start(DIAGNOSTIC_REFRESH_DB_TIMEOUT_MS)
+            for ((id, pending) in retained) {
+                val current = DiagnosticPreparationDeadline.withinSynchronous(budget) {
+                    PendingAccount(repository.find(id))
+                } ?: return
+                if (current.account == null) synchronized(refreshLifecycleLock) {
+                    if (refreshTasks[id]?.work?.isCompleted != false) pendingRefreshes.remove(id, pending)
+                } else discardReplacedPending(current.account, pending)
+            }
+        } finally {
+            pendingPruneMutex.unlock()
         }
     }
 

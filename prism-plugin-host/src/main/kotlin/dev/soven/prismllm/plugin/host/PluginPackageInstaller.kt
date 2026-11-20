@@ -20,7 +20,11 @@ import java.util.UUID
 
 internal data class StagedPluginPackage(val item: PluginCatalogItem, val jarPath: Path, val providerClass: String)
 
-/** Publish a complete validated snapshot atomically; an id/version is never overwritten. */
+/**
+ * Publish a complete validated snapshot atomically; an id/version is never overwritten.
+ * Catalogue and managed paths, including their parents, must remain deployment-controlled through
+ * class loading. Path-based loading does not isolate verification from a hostile filesystem writer.
+ */
 class PluginPackageInstaller internal constructor(
     managedDirectory: Path,
     private val syncDirectory: (Path) -> Unit,

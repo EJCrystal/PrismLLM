@@ -399,6 +399,152 @@ class OAuthTokenServiceTest {
     }
 
     @Test
+    fun diagnosticSnapshotRejectsExpiryTypeAndScopeOnlyChanges() = runBlocking {
+        val id = createAccount("metadata-snapshot", accountEmail = email("metadata-snapshot"))
+        val service = service()
+        try {
+            service.accessToken(id)
+            val saved = accounts.find(id)!!
+            val access = service.accessTokenForDiagnostic(saved, DiagnosticPreparationDeadline.start(1_000))
+            assertTrue(access.matches(saved))
+            for (changed in listOf(
+                saved.copy(accessTokenExpiresAt = saved.accessTokenExpiresAt!! - 1),
+                saved.copy(tokenType = "ChangedType"),
+                saved.copy(scope = "changed-scope"),
+            )) {
+                assertFalse(access.matches(changed), "metadata-only credential changes invalidate the diagnostic snapshot")
+                assertFalse(saved.matchesCredentialSnapshot(changed))
+            }
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun ordinaryAndForcedWaitersRejectACompletedResultFromReplacedAuthorization() = runBlocking {
+        val id = createAccount("late-result-old", accountEmail = email("late-result"))
+        val service = service()
+        try {
+            service.accessToken(id)
+            val old = accounts.find(id)!!
+            val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+            val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }
+                .get(service) as MutableMap<String, Any>
+            withTimeout(5_000) { while (synchronized(monitor) { tasks.isNotEmpty() }) delay(1) }
+            accounts.updateCredentials(id, OAuthAccountCredentialUpdate(
+                provider = old.provider, refreshToken = cipher.encrypt("late-result-new"),
+            ))
+            val current = accounts.find(id)!!
+            assertFalse(old.matchesCredentialSnapshot(current))
+
+            val taskType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshTask" }
+            val outcomeType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshOutcome" }
+            val oldOutcome = outcomeType.getDeclaredConstructor(OAuthAccountRecord::class.java, Boolean::class.javaPrimitiveType)
+                .apply { isAccessible = true }.newInstance(old, true)
+            for (manual in listOf(false, true)) {
+                // Represent the post-save, pre-completion window without a scheduler-dependent sleep.
+                val task = taskType.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+                val work = CompletableDeferred<Any>()
+                taskType.getDeclaredField("work").apply { isAccessible = true }.set(task, work)
+                synchronized(monitor) { tasks[id] = task }
+                try {
+                    val pending = async {
+                        if (manual) service.refreshNow(id)
+                        else runCatching { service.accessToken(id) }.exceptionOrNull()
+                    }
+                    val waiters = taskType.getDeclaredField("waiters").apply { isAccessible = true }
+                    withTimeout(5_000) {
+                        while (synchronized(monitor) { (waiters.get(task) as List<*>).isEmpty() }) delay(1)
+                    }
+                    work.complete(oldOutcome)
+                    val result = withTimeout(5_000) { pending.await() }
+                    if (manual) assertEquals("credential_replaced", assertIs<OAuthRefreshResult.Failed>(result).errorCode)
+                    else assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(result).errorCode)
+                    assertEquals(current, accounts.find(id))
+                } finally {
+                    work.complete(oldOutcome)
+                    synchronized(monitor) { tasks.remove(id, task) }
+                }
+            }
+            assertEquals(1, tokenRequests.get(), "joined stale outcomes must never start a new exchange")
+        } finally {
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
+    fun fullPendingCapacityJoinsExistingWorkAndCoalescesPruning() = runBlocking {
+        val id = createAccount("capacity-target", accountEmail = email("capacity-target"))
+        val account = accounts.find(id)!!
+        val scanStarted = CompletableDeferred<Unit>()
+        val finishScan = CompletableDeferred<Unit>()
+        val scanReads = AtomicInteger()
+        val repository = object : OAuthAccountRepository(factory.database, OAuthProviderChannelLookup()) {
+            override suspend fun find(id: String): OAuthAccountRecord? {
+                if (!id.startsWith("pending-capacity-")) return super.find(id)
+                scanReads.incrementAndGet()
+                scanStarted.complete(Unit)
+                withTimeout(10_000) { finishScan.await() }
+                return null
+            }
+        }
+        val service = OAuthTokenService(repository, cipher, OAuthTokenProviderRegistry(emptyList()))
+        val monitor = OAuthTokenService::class.java.getDeclaredField("refreshLifecycleLock").apply { isAccessible = true }.get(service)
+        val tasks = OAuthTokenService::class.java.getDeclaredField("refreshTasks").apply { isAccessible = true }.get(service) as MutableMap<String, Any>
+        val retained = OAuthTokenService::class.java.getDeclaredField("pendingRefreshes").apply { isAccessible = true }.get(service) as MutableMap<String, Any>
+        val taskType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshTask" }
+        val outcomeType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "RefreshOutcome" }
+        val pendingType = OAuthTokenService::class.java.declaredClasses.single { it.simpleName == "PendingRefresh" }
+        val encrypted = cipher.encrypt("encrypted-capacity-fixture")
+        val constructor = pendingType.declaredConstructors.single().apply { isAccessible = true }
+        synchronized(monitor) {
+            repeat(512) { index ->
+                val pendingId = "pending-capacity-$index"
+                val pendingAccount = account.copy(id = pendingId)
+                val context = dev.soven.prismllm.oauth.persistence.OAuthRefreshContext(
+                    pendingAccount, pendingAccount.refreshTokenCiphertext!!, pendingAccount.refreshTokenNonce!!,
+                    pendingAccount.refreshTokenKeyVersion!!,
+                )
+                retained[pendingId] = constructor.newInstance(context, encrypted, encrypted,
+                    System.currentTimeMillis() + 60_000, "Bearer", null)
+            }
+        }
+        val first = async { runCatching { service.accessToken(id) } }
+        try {
+            withTimeout(5_000) { scanStarted.await() }
+            val busy = withTimeout(2_000) { runCatching { service.accessToken(id) } }.exceptionOrNull()
+            assertEquals("refresh_busy", assertIs<OAuthTokenUnavailableException>(busy).errorCode)
+            assertEquals(1, scanReads.get(), "concurrent capacity calls share one database scan")
+
+            val task = taskType.getDeclaredConstructor().apply { isAccessible = true }.newInstance()
+            val work = CompletableDeferred<Any>()
+            taskType.getDeclaredField("work").apply { isAccessible = true }.set(task, work)
+            synchronized(monitor) { tasks[id] = task }
+            try {
+                val joining = async { runCatching { service.accessToken(id) } }
+                val waiters = taskType.getDeclaredField("waiters").apply { isAccessible = true }
+                withTimeout(2_000) {
+                    while (synchronized(monitor) { (waiters.get(task) as List<*>).isEmpty() }) delay(1)
+                }
+                assertEquals(1, scanReads.get(), "existing same-account work is joined before any cleanup")
+                val outcome = outcomeType.getDeclaredConstructor(OAuthAccountRecord::class.java, Boolean::class.javaPrimitiveType)
+                    .apply { isAccessible = true }.newInstance(account, true)
+                work.complete(outcome)
+                val failure = withTimeout(2_000) { joining.await() }.exceptionOrNull()
+                assertEquals("credential_replaced", assertIs<OAuthTokenUnavailableException>(failure).errorCode)
+            } finally {
+                work.cancel()
+                synchronized(monitor) { tasks.remove(id, task) }
+            }
+        } finally {
+            finishScan.complete(Unit)
+            first.cancelAndJoin()
+            synchronized(monitor) { retained.clear() }
+            assertTrue(service.drainRefreshes())
+        }
+    }
+
+    @Test
     fun tokenSnapshotStaysPairedWithItsTokenAfterRefreshAndAdminReplacement() = runBlocking {
         val id = createAccount("snapshot-original", accountEmail = email("snapshot"))
         val original = accounts.find(id)!!
