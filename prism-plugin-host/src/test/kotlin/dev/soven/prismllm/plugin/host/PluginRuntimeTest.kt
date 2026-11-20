@@ -113,7 +113,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
 
     @Test
     fun missingInstallationsRetireOwnedProvidersAcrossEveryObservationPath(): Unit = runBlocking {
-        for (lookup in listOf("states", "contributions", "state", "permission")) {
+        for (lookup in listOf("states", "contributions", "state", "permission", "execute")) {
             val packaged = ownedFixture(id = "missing." + lookup)
             publish(packaged)
             val decisions = MemoryInstallationStore()
@@ -124,6 +124,7 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             })
             host.initialize(packaged.manifest.id)
             missing = true
+            val transports = AtomicInteger()
             when (lookup) {
                 "states" -> assertTrue(host.states().isEmpty())
                 "contributions" -> assertTrue(host.contributions().isEmpty())
@@ -131,8 +132,13 @@ internal class PluginRuntimeTest : PluginTestSupport() {
                 "permission" -> failure("PLUGIN_NOT_INSTALLED") {
                     host.requireActivePermission(packaged.manifest.id, "1.0.0", packaged.manifest.permissions.first())
                 }
+                "execute" -> failure("PLUGIN_NOT_INSTALLED") {
+                    host.execute(packaged.manifest.id, "1.0.0", input, target) { transports.incrementAndGet(); ok }
+                }
             }
             assertDisposed(packaged)
+            assertEquals(0, packaged.count("planned"))
+            assertEquals(0, transports.get())
             missing = false
             val restored = host.state(packaged.manifest.id)
             assertNull(restored.activeVersion)

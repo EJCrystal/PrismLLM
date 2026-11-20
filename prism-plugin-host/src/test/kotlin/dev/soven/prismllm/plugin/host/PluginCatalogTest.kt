@@ -11,11 +11,14 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import org.apache.commons.compress.archivers.zip.ZipFile
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.apache.commons.compress.utils.SeekableInMemoryByteChannel
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import java.io.IOException
+import java.io.ByteArrayOutputStream
 import java.net.URI
 import java.nio.file.AccessDeniedException
 import java.nio.file.FileSystems
@@ -48,6 +51,44 @@ internal class PluginCatalogTest : PluginTestSupport() {
             ((bytes[offset + 1].toInt() and 0xff).toLong() shl 8) or
             ((bytes[offset + 2].toInt() and 0xff).toLong() shl 16) or
             ((bytes[offset + 3].toInt() and 0xff).toLong() shl 24)
+
+    @Test
+    fun utf8JarNamesRemainCanonicalWithoutLanguageEncodingFlags(): Unit = runBlocking {
+        val resourceName = "fixture/资源-中文.txt"
+        val packaged = fixture(
+            constructorPrefix = { property -> "System.getProperties().put(\"$property.loader\", getClass().getClassLoader());" },
+            jarEntries = listOf(ZipFixtureEntry(resourceName, "owned UTF-8 resource".toByteArray())),
+        )
+        val jar = ByteArrayOutputStream().use { bytes ->
+            ZipArchiveOutputStream(bytes).use { output ->
+                output.setEncoding("UTF-8")
+                output.setUseLanguageEncodingFlag(false)
+                output.setCreateUnicodeExtraFields(ZipArchiveOutputStream.UnicodeExtraFieldPolicy.NEVER)
+                ZipFile.builder().setSeekableByteChannel(SeekableInMemoryByteChannel(packaged.jar)).get().use { original ->
+                    for (entry in original.entries.asSequence()) {
+                        output.putArchiveEntry(ZipArchiveEntry(entry.name).apply { unixMode = entry.unixMode })
+                        original.getInputStream(entry).use { it.copyTo(output) }
+                        output.closeArchiveEntry()
+                    }
+                }
+            }
+            bytes.toByteArray()
+        }
+        ZipFile.builder().setSeekableByteChannel(SeekableInMemoryByteChannel(jar)).setUseUnicodeExtraFields(false).get().use { zip ->
+            assertTrue(zip.entries.asSequence().all { it.rawFlag and 0x0800 == 0 })
+            val resource = assertNotNull(zip.getEntry(resourceName))
+            assertTrue(resource.rawName.contentEquals(resourceName.toByteArray(Charsets.UTF_8)))
+        }
+        val unflagged = packaged.repack(packaged.entries.map { if (it.name == "plugin.jar") it.copy(bytes = jar) else it })
+        publish(unflagged)
+        assertTrue(PluginCatalog(catalogDirectory).items().single().compatible)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        val loader = assertNotNull(System.getProperties()[packaged.property + ".loader"] as? ClassLoader)
+        assertNotNull(loader.getResourceAsStream(resourceName)).use { input ->
+            assertEquals("owned UTF-8 resource", input.readBytes().toString(Charsets.UTF_8))
+        }
+    }
 
     @Test
     fun `missing deployment catalogue is an empty catalogue`() {
@@ -446,10 +487,13 @@ internal class PluginCatalogTest : PluginTestSupport() {
         archive[30] = 'x'.code.toByte()
         publish(packaged.copy(archive = archive))
         rejectedPackage()
-        val flags = packaged.archive.copyOf()
-        flags[6] = (flags[6].toInt() or 1).toByte() // Local encryption bit, absent centrally.
-        publish(packaged.copy(archive = flags))
-        rejectedPackage()
+        for (bit in listOf(0x0001, 0x0008, 0x0040, 0x0800, 0x1000)) {
+            val flags = packaged.archive.copyOf()
+            flags[6] = (flags[6].toInt() xor (bit and 0xff)).toByte()
+            flags[7] = (flags[7].toInt() xor (bit ushr 8)).toByte()
+            publish(packaged.copy(archive = flags))
+            rejectedPackage()
+        }
     }
 
     @Test

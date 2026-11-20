@@ -545,6 +545,16 @@ class ModelConnectivityTestTest {
         }
     }
 
+    @Test
+    fun legacyChatTokenOverridesPreserveLowerLimitsAndCapOversizedValues(): Unit = runBlocking {
+        for ((override, expected) in listOf(7 to 7, 4_096 to 128)) {
+            val captured = captureDiagnosticRequest(GatewayProtocol.CHAT_COMPLETIONS,
+                tokenOverride = override, chatTokenField = "max_tokens")
+            assertIsolatedDiagnosticRequest(captured, GatewayProtocol.CHAT_COMPLETIONS, null, expected)
+            assertTrue("max_tokens" in captured.body)
+        }
+    }
+
     private fun assertIsolatedDiagnosticRequest(
         captured: CapturedDiagnosticRequest,
         protocol: GatewayProtocol,
@@ -606,6 +616,7 @@ class ModelConnectivityTestTest {
         protocol: GatewayProtocol,
         provider: OAuthProvider? = null,
         tokenOverride: Int? = null,
+        chatTokenField: String = "max_completion_tokens",
     ): CapturedDiagnosticRequest {
         val captured = AtomicReference<CapturedDiagnosticRequest>()
         val channelOverrides = UpstreamRequestOverrides(
@@ -620,7 +631,7 @@ class ModelConnectivityTestTest {
                             ("generationConfig" to kotlinx.serialization.json.JsonObject(body["generationConfig"]!!.jsonObject +
                                 ("maxOutputTokens" to JsonPrimitive(tokenOverride)))))
                         else kotlinx.serialization.json.JsonObject(body + ((when (protocol) {
-                            GatewayProtocol.CHAT_COMPLETIONS -> "max_completion_tokens"
+                            GatewayProtocol.CHAT_COMPLETIONS -> chatTokenField
                             GatewayProtocol.RESPONSES -> "max_output_tokens"
                             else -> "max_tokens"
                         }) to JsonPrimitive(tokenOverride)))
@@ -1744,17 +1755,19 @@ class ModelConnectivityTestTest {
     fun fingerprint_keeps_original_nul_split_sample_but_sanitizes_all_display_values() = runBlocking {
         val credential = "sk-synthetic-fingerprint-secret"
         val split = credential.toList().joinToString("\u0000\u202e")
-        val original = "before $split after"
+        val rawMarker = "raw-sample-printing-canary-8291"
+        val original = "before $split after " + rawMarker
         val execution = fingerprintDiagnosticTransport(
             credential,
             """{"choices":[{"message":{"content":${JsonPrimitive(original)}}}],"model":${JsonPrimitive("model-$split")}}""",
             maxResponseChars = original.length,
         )
         assertEquals(original, execution.rawSample)
-        assertSuccessfulDiagnostic(execution.result, "before [REDACTED] after", "model-[REDACTED]", usage = null)
-        assertEquals("before [REDACTED] after", execution.safeText(original))
+        assertSuccessfulDiagnostic(execution.result, "before [REDACTED] after " + rawMarker, "model-[REDACTED]", usage = null)
+        assertEquals("before [REDACTED] after " + rawMarker, execution.safeText(original))
         assertNull(execution.safeText(null))
         assertFalse(execution.toString().contains(credential))
+        assertFalse(execution.toString().contains(rawMarker))
     }
 
     @Test

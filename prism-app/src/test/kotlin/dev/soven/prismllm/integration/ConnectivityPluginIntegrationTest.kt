@@ -798,9 +798,11 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 assertEquals("127.0.0.1", probes.last().host)
                 assertEquals("Bearer " + accessToken(provider), probes.last().authorization)
 
+                val preparationsBeforeResources = preparations.size
                 val resourceResponse = client.api(HttpMethod.Get,
                     "/admin/api/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=oauth-account&contextId=${account.id}", session)
                 val resources = resourceResponse.decoded<List<IqTestTargetResponse>>()
+                assertEquals(preparationsBeforeResources, preparations.size, "Target GET must not discover a project")
                 assertEquals(listOf(model), resources.map { it.model })
                 assertTrue(resources.all { it.channelId == account.id && it.channelName == account.name })
                 assertEquals(listOf(account.id), resources.single().credentials.map { it.id })
@@ -813,6 +815,7 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 val standaloneTargets = client.api(HttpMethod.Get,
                     "/admin/api/plugins/$PLUGIN_ID/resources/model-test-targets?contextKind=oauth-account&contextId=${unlinked.id}", session)
                     .decoded<List<IqTestTargetResponse>>()
+                assertEquals(preparationsBeforeResources, preparations.size, "Unlinked target GET must also remain read-only")
                 assertEquals(listOf(model), standaloneTargets.map { it.model }, "Native choices cannot require linked channel credentials")
                 assertEquals(listOf(unlinked.id), standaloneTargets.single().credentials.map { it.id })
                 assertEquals(unlinked.id, standaloneTargets.single().channelId)
@@ -828,6 +831,8 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 assertEquals(account.name, native.target.displayName)
                 assertEquals(account.name, native.target.credentialName)
                 assertNativeRequest(probes.last(), provider, model, "native account probe")
+                assertEquals(preparationsBeforeResources + if (provider == OAuthProvider.ANTIGRAVITY) 1 else 0,
+                    preparations.size, "Only the first explicit native probe may discover a project")
                 // The compatibility body may still contain keyId, but account mode never selects it.
                 val nativeLegacy = client.legacyProbe(session, "/oauth-accounts/${account.id}/model-test", model, protocol,
                     direct.keys.single().id, "native account probe").objectPayload()
@@ -1517,14 +1522,18 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                             client.invokePlugin(session, "channel", channel.id, input).decoded<PluginExecution>()
                         }
                     }
-                    awaitCondition("two upstream workers waiting at the mock barrier") { runningProbes.get() == 2 }
-                    assertEquals(2, probes.size, "Queued targets must not prepare/send a third probe")
-                    release.complete(Unit)
-                    val executions = results.awaitAll()
-                    assertEquals(setOf("batch 1", "batch 2", "batch 3", "batch 4"), executions.map { it.plan.prompt }.toSet())
-                    assertTrue(executions.all { it.outcome.success && it.report.success && it.report.text == "OK" })
-                    assertEquals(4, probes.size)
-                    assertEquals(2, maximumRunningProbes.get())
+                    try {
+                        awaitCondition("two upstream workers waiting at the mock barrier") { runningProbes.get() == 2 }
+                        assertEquals(2, probes.size, "Queued targets must not prepare/send a third probe")
+                        release.complete(Unit)
+                        val executions = results.awaitAll()
+                        assertEquals(setOf("batch 1", "batch 2", "batch 3", "batch 4"), executions.map { it.plan.prompt }.toSet())
+                        assertTrue(executions.all { it.outcome.success && it.report.success && it.report.text == "OK" })
+                        assertEquals(4, probes.size)
+                        assertEquals(2, maximumRunningProbes.get())
+                    } finally {
+                        release.complete(Unit)
+                    }
                 }
             }
         } finally {
