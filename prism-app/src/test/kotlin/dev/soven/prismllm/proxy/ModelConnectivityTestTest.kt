@@ -1164,6 +1164,46 @@ class ModelConnectivityTestTest {
     }
 
     @Test
+    fun responses_incomplete_details_disqualify_fingerprint_samples_despite_completed_or_missing_status() = runBlocking {
+        val credential = "fingerprint-incomplete-details-secret"
+        for (state in listOf("\"status\":\"completed\",", "")) {
+            for (details in listOf("{\"reason\":\"max_output_tokens\"}", "{}")) {
+                val response = """{${state}"incomplete_details":$details,"output_text":"partial $credential","model":"public-model"}"""
+                val stream = "data: {\"type\":\"response.completed\",\"response\":$response}"
+                for ((body, contentType) in listOf(response to ContentType.Application.Json, stream to ContentType.Text.EventStream)) {
+                    val execution = fingerprintDiagnosticTransport(
+                        credential, body, maxResponseChars = 100, protocol = GatewayProtocol.RESPONSES,
+                        responseContentType = contentType,
+                    )
+
+                    assertSuccessfulDiagnostic(execution.result, "partial [REDACTED]", "public-model", usage = null)
+                    assertNull(execution.rawSample, body)
+                }
+            }
+        }
+    }
+
+    @Test
+    fun responses_absent_or_null_incomplete_details_preserve_completed_fingerprint_samples() = runBlocking {
+        val credential = "fingerprint-complete-details-secret"
+        for (state in listOf("\"status\":\"completed\",", "")) {
+            for (details in listOf("\"incomplete_details\":null,", "")) {
+                val response = """{${state}${details}"output_text":"complete $credential","model":"public-model"}"""
+                val stream = "data: {\"type\":\"response.completed\",\"response\":$response}"
+                for ((body, contentType) in listOf(response to ContentType.Application.Json, stream to ContentType.Text.EventStream)) {
+                    val execution = fingerprintDiagnosticTransport(
+                        credential, body, maxResponseChars = 100, protocol = GatewayProtocol.RESPONSES,
+                        responseContentType = contentType,
+                    )
+
+                    assertSuccessfulDiagnostic(execution.result, "complete [REDACTED]", "public-model", usage = null)
+                    assertEquals("complete $credential", execution.rawSample, body)
+                }
+            }
+        }
+    }
+
+    @Test
     fun fingerprint_execution_returns_bounded_original_response_with_redacted_result() = runBlocking {
         val credential = "fingerprint-synthetic-secret"
         val originalText = "sample $credential remains unchanged"

@@ -36,6 +36,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
@@ -421,7 +422,7 @@ private fun isModelTestOutputTruncated(protocol: GatewayProtocol, json: JsonObje
         val reason = ((candidate as? JsonObject)?.get("finishReason") as? JsonPrimitive)?.contentOrNull
         reason != null && reason != "STOP"
     } == true
-    GatewayProtocol.RESPONSES -> false // Non-completed Responses already fail the connectivity check.
+    GatewayProtocol.RESPONSES -> json?.get("incomplete_details")?.let { it != JsonNull } == true
 }
 
 internal fun extractModelTestResponseText(protocol: GatewayProtocol, json: JsonObject?): String? {
@@ -563,6 +564,7 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
     var usage: JsonObject? = null
     var reportedModel: String? = null
     var responseStatus: String? = null
+    var incompleteDetails: JsonElement? = null
     var failedError: JsonObject? = null
     var terminated = false
     for (line in body.lineSequence()) {
@@ -593,6 +595,7 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
             terminated = true
             val response = event["response"] as? JsonObject
             responseStatus = (response?.get("status") as? JsonPrimitive)?.contentOrNull ?: terminalStatus
+            incompleteDetails = response?.get("incomplete_details") ?: incompleteDetails
             usage = response?.get("usage") as? JsonObject ?: usage
             reportedModel = (response?.get("model") as? JsonPrimitive)?.contentOrNull ?: reportedModel
             output = response?.get("output") ?: output
@@ -628,6 +631,7 @@ internal fun parseResponsesStreamText(body: String): JsonObject? {
         usage?.let { put("usage", it) }
         reportedModel?.let { put("model", it) }
         responseStatus?.let { put("status", it) }
+        incompleteDetails?.let { put("incomplete_details", it) }
         failedError?.let { failed -> put("error", failed["error"] ?: failed) }
         // 上游或代理可能中途断流：没有终止事件时直接折叠成 error 形状，调用方按失败处理。
         if (!terminated) {
