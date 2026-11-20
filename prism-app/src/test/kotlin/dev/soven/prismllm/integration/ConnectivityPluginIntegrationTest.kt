@@ -733,11 +733,12 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     fun `OAuth target reads do not provision provider channel and explicit probe provisions it`() = runBlocking {
         val provider = OAuthProvider.CHATGPT
         val model = "gpt-6-luna"
+        val nonSeedModel = "synthetic-authorized-non-seed-model"
         val protocol = GatewayProtocol.RESPONSES
         testApplication {
             application { app.install(this) }
             val session = client.adminSession()
-            val account = oauthAccount("read-only-provider-target", provider, listOf(model), emptyList())
+            val account = oauthAccount("read-only-provider-target", provider, listOf(model, nonSeedModel), emptyList())
             assertNull(app.channelRepository.findProviderChannel(provider))
 
             val targets = client.api(HttpMethod.Get,
@@ -1433,15 +1434,22 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     fun `queued native OAuth probe rechecks revoked model authorization before preparation`() = runBlocking {
         val release = CompletableDeferred<Unit>()
         probeHold.set(release)
+        val provider = OAuthProvider.CHATGPT
+        val tokens = assertNotNull(app.oauthTokenProviders.find(provider))
+        val refreshes = AtomicInteger()
+        mockkObject(tokens)
+        coEvery { tokens.refresh(any(), any()) } coAnswers {
+            refreshes.incrementAndGet()
+            error("Revoked authorization must reject before token exchange")
+        }
         try {
             testApplication {
                 application { app.install(this) }
                 val session = client.adminSession()
                 val occupied = directChannel("queued-oauth-occupants", GatewayProtocol.CHAT_COMPLETIONS)
                 val model = "gpt-6-queued-native"
-                val provider = OAuthProvider.CHATGPT
                 val channelId = assertNotNull(app.providerChannelProvisioner.ensure(provider))
-                val account = oauthAccount("queued-model-revocation", provider, listOf(model), listOf(channelId))
+                val account = oauthAccount("queued-model-revocation", provider, listOf(model), listOf(channelId), cached = false)
                 assertTrue(app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry(model, model))))
                 val executions = app.pluginRuntime.javaClass.getDeclaredField("executions").let { field ->
                     field.isAccessible = true
@@ -1472,8 +1480,10 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
                 }
                 assertEquals(2, probes.size, "Revoked native authorization must not send model HTTP")
                 assertTrue(preparations.isEmpty(), "Queued revocation must reject before project discovery")
+                assertEquals(0, refreshes.get(), "Queued revocation must reject before token exchange")
             }
         } finally {
+            unmockkObject(tokens)
             release.complete(Unit)
             probeHold.set(null)
         }

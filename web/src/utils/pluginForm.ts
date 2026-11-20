@@ -26,8 +26,11 @@ export function pluginFormError(fields: PluginField[], values: PluginValues): st
       if (field.max != null && value > field.max) return `${field.label}不能大于 ${field.max}`
     } else {
       if (typeof value !== 'string') return `${field.label}必须是文本`
+      if (value.includes('\u0000')) return `${field.label}不能包含空字符`
       if (field.required && !value.trim()) return `请填写${field.label}`
-      if (field.maxLength != null && value.trim().length > field.maxLength) return `${field.label}不能超过 ${field.maxLength} 个字符`
+      const checked = field.key === 'prompt' || field.key === 'defaultPrompt' ? value.trim() : value
+      const maximum = field.maxLength ?? 4_000
+      if (checked.length > maximum) return `${field.label}不能超过 ${maximum} 个字符`
       if (field.options.length && !field.options.some((option) => option.value === value)) return `${field.label}的选项无效`
     }
   }

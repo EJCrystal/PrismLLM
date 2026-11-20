@@ -356,12 +356,41 @@ describe('bounded declarative plugin contracts', () => {
     assert.equal(parsePluginCatalogItem(lengthBound).ui.entries[0].action.fields.find(field => field.kind === 'scope').options[0].value, 'single')
   })
 
+  it('rejects unsupported protocol options and defaults in configuration and action descriptors', () => {
+    for (const placement of ['configuration', 'action']) {
+      for (const invalid of [
+        { options: [{ value: 'grpc', label: 'Unsupported' }] },
+        { options: [{ value: 'responses', label: 'Responses' }, { value: 'grpc', label: 'Unsupported' }] },
+        { defaultValue: 'grpc' },
+      ]) {
+        const raw = catalog(SECOND_PLUGIN)
+        const descriptor = { key: 'protocol', label: '协议', kind: 'protocol', required: true, ...invalid }
+        if (placement === 'configuration') raw.manifest.configuration = [descriptor]
+        else raw.ui.entries[0].action.fields = raw.ui.entries[0].action.fields.map(item => item.kind === 'protocol' ? descriptor : item)
+        assert.throws(() => parsePluginCatalogItem(raw), invalidResponse)
+      }
+    }
+  })
+
+  it('accepts supported protocol options and defaults in configuration and action descriptors', () => {
+    const options = ['chat_completions', 'responses', 'messages', 'gemini'].map(value => ({ value, label: value }))
+    for (const defaultValue of options.map(option => option.value)) {
+      const raw = catalog(SECOND_PLUGIN)
+      const descriptor = { key: 'protocol', label: '协议', kind: 'protocol', required: true, options, defaultValue }
+      raw.manifest.configuration = [descriptor]
+      raw.ui.entries[0].action.fields = raw.ui.entries[0].action.fields.map(item => item.kind === 'protocol' ? descriptor : item)
+      const parsed = parsePluginCatalogItem(raw)
+      assert.equal(parsed.manifest.configuration[0].defaultValue, defaultValue)
+      assert.deepEqual(parsed.ui.entries[0].action.fields.find(item => item.kind === 'protocol').options, options)
+    }
+  })
+
   it('validates static choices against their own field limits without requiring defaults', () => {
     const choices = [
       ['mode', 'select', 'enabled'],
       ['model', 'model', 'vendor/model'],
       ['keyId', 'credential', 'opaque/key'],
-      ['protocol', 'protocol', 'custom.protocol'],
+      ['protocol', 'protocol', 'responses'],
       ['scope', 'scope', 'single'],
     ]
     for (const [key, kind, value] of choices) {

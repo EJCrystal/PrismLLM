@@ -223,6 +223,10 @@ function field(value: unknown): PluginField {
   requireContract(parsed.kind !== 'scope' || (parsed.options.length > 0 && parsed.options.every(option => option.value === 'single' || option.value === 'all')), '范围')
   requireContract(parsed.options.every(option => fieldChoiceValueIsValid(parsed, option.value)), '选项')
   requireContract(!['prompt', 'defaultPrompt'].includes(parsed.key) || parsed.kind === 'text' || parsed.kind === 'textarea', '提示词控件')
+  if (parsed.kind === 'protocol') {
+    parsed.options.forEach(option => protocol(option.value))
+    if (parsed.defaultValue !== null) protocol(parsed.defaultValue)
+  }
   validateDefault(parsed)
   return parsed
 }
