@@ -622,7 +622,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(host.state.fields.value.some(field => field.key === 'label'), true)
     await host.state.run(); await settle()
     assert.equal(calls.invocations[0].payload.expectedActiveVersion, '1.0.0')
-    assert.equal(calls.invocations[0].payload.values.prompt, null, 'An unedited prompt is resolved by the host per call')
+    assert.equal(calls.invocations[0].payload.values.prompt, undefined, 'An unedited prompt stays omitted so the host resolves it per call')
     host.unmount(); mounted.splice(mounted.indexOf(host), 1)
     const market = await mount('PluginMarketplaceView')
     await waitFor(() => !market.state.loading.value)
@@ -657,7 +657,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
     await waitFor(() => !entry.state.loading.value && entry.state.defaultValues.value.prompt === newConfiguration.defaultPrompt)
     assert.equal(entry.state.form.prompt, newConfiguration.defaultPrompt, 'Unedited future input follows the active configuration')
-    assert.equal(oldCall.payload.values.prompt, null, 'The host, not the captured job, resolves an unedited prompt')
+    assert.equal(oldCall.payload.values.prompt, undefined, 'The host, not the captured job, resolves an unedited prompt')
     pending.resolve(responseFor(oldCall))
     await run; await settle()
     const meta = field(entry.container, '本次提示词').closest('label').nextElementSibling
@@ -665,8 +665,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(entry.state.form.prompt, newConfiguration.defaultPrompt)
     mock.invoke = undefined
     await entry.state.run(); await settle()
-    assert.equal(calls.invocations[1].payload.values.prompt, null)
-    assert.equal(oldCall.payload.values.prompt, null)
+    assert.equal(calls.invocations[1].payload.values.prompt, undefined)
+    assert.equal(oldCall.payload.values.prompt, undefined)
   })
 
   for (const edited of [false, true]) {
@@ -679,7 +679,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       await entry.state.run()
       await settle()
       assert.equal(calls.invocations.length, 1)
-      assert.equal(calls.invocations[0].payload.values.prompt, edited ? 'explicit request value' : null)
+      assert.equal(calls.invocations[0].payload.values.prompt, edited ? 'explicit request value' : undefined)
       mock.getState = undefined
     })
   }
@@ -710,9 +710,25 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       await entry.state.load(false); await settle()
       assert.equal(entry.state.form.prompt, 'newer default', 'Reset removes the local override and resumes following defaults')
       await entry.state.run(); await settle()
-      assert.equal(calls.invocations.at(-1).payload.values.prompt, null)
+      assert.equal(calls.invocations.at(-1).payload.values.prompt, undefined)
     })
   }
+
+  it('omits an unedited optional prompt so declarative and saved defaults stay host-owned', async () => {
+    const fixture = makePluginFixture()
+    const prompt = fixture.contribution.entry.action.fields.find(item => item.key === 'prompt')
+    prompt.defaultValue = 'declared prompt default'
+    fixture.state.configuration = { ...fixture.state.configuration, defaultPrompt: 'saved prompt default' }
+    fixture.state.activeConfiguration = { ...fixture.state.activeConfiguration, defaultPrompt: 'saved prompt default' }
+    const entry = await hostFor(fixture)
+    assert.equal(entry.state.form.prompt, 'saved prompt default')
+    await entry.state.run(); await settle()
+    assert.equal(Object.hasOwn(calls.invocations[0].payload.values, 'prompt'), false,
+      'the host applies the declared default and the plugin reads its saved default at execution time')
+    await change(field(entry.container, '本次提示词'), 'explicit prompt')
+    await entry.state.run(); await settle()
+    assert.equal(calls.invocations[1].payload.values.prompt, 'explicit prompt')
+  })
 
   it('uses the newest observed revision when an older run preflight returns late', async () => {
     const fixture = makePluginFixture()
@@ -733,7 +749,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await run
 
     assert.equal(calls.invocations.length, 1)
-    assert.equal(calls.invocations[0].payload.values.prompt, null)
+    assert.equal(calls.invocations[0].payload.values.prompt, undefined)
     assert.equal(entry.state.form.prompt, latestConfiguration.defaultPrompt)
   })
 
