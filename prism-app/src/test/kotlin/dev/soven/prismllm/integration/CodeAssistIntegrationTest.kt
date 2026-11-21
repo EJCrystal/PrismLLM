@@ -63,7 +63,7 @@ class CodeAssistIntegrationTest : GatewayIntegrationTestBase() {
     @BeforeEach
     fun isolateOutboundHttp() {
         // Keep the base fixture's isolated database and master key, but never install its real client.
-        val isolatedConfig = app.config.copy(maxAttempts = 1)
+        val isolatedConfig = app.config.copy(maxAttempts = 1, modelPriceCatalogEnabled = true)
         app.close()
         generations.clear()
         endpoints.clear()

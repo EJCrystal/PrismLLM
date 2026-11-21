@@ -1,5 +1,7 @@
 target/
 plugins/*.jar
+/bundled-plugins/
+/plugin-state/
 .env
 *.log
 .idea/

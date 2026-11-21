@@ -9,7 +9,7 @@ import kotlin.test.assertTrue
 
 /**
  * 管理面模块的依赖边界：领域只允许标准库、序列化与共享内核，持久化可再加 Exposed，
- * 禁止反向引用渠道、路由或应用层。
+ * 插件安装期望由管理模块自行建模，运行时宿主契约只在应用组装层适配。
  *
  * @author 文杰
  * @since 2026-11-10
@@ -110,6 +110,18 @@ class AdminArchitectureTest {
         assertTrue(
             classes.any { it.name == "dev.soven.prismllm.admin.persistence.NotificationDeliveries" },
             "ArchUnit 未导入通知投递表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.prismllm.admin.persistence.PluginInstallationRepository" },
+            "ArchUnit 未导入插件安装仓储，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.prismllm.admin.persistence.PluginInstallations" },
+            "ArchUnit 未导入插件安装表，规则会空跑",
+        )
+        assertTrue(
+            classes.any { it.name == "dev.soven.prismllm.admin.domain.PluginInstallationRecord" },
+            "ArchUnit 未导入插件安装领域记录，规则会空跑",
         )
     }
 

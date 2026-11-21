@@ -17,6 +17,16 @@ class GatewayConfigTest {
     )
 
     @Test
+    fun modelPriceCatalogDefaultsOnAndCanBeDisabledExplicitly() {
+        assertTrue(GatewayConfig.fromEnv(requiredEnv).modelPriceCatalogEnabled)
+        assertTrue(GatewayConfig.fromEnv(requiredEnv + ("MODEL_PRICE_CATALOG_ENABLED" to "true")).modelPriceCatalogEnabled)
+        assertFalse(GatewayConfig.fromEnv(requiredEnv + ("MODEL_PRICE_CATALOG_ENABLED" to "false")).modelPriceCatalogEnabled)
+        assertFailsWith<IllegalStateException> {
+            GatewayConfig.fromEnv(requiredEnv + ("MODEL_PRICE_CATALOG_ENABLED" to "invalid"))
+        }
+    }
+
+    @Test
     fun connectionTimeoutDefaultsToThirtySeconds() {
         assertEquals(30_000L, GatewayConfig.fromEnv(requiredEnv).connectTimeoutMs)
     }

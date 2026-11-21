@@ -23,6 +23,8 @@
         <module>prism-db-migrations</module>
         <module>prism-test-support</module>
         <module>prism-shared</module>
+        <module>prism-plugin-sdk</module>
+        <module>prism-plugin-host</module>
         <module>prism-protocol</module>
         <module>prism-channel</module>
         <module>prism-routing</module>
@@ -81,6 +83,16 @@
             <dependency>
                 <groupId>dev.soven</groupId>
                 <artifactId>prism-shared</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-plugin-sdk</artifactId>
+                <version>${project.version}</version>
+            </dependency>
+            <dependency>
+                <groupId>dev.soven</groupId>
+                <artifactId>prism-plugin-host</artifactId>
                 <version>${project.version}</version>
             </dependency>
             <dependency>

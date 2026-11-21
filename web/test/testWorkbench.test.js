@@ -1,9 +1,13 @@
 import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { clonePluginData, makeOfficialPluginFixture, makePluginFixture, makeTarget } from './fixtures/plugin.js'
 import { createServer } from 'vite'
 import vue from '@vitejs/plugin-vue'
-import { createSSRApp, h, nextTick } from 'vue'
+import { createSSRApp, h, nextTick, onServerPrefetch } from 'vue'
 import { renderToString } from '@vue/server-renderer'
 import { JSDOM } from 'jsdom'
 
@@ -13,21 +17,37 @@ describe('channel test workspace', () => {
   let emptyState
   let drawer
   let searchSelect
+  let modelTestTargetKey
   const panels = new Map()
   const channel = { id: 'workspace-test', name: '测试渠道', enabled: true }
-  const target = {
-    channelId: channel.id, channelName: channel.name, channelEnabled: true,
-    model: 'test-model', protocols: ['chat_completions'],
+  const target = makeTarget({
+    channelId: channel.id, channelName: channel.name, protocols: ['chat_completions'],
     credentials: [{ id: 'credential-test', name: '测试凭据', priority: 1 }],
+  })
+  const officialPlugin = makeOfficialPluginFixture()
+  const syntheticPlugin = makePluginFixture()
+  const panelProps = (name, extra = {}) => name === 'PluginDiagnosticHost'
+    ? { contribution: clonePluginData(officialPlugin.contribution), context: { kind: 'channel', id: channel.id }, initialModel: target.model, channelEnabled: channel.enabled, ...extra }
+    : { channel, ...extra }
+  function preparePanel(name, state) {
+    state.loading.value = false
+    state.targets.value = [clonePluginData(target)]
+    if (name === 'PluginDiagnosticHost') {
+      state.state.value = clonePluginData(officialPlugin.state)
+      Object.assign(state.form, state.defaultValues.value)
+      state.selectedTargetKey.value = modelTestTargetKey(channel.id, target.model)
+      state.syncSelection()
+    }
   }
 
   before(async () => {
-    server = await createServer({ configFile: false, plugins: [vue()], optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, appType: 'custom' })
+    server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), configFile: false, envFile: false, cacheDir: join(tmpdir(), 'prism-test-workbench-' + process.pid), plugins: [vue()], optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true, hmr: false, proxy: {} }, appType: 'custom' })
     workbench = (await server.ssrLoadModule('/src/components/TestWorkbench.vue')).default
     emptyState = (await server.ssrLoadModule('/src/components/TestEmptyState.vue')).default
     drawer = (await server.ssrLoadModule('/src/components/ChannelTestDrawer.vue')).default
     searchSelect = (await server.ssrLoadModule('/src/components/SearchSelect.vue')).default
-    for (const name of ['ChannelConnectivityPanel', 'IqTestView', 'FingerprintTestView']) {
+    modelTestTargetKey = (await server.ssrLoadModule('/src/utils/modelTest.ts')).modelTestTargetKey
+    for (const name of ['PluginDiagnosticHost', 'IqTestView', 'FingerprintTestView']) {
       panels.set(name, (await server.ssrLoadModule('/src/components/' + name + '.vue')).default)
     }
   })
@@ -59,8 +79,7 @@ describe('channel test workspace', () => {
       ...component,
       setup(props, context) {
         const state = component.setup(props, context)
-        state.loading.value = false
-        state.targets.value = [target]
+        preparePanel(name, state)
         if (name === 'IqTestView') {
           state.benchmarks.value = [{ id: 'pelican', label: '鹈鹕', prompt: '默认提示词', grading: '本地规则', durationHint: '通常需要 30 秒', effectiveTimeoutMs: 180000, maxTimeoutMs: 600000 }]
         }
@@ -68,7 +87,7 @@ describe('channel test workspace', () => {
         return state
       },
     }
-    return new JSDOM(await renderToString(createSSRApp(wrapped, { channel }))).window.document
+    return new JSDOM(await renderToString(createSSRApp(wrapped, panelProps(name)))).window.document
   }
 
   it('keeps the run action outside the independently scrolling fields', async () => {
@@ -158,7 +177,7 @@ describe('channel test workspace', () => {
   })
 
   for (const [name, title] of [
-    ['ChannelConnectivityPanel', '尚未运行测试'],
+    ['PluginDiagnosticHost', '尚未运行测试'],
     ['IqTestView', '选择模型，运行第一道题'],
     ['FingerprintTestView', '还没有检测结果'],
   ]) {
@@ -168,12 +187,11 @@ describe('channel test workspace', () => {
         ...component,
         setup(props, context) {
           const state = component.setup(props, context)
-          state.loading.value = false
-          state.targets.value = [target]
+          preparePanel(name, state)
           return state
         },
       }
-      const document = new JSDOM(await renderToString(createSSRApp(wrapped, { channel }))).window.document
+      const document = new JSDOM(await renderToString(createSSRApp(wrapped, panelProps(name)))).window.document
       assert.equal(document.querySelector('.test-empty-state h3').textContent, title)
       assert.equal(document.querySelectorAll('.test-workbench-actions .button.primary').length, 1)
       assert.equal(document.querySelector('.test-workbench-fields .button.primary'), null)
@@ -207,33 +225,64 @@ describe('channel test workspace', () => {
     })
   }
 
-  it('uses the same empty canvas when no model has a usable credential', async () => {
-    const component = panels.get('ChannelConnectivityPanel')
-    const wrapped = {
-      ...component,
-      setup(props, context) {
-        const state = component.setup(props, context)
-        state.loading.value = false
-        return state
-      },
+  it('uses the empty canvas only when the eligible model has no usable credential', async () => {
+    const component = panels.get('PluginDiagnosticHost')
+    const { api } = await server.ssrLoadModule('/src/api.ts')
+    const originals = { getPlugin: api.getPlugin, listPluginTargets: api.listPluginTargets }
+    try {
+      api.getPlugin = async () => clonePluginData(officialPlugin.state)
+      for (const credentials of [[], target.credentials]) {
+        let targetReads = 0
+        api.listPluginTargets = async () => {
+          targetReads++
+          return [clonePluginData({ ...target, credentials })]
+        }
+        let state
+        const wrapped = {
+          ...component,
+          setup(props, context) {
+            state = component.setup(props, context)
+            onServerPrefetch(() => state.load())
+            return state
+          },
+        }
+        const app = createSSRApp(wrapped, panelProps('PluginDiagnosticHost'))
+        const document = new JSDOM(await renderToString(app)).window.document
+        assert.equal(targetReads, 1)
+        assert.equal(state.state.value?.admissionEnabled, true)
+        assert.equal(state.loadError.value, '')
+        if (credentials.length === 0) {
+          assert.equal(state.targets.value.length, 0)
+          assert.equal(document.querySelector('.test-empty-state h3').textContent, '没有可测试的模型')
+          assert.equal(document.querySelector('.test-workbench-actions'), null)
+        } else {
+          assert.equal(state.targets.value.length, 1)
+          assert.equal(document.querySelector('.test-empty-state h3').textContent, '尚未运行测试')
+          const run = document.querySelector('.test-workbench-actions .button.primary')
+          assert.ok(run)
+          assert.equal(run.disabled, false)
+        }
+      }
+    } finally {
+      Object.assign(api, originals)
     }
-    const document = new JSDOM(await renderToString(createSSRApp(wrapped, { channel }))).window.document
-    assert.equal(document.querySelector('.test-empty-state h3').textContent, '没有可测试的模型')
-    assert.equal(document.querySelector('.test-workbench-actions'), null)
   })
 
   it('keeps connectivity timing and reset visible while collapsing request details', async () => {
-    const document = await renderPanel('ChannelConnectivityPanel', (state) => {
-      state.prompt.value = 'Hello'
+    const document = await renderPanel('PluginDiagnosticHost', (state) => {
+      state.form.prompt = 'Hello'
     })
     const meta = document.querySelector('.test-form-meta')
-    assert.match(meta.textContent, /5 字符 · 单次超时 45 秒/)
+    assert.match(meta.textContent, /5 字符\s*\/\s*4000/)
     assert.equal(meta.closest('details'), null)
     assert.equal(meta.querySelector('button').textContent, '恢复默认')
     const help = document.querySelector('details.test-form-help')
     assert.equal(help.open, false)
     assert.equal(help.querySelector('summary').textContent, '请求限制与记录说明')
-    assert.match(help.textContent, /128 个输出 token.*不写入请求日志/)
+    assert.match(help.textContent, /128 个输出 token.*不写生产请求日志/)
+    const visibleLimits = [...document.querySelectorAll('.test-form-note')].find(note => note.textContent.includes('模型探测最长'))
+    assert.match(visibleLimits.textContent, /45 秒.*128 输出 token.*1\.0\.0/)
+    assert.equal(visibleLimits.closest('details'), null)
   })
 
   it('collapses candy grading rules without hiding question availability', async () => {
@@ -307,38 +356,73 @@ describe('channel test workspace', () => {
     assert.match(styles, /body:has\(\.modal-body\.is-contained\) \.toast-stack \{\s*top: calc\(12px \+ env\(safe-area-inset-top\)\);\s*bottom: auto;/)
   })
 
-  it('supports arrow, Home and End navigation without resetting a selected tab or refreshing records twice', async () => {
+  async function setupDrawer() {
     let state
     const wrapped = {
-      ...drawer,
-      ssrRender: undefined,
-      render: () => null,
-      setup(props, context) {
-        state = drawer.setup(props, context)
-        return state
-      },
+      ...drawer, ssrRender: undefined, render: () => null,
+      setup(props, context) { state = drawer.setup(props, context); return state },
     }
     await renderToString(createSSRApp(wrapped, { channel }))
+    return state
+  }
+
+  it('supports Arrow, Home and End across dynamic plugin tabs without refreshing records twice', async () => {
+    const state = await setupDrawer()
+    state.contributions.value = clonePluginData([officialPlugin.contribution, syntheticPlugin.contribution])
+    const ids = state.tabs.value.map(tab => tab.id)
+    const [officialId, syntheticId] = ids
+    const last = ids.length - 1
+    const iqIndex = ids.indexOf('iq')
+    state.selectTab(officialId)
     const focused = []
-    state.tabList.value = { querySelectorAll: () => state.tabs.map((tab) => ({ focus: () => focused.push(tab.id) })) }
+    state.tabList.value = { querySelectorAll: () => state.tabs.value.map(tab => ({ id: `${state.tabId}-${tab.id}`, focus: () => focused.push(tab.id) })) }
     let prevented = 0
     const press = (key, index) => state.navigateTabs({ key, preventDefault: () => prevented++ }, index)
     await press('ArrowLeft', 0)
     assert.equal(state.activeTab.value, 'records')
     assert.equal(state.recordsKey.value, 1)
-    await press('End', 3)
+    await press('End', last)
     assert.equal(state.recordsKey.value, 1)
-    await press('ArrowRight', 3)
-    assert.equal(state.activeTab.value, 'connectivity')
+    await press('ArrowRight', last)
+    assert.equal(state.activeTab.value, officialId)
     await press('ArrowRight', 0)
+    assert.equal(state.activeTab.value, syntheticId)
+    await press('ArrowRight', 1)
     assert.equal(state.activeTab.value, 'iq')
     state.openRecord(42)
     assert.deepEqual(state.recordTarget.value, { type: 'iq', id: 42 })
-    await press('Home', 3)
+    assert.equal(state.recordsKey.value, 2)
+    await press('Home', last)
     await press('Enter', 0)
-    assert.equal(state.activeTab.value, 'connectivity')
-    assert.equal(prevented, 5)
-    assert.deepEqual(focused, ['records', 'records', 'connectivity', 'iq', 'connectivity'])
+    await state.navigateTabs({ key: 'End', altKey: true, preventDefault: () => prevented++ }, iqIndex)
+    assert.equal(state.activeTab.value, officialId)
+    assert.equal(prevented, 6)
+    assert.deepEqual(focused, ['records', 'records', officialId, syntheticId, 'iq', officialId])
+    assert.equal(state.activeProps.value.contribution.pluginId, officialPlugin.manifest.id)
+  })
+
+  it('keeps IQ fingerprint and records usable after all plugin contributions disappear', async () => {
+    const state = await setupDrawer()
+    const api = (await server.ssrLoadModule('/src/api.ts')).api
+    const original = api.getPluginContributions
+    try {
+      api.getPluginContributions = async () => clonePluginData([officialPlugin.contribution, syntheticPlugin.contribution])
+      await state.load()
+      assert.match(state.activeTab.value, /^plugin:/)
+      api.getPluginContributions = async () => []
+      await state.load()
+      assert.deepEqual(state.tabs.value.map(tab => tab.id), ['iq', 'fingerprint', 'records'])
+      assert.equal(state.activeTab.value, 'iq')
+      assert.ok(state.activeComponent.value)
+      state.selectTab('fingerprint')
+      assert.ok(state.activeComponent.value)
+      state.openRecord(88)
+      assert.equal(state.activeTab.value, 'records')
+      assert.deepEqual(state.recordTarget.value, { type: 'fingerprint', id: 88 })
+      assert.equal(state.recordsKey.value, 1)
+    } finally {
+      api.getPluginContributions = original
+    }
   })
 
   it('keeps status next to the global title and short accessible tabs on every viewport', () => {
@@ -349,7 +433,8 @@ describe('channel test workspace', () => {
     assert.match(source, /:aria-controls=/)
     assert.match(source, /role="tabpanel" :aria-labelledby=/)
     assert.match(source, /:tabindex="activeTab === tab.id \? 0 : -1"/)
-    assert.match(source, /grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/)
+    assert.match(source, /\.channel-test-tabs \{[^}]*display: flex;[^}]*overflow-x: auto;/)
+    assert.doesNotMatch(source, /grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/)
     assert.doesNotMatch(source, /tab\.summary|<small>/)
     assert.match(modal, /<DialogTitle[\s\S]*?<slot name="title-extra"/)
     assert.match(modal, /\.modal-title-row \{[\s\S]*?flex-wrap: wrap;/)
@@ -397,29 +482,28 @@ describe('channel test workspace', () => {
     })
   }
 
-  for (const name of ['ChannelConnectivityPanel', 'FingerprintTestView']) {
+  for (const name of ['PluginDiagnosticHost', 'FingerprintTestView']) {
     it(name + ' keeps manual testing available for a disabled channel', async () => {
       const component = panels.get(name)
       const wrapped = {
         ...component,
         setup(props, context) {
           const state = component.setup(props, context)
-          state.loading.value = false
-          state.targets.value = [{ ...target, channelEnabled: false }]
-          if (name === 'ChannelConnectivityPanel') {
-            state.selectedModel.value = target.model
-            state.defaultPrompt.value = 'Hello'
-            state.prompt.value = 'Hello'
+          preparePanel(name, state)
+          state.targets.value = [{ ...clonePluginData(target), channelEnabled: false }]
+          if (name === 'PluginDiagnosticHost') {
+            state.form.prompt = 'Hello'
             state.syncSelection()
           } else {
-            state.selectedTargetKey.value = state.modelTestTargetKey(channel.id, target.model)
+            state.selectedTargetKey.value = modelTestTargetKey(channel.id, target.model)
             state.syncSelectedTarget()
           }
           return state
         },
       }
-      const document = new JSDOM(await renderToString(createSSRApp(wrapped, { channel: { ...channel, enabled: false } }))).window.document
-      assert.match(document.querySelector('.test-form').textContent, /渠道已停用，仍可用已保存的凭据发起测试/)
+      const props = panelProps(name, name === 'PluginDiagnosticHost' ? { channelEnabled: false } : { channel: { ...channel, enabled: false } })
+      const document = new JSDOM(await renderToString(createSSRApp(wrapped, props))).window.document
+      assert.match(document.querySelector('.test-form').textContent, /渠道已停用，仍可用已保存的凭据发起(?:测试|诊断)/)
       assert.equal(document.querySelector('.test-workbench-actions .button.primary').disabled, false)
     })
   }

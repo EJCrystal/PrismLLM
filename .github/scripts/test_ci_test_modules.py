@@ -21,6 +21,8 @@ NAMESPACE = {"m": "http://maven.apache.org/POM/4.0.0"}
 # Existing filter flags are deliberately separate from the complete reactor graph.
 MODULE_PATHS = {
     "shared": "prism-shared",
+    "pluginsdk": "prism-plugin-sdk",
+    "pluginhost": "prism-plugin-host",
     "protocol": "prism-protocol",
     "channel": "prism-channel",
     "routing": "prism-routing",
@@ -39,7 +41,7 @@ REACTOR_MODULES = (*INFRA_MODULES, *MODULE_PATHS.values())
 NO_TEST_MODULES = {"prism-db-migrations"}
 RUNNABLE_MODULES = tuple(module for module in REACTOR_MODULES if module not in NO_TEST_MODULES)
 ALL_UPSTREAM = (
-    "prism-test-support,prism-shared,prism-protocol,prism-channel,prism-routing,prism-resilience,"
+    "prism-test-support,prism-shared,prism-plugin-sdk,prism-plugin-host,prism-protocol,prism-channel,prism-routing,prism-resilience,"
     "prism-subscription-oauth,prism-quota,prism-pricing,prism-request-log,prism-admin"
 )
 MOVED_COMPONENT_OWNERS = {
@@ -49,6 +51,11 @@ PROTOCOL_CHANNEL_CASES = (
     (("protocol",), "prism-protocol,prism-routing,prism-request-log", "protocol"),
     (("channel",), "prism-channel,prism-routing", "channel"),
     (("protocol", "channel"), "prism-protocol,prism-channel,prism-routing,prism-request-log", "channel|protocol"),
+)
+PLUGIN_CASES = (
+    (("extensions",), "prism-plugin-host", "channel"),
+    (("pluginhost",), "prism-plugin-host", "channel"),
+    (("pluginsdk",), "prism-plugin-sdk,prism-plugin-host", "channel"),
 )
 CI_BUILD_PATHS = (
     ".github/workflows/ci.yml",
@@ -179,6 +186,34 @@ class ModuleSelectionTests(unittest.TestCase):
             with self.subTest(flags=flags):
                 self.assert_selection(flags, modules, app_tags=tags)
 
+    def test_plugin_code_follows_host_store_edges_and_extension_only_stays_channel_scoped(self):
+        for flags, modules, tags in PLUGIN_CASES:
+            with self.subTest(flags=flags):
+                self.assert_selection(flags, modules, app_tags=tags)
+                self.assert_selection((*flags, "protocol"), ordered_modules({
+                    *modules.split(","), "prism-protocol", "prism-routing", "prism-request-log",
+                }), app_tags="channel|protocol")
+                self.assert_selection((*flags, "channel"), ordered_modules({
+                    *modules.split(","), "prism-channel", "prism-routing",
+                }), app_tags="channel")
+        # Extension metadata/code is outside Maven's reactor dependency graph.
+        # It needs the host boundary + real packaged app fixture, not every domain.
+        extension_only = resolve_modules({"extensions": True})
+        self.assertNotIn("prism-admin", extension_only["modules"])
+        self.assertNotIn("prism-test-support", extension_only["modules"])
+        self.assertEqual(extension_only["app_tags"], "channel")
+
+    def test_mixed_plugin_changes_do_not_override_full_app_owners(self):
+        for flags, modules, _ in PLUGIN_CASES:
+            for full in ("admin", "app", "oauth", "pricing"):
+                expected = set(modules.split(","))
+                if full != "app":
+                    expected.add(MODULE_PATHS[full])
+                if full == "pricing":
+                    expected.add("prism-request-log")
+                with self.subTest(flags=flags, full=full):
+                    self.assert_selection((*flags, full), ordered_modules(expected))
+
     def test_pricing_selects_requestlog_without_duplicate_modules(self):
         for flags in (("pricing",), ("pricing", "requestlog")):
             self.assert_selection(flags, "prism-pricing,prism-request-log")
@@ -208,8 +243,8 @@ class ModuleSelectionTests(unittest.TestCase):
 
     def test_no_relevant_module_changes_skip_app(self):
         self.assert_selection((), "", app_tests="false")
-        # Extensions are tested by their own workflow step, not by app tests.
-        self.assert_selection(("extensions",), "", app_tests="false")
+        # Unknown, unrelated flags never become executable Maven selection.
+        self.assert_selection(("unrelated",), "", app_tests="false")
 
     def test_full_regression_overrides_every_incremental_combination(self):
         for values in itertools.product((False, True), repeat=len(CHANGE_FLAGS)):
@@ -246,6 +281,11 @@ class ModuleSelectionTests(unittest.TestCase):
             else:
                 changed_modules = {module for flag, module in MODULE_PATHS.items() if changes[flag]}
                 expected = dependency_closure(changed_modules, dependencies, downstream=True) & runnable
+                # Local package metadata/bytecode changes have an explicit
+                # executable boundary beyond POM edges, but do not change the
+                # persistence adapter's production dependency itself.
+                if changes["extensions"]:
+                    expected |= {"prism-plugin-host", "prism-app"}
             selection = resolve_modules(changes)
             selected = set(filter(None, selection["modules"].split(",")))
             if selection["app_tests"] == "true":
@@ -279,6 +319,20 @@ class ModuleSelectionTests(unittest.TestCase):
         self.assertIn("prism-db-migrations", closure)
         self.assertNotIn("prism-test-support", closure)
 
+    def test_plugin_sdk_host_and_standalone_extension_keep_dependency_boundaries(self):
+        self.assertEqual(module_dependency_scopes("prism-plugin-sdk"), {})
+        self.assertEqual(module_dependency_scopes("prism-plugin-host"), {"prism-plugin-sdk": "compile"})
+        self.assertIsNone(module_dependency_scopes("prism-admin").get("prism-plugin-host"))
+        self.assertEqual(module_dependency_scopes("prism-app").get("prism-plugin-host"), "compile")
+        extension = "extensions/connectivity-diagnostic"
+        self.assertEqual(module_dependency_scopes(extension), {"prism-plugin-sdk": "provided"})
+        pom = ET.parse(ROOT / extension / "pom.xml")
+        self.assertIsNone(pom.find("m:parent", NAMESPACE))
+        self.assertEqual(pom.findtext("m:version", namespaces=NAMESPACE), "1.0.0")
+        self.assertEqual(pom.findtext("m:properties/m:prism.plugin.sdk.version", namespaces=NAMESPACE), "0.1.0-SNAPSHOT")
+        self.assertNotIn(extension, reactor_modules())
+        self.assertNotIn("prism-connectivity", set().union(*(set(module_dependency_scopes(module)) for module in REACTOR_MODULES)))
+
     def test_migrations_resources_only_and_support_has_real_tests(self):
         migrations = ROOT / "prism-db-migrations"
         self.assertTrue(tuple((migrations / "src/main/resources/db/migration").glob("V*__*.sql")))
@@ -303,7 +357,7 @@ class ModuleSelectionTests(unittest.TestCase):
         self.assertFalse((ROOT / "prism-app/src/main/resources/db/migration").exists())
 
     def test_environment_requires_literal_booleans(self):
-        self.assertEqual(set(CHANGE_FLAGS), {"build", *MODULE_PATHS})
+        self.assertEqual(set(CHANGE_FLAGS), {"build", "extensions", *MODULE_PATHS})
         for flag in CHANGE_FLAGS:
             self.assertEqual(changes_from_env(environment_for(flag)), {
                 name: name == flag for name in CHANGE_FLAGS
@@ -364,6 +418,34 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn("COPY pom.xml ./", build_stage)
         self.assertIn("-DskipTests -pl prism-app -am package", build_stage)
 
+    def test_independent_diagnostic_image_stage_builds_only_against_sdk(self):
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        plugin_stage = dockerfile.split(" AS connectivity\n", 1)[1].split("\nFROM ", 1)[0]
+        self.assertIn("COPY pom.xml /sdk/pom.xml", plugin_stage)
+        self.assertIn("COPY prism-plugin-sdk /sdk/prism-plugin-sdk", plugin_stage)
+        self.assertIn("COPY extensions/connectivity-diagnostic ./", plugin_stage)
+        self.assertIn("-f /sdk/pom.xml -N install", plugin_stage)
+        self.assertIn("-f /sdk/prism-plugin-sdk/pom.xml -DskipTests install", plugin_stage)
+        self.assertIn("-f /extension/pom.xml -DskipTests verify", plugin_stage)
+        self.assertNotIn("prism-app", plugin_stage)
+        self.assertNotIn("prism-plugin-host", plugin_stage)
+        self.assertIn("COPY --from=connectivity /extension/target/catalog.json /extension/target/prism-connectivity-1.0.0.prismplugin /app/bundled-plugins/", dockerfile)
+        self.assertIn("VOLUME [\"/app/plugin-state\"]", dockerfile)
+        self.assertIn("ENV PLUGIN_CATALOG_DIR=/app/bundled-plugins", dockerfile)
+        self.assertIn("PLUGIN_INSTALL_DIR=/app/plugin-state", dockerfile)
+        self.assertEqual(dockerfile.count("target=/root/.m2,sharing=locked"), 2)
+
+    def test_compose_has_independent_writable_state_and_retains_legacy_read_only_mount(self):
+        compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
+        self.assertIn("PLUGIN_CATALOG_DIR: /app/bundled-plugins", compose)
+        self.assertIn("PLUGIN_INSTALL_DIR: /app/plugin-state", compose)
+        self.assertIn("- ./plugins:/app/plugins:ro", compose)
+        self.assertIn("- pluginstate:/app/plugin-state", compose)
+        self.assertNotIn("- pluginstate:/app/plugin-state:ro", compose)
+        self.assertIn("  pluginstate:\n    name: prism-llm_pluginstate", compose)
+        for header in ("            backend:", "            build:"):
+            self.assertIn("- 'docker-compose.yml'", yaml_block(self.filters, header))
+
     def test_ci_execution_changes_trigger_backend_and_full_regression(self):
         for header in ("            backend:", "            build:"):
             block = yaml_block(self.filters, header)
@@ -377,7 +459,7 @@ class WorkflowWiringTests(unittest.TestCase):
         actual = dict(re.findall(r"^          (CHANGED_\w+): (.+)$", environment, re.M))
         expected = {
             f"CHANGED_{flag.upper()}": f"${{{{ needs.changes.outputs.{flag} }}}}"
-            for flag in {"build", *MODULE_PATHS}
+            for flag in {"build", "extensions", *MODULE_PATHS}
         }
         self.assertEqual(actual, expected)
         self.assertIn("FULL_REGRESSION: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}", environment)
@@ -414,6 +496,36 @@ class WorkflowWiringTests(unittest.TestCase):
         self.assertIn('-DexcludedGroups="$excluded"', app)
         self.assertEqual(app.count("-DfailIfNoTests=true"), 2)
         self.assertNotIn("-Dgroups", app)
+
+    def test_real_connectivity_package_is_verified_before_app_and_passed_as_catalog_fixture(self):
+        package = yaml_block(self.backend, "      - name: Verify official connectivity package and app fixture")
+        app = yaml_block(self.backend, "      - name: Test app module")
+        self.assertIn("        if: steps.modules.outputs.app_tests == 'true'", package)
+        self.assertIn("-f extensions/connectivity-diagnostic/pom.xml verify", package)
+        self.assertNotIn("-DskipTests", package)
+        self.assertIn("ci_test_report.py run extensions --", package)
+        self.assertLess(self.backend.index("Compile backend"), self.backend.index("Verify official connectivity package"))
+        self.assertLess(self.backend.index("Verify official connectivity package"), self.backend.index("Test app module"))
+        environment = yaml_block(app, "        env:")
+        self.assertIn("PRISM_TEST_PLUGIN_CATALOG_DIR: ${{ github.workspace }}/extensions/connectivity-diagnostic/target", environment)
+        self.assertNotIn("${{", package.split("        run: ", 1)[1])
+        reports = yaml_block(self.backend, "      - name: Preserve backend test reports")
+        self.assertNotIn(".prismplugin", reports)
+        self.assertNotIn("catalog.json", reports)
+
+    def test_official_plugin_package_is_exercised_by_the_host_component_test(self):
+        package = yaml_block(self.backend, "      - name: Verify official connectivity package and app fixture")
+        host_test = yaml_block(self.backend, "      - name: Test official plugin package in host")
+        app = yaml_block(self.backend, "      - name: Test app module")
+        self.assertIn("        if: steps.modules.outputs.app_tests == 'true'", host_test)
+        self.assertIn("-pl prism-plugin-host surefire:test", host_test)
+        self.assertIn("-Dtest=OfficialPluginPackageComponentTest", host_test)
+        self.assertIn('"$GITHUB_WORKSPACE/extensions/connectivity-diagnostic/target"', host_test)
+        self.assertIn("-DfailIfNoTests=true", host_test)
+        self.assertIn("OfficialPluginPackageComponentTest.xml", host_test)
+        self.assertIn("tests > 0 and skipped == 0", host_test)
+        self.assertLess(self.backend.index(package), self.backend.index(host_test))
+        self.assertLess(self.backend.index(host_test), self.backend.index(app))
 
     def test_extensions_keep_verify_and_main_full_baseline(self):
         step = yaml_block(self.backend, "      - name: Test optional quota providers")
@@ -454,6 +566,9 @@ class WorkflowWiringTests(unittest.TestCase):
             (("admin", "protocol", "channel"), "prism-protocol,prism-channel,prism-routing,prism-request-log,prism-admin", "", False),
             (("shared",), ALL_UPSTREAM, "", False),
             (("protocol", "channel"), "prism-protocol,prism-channel,prism-routing,prism-request-log", "channel|protocol", False),
+            (("extensions",), "prism-plugin-host", "channel", False),
+            (("pluginhost",), "prism-plugin-host", "channel", False),
+            (("pluginsdk", "protocol"), "prism-plugin-sdk,prism-plugin-host,prism-protocol,prism-routing,prism-request-log", "channel|protocol", False),
             (("channel",), ALL_UPSTREAM, "", True),
             ((), ALL_UPSTREAM, "", True),
         )
@@ -476,7 +591,7 @@ class WorkflowWiringTests(unittest.TestCase):
             output = Path(directory) / "github-output"
             sentinel = Path(directory) / "must-not-exist"
             payload = f'true"; touch "{sentinel}"; #\napp_tags=channel'
-            for name in ("CHANGED_ADMIN", "FULL_REGRESSION"):
+            for name in ("CHANGED_ADMIN", "CHANGED_PLUGINHOST", "CHANGED_EXTENSIONS", "FULL_REGRESSION"):
                 output.write_text("existing=preserved\n", encoding="utf-8")
                 environment = {**os.environ, **environment_for("admin"), "GITHUB_OUTPUT": str(output), name: payload}
                 result = self.run_resolver(environment)

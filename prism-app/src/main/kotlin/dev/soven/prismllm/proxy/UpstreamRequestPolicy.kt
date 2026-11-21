@@ -95,8 +95,9 @@ class UpstreamRequestPolicy(
     }
     private val profile = layers.asReversed().firstNotNullOfOrNull { it.headerProfile } ?: "auto"
 
-    fun applyHeaders(builder: HttpRequestBuilder) {
+    fun applyHeaders(builder: HttpRequestBuilder, protectedHeaders: Set<String> = emptySet()) {
         resolvedHeaders().forEach { (name, value) ->
+            if (name in protectedHeaders) return@forEach
             builder.headers.remove(name)
             // An explicit empty UA prevents the Java engine from supplying its own default identity.
             if (name == "user-agent" && value == null) builder.headers.append(name, "")

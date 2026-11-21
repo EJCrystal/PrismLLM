@@ -317,6 +317,7 @@ class GracefulShutdownIntegrationTest : GatewayIntegrationTestBase() {
                     "COOKIE_SECURE" to "false",
                     "REQUEST_LOG_CLEANUP_ENABLED" to "false",
                     "UPSTREAM_HEADER_REFRESH_ENABLED" to "false",
+                    "MODEL_PRICE_CATALOG_ENABLED" to "false",
                     "KEY_AUTO_RECOVERY_INTERVAL_MS" to config.keyAutoRecoveryIntervalMs.toString(),
                     "MANXUE_ENABLED" to "false",
                     "WEB_SEARCH_ENABLED" to "false",

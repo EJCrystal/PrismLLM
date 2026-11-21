@@ -44,6 +44,7 @@ import kotlin.test.assertTrue
 @Tag("shard-4")
 @Tag("channel")
 class AdminChannelIntegrationTest : GatewayIntegrationTestBase() {
+    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `configured key order wins when canonical id maps to a different upstream model name`() = runBlocking {

@@ -1,11 +1,66 @@
 package dev.soven.prismllm.proxy
 
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.binder.MeterBinder
 import org.junit.jupiter.api.Tag
 import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 @Tag("unit")
 class GatewayMetricsTest {
+    @Test
+    fun `close releases owned binders before the registry exactly once`() {
+        val metrics = GatewayMetrics()
+        val events = mutableListOf<String>()
+        val binder = object : MeterBinder, AutoCloseable {
+            override fun bindTo(registry: MeterRegistry) {
+                registry.counter("test.binder").increment()
+            }
+
+            override fun close() {
+                assertTrue(!metrics.registry.isClosed, "the registry must remain open while binders close")
+                events += "binder"
+            }
+        }
+        binder.bindTo(metrics.registry)
+        metrics.ownBinders(listOf(binder))
+
+        metrics.close()
+        metrics.close()
+
+        assertEquals(listOf("binder"), events)
+        assertTrue(metrics.registry.isClosed)
+    }
+
+    @Test
+    fun `close attempts every binder and closes the registry after failures`() {
+        val metrics = GatewayMetrics()
+        val events = mutableListOf<String>()
+        val firstFailure = IllegalStateException("first binder failed")
+        val secondFailure = IllegalArgumentException("second binder failed")
+        fun binder(name: String, failure: RuntimeException) = object : MeterBinder, AutoCloseable {
+            override fun bindTo(registry: MeterRegistry) = Unit
+
+            override fun close() {
+                assertTrue(!metrics.registry.isClosed)
+                events += name
+                throw failure
+            }
+        }
+        metrics.ownBinders(listOf(binder("first", firstFailure), binder("second", secondFailure)))
+
+        val failure = assertFailsWith<IllegalStateException> { metrics.close() }
+        metrics.close()
+
+        assertSame(firstFailure, failure)
+        assertEquals(listOf(secondFailure), failure.suppressed.toList())
+        assertEquals(listOf("first", "second"), events)
+        assertTrue(metrics.registry.isClosed)
+    }
+
     @Test
     fun `exports request outcomes latency quota and upstream health`() {
         val metrics = GatewayMetrics()

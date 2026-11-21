@@ -76,7 +76,7 @@ class ProxyAttemptLoggingIntegrationTest {
             "ADMIN_PASSWORD" to "test-password",
             "CONNECT_TIMEOUT_MS" to "1000",
             "TOTAL_TIMEOUT_MS" to "5000",
-        )).copy(retention = RetentionPolicy(cleanupEnabled = false), upstreamHeaderRefreshEnabled = false)
+        )).copy(retention = RetentionPolicy(cleanupEnabled = false), upstreamHeaderRefreshEnabled = false, modelPriceCatalogEnabled = false)
         app = GatewayApplication(config)
         app.databaseFactory.migrate()
         val generated = ClientKeyHasher.generate()

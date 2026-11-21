@@ -1,5 +1,6 @@
 package dev.soven.prismllm.integration
 
+import com.zaxxer.hikari.HikariDataSource
 import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.shared.domain.GatewayProtocol
@@ -62,6 +63,7 @@ import kotlin.test.assertFailsWith
 @Tag("channel")
 @Tag("protocol")
 class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
+    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `protocol authentication overrides apply per outbound protocol and legacy auth remains fallback`() = runBlocking {
@@ -773,7 +775,12 @@ class UpstreamOverridesIntegrationTest : GatewayIntegrationTestBase() {
         try {
             val repository = UpstreamRequestSettingsRepository(failingFactory.database)
             val saved = repository.save(UpstreamRequestOverrides(userAgent = "working-UA"))
-            failingFactory.close()
+            // Keep Exposed registered so this exercises a connection failure, not a disposed database.
+            val dataSource = DatabaseFactory::class.java.getDeclaredField("dataSource").let { field ->
+                field.isAccessible = true
+                field.get(failingFactory) as HikariDataSource
+            }
+            dataSource.close()
             assertSame(saved, repository.load(), "缓存命中不应访问数据库")
             assertFailsWith<java.sql.SQLException> { repository.save(UpstreamRequestOverrides(userAgent = "failed-UA")) }
             assertSame(saved, repository.load(), "失败的写入不应替换快照")

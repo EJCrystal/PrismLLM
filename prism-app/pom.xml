@@ -9,6 +9,9 @@
     <artifactId>prism-app</artifactId>
     <name>PrismLLM :: Application</name>
     <description>网关组合根：HTTP API、路由编排、持久化与领域模块。</description>
+    <properties>
+        <argLine>-Xmx3g</argLine>
+    </properties>
     <dependencies>
         <dependency>
             <groupId>dev.soven</groupId>
@@ -22,6 +25,10 @@
         <dependency>
             <groupId>dev.soven</groupId>
             <artifactId>prism-shared</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>dev.soven</groupId>
+            <artifactId>prism-plugin-host</artifactId>
         </dependency>
         <dependency>
             <groupId>dev.soven</groupId>

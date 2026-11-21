@@ -559,7 +559,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("77", result.getString(1))
+                        assertEquals("79", result.getString(1))
                     }
                     statement.executeQuery("select model_mapping_revision from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1042,7 +1042,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            migrateTo(migrationUrl, "77")
+            migrateTo(migrationUrl, "78")
 
             val legacy = ClientKeyRecord(
                 id = "legacy-client",
@@ -1200,7 +1200,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 OAuthAccountRepository(database.database, OAuthProviderChannelLookup()).listAll().associateBy { it.id }
             }
 
-            migrateTo(migrationUrl, "77")
+            migrateTo(migrationUrl, "78")
 
             val policies = listOf(
                 ClientKeyAccessPolicy(
@@ -1265,7 +1265,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 connection.createStatement().use { statement ->
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("77", result.getString(1))
+                        assertEquals("78", result.getString(1))
                     }
                     statement.executeQuery("select id, model_mapping_revision, key_disable_policy_revision, updated_at from channels order by id").use { result ->
                         for (id in listOf("v69-provider", "v69-static")) {

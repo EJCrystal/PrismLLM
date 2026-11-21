@@ -48,6 +48,7 @@ import kotlin.test.assertTrue
 @Tag("shard-1")
 @Tag("channel")
 class ChannelKeyPoolIntegrationTest : GatewayIntegrationTestBase() {
+    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `temporary key blocked by probe lease reports the later recovery time`() = runBlocking {

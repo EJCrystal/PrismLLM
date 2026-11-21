@@ -38,6 +38,7 @@ import dev.soven.prismllm.repo.PricingChannelNames
 import dev.soven.prismllm.repo.RequestLogCurrentNames
 import dev.soven.prismllm.repo.ModelCredentialRouteRepository
 import dev.soven.prismllm.repo.RoutingConfigurationSnapshotRepository
+import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.quota.persistence.ClientKeyRepository
 import dev.soven.prismllm.quota.persistence.ClientKeyQuotaRepository
@@ -124,6 +125,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.put
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
 import java.net.URI
@@ -285,11 +287,19 @@ private fun escapeLogValue(value: String, maxLength: Int): String {
  * @author 文杰
  * @since 2026-10-21
  */
-class GatewayApplication(
+class GatewayApplication internal constructor(
     val config: GatewayConfig,
-    notificationTransport: NotificationTransport? = null,
-    httpClientOverride: HttpClient? = null,
+    notificationTransport: NotificationTransport?,
+    httpClientOverride: HttpClient?,
+    internal val oauthDiagnosticPreparationTimeoutMs: Long,
+    internal val oauthDiagnosticNanoTime: () -> Long = System::nanoTime,
 ) : AutoCloseable {
+    constructor(
+        config: GatewayConfig,
+        notificationTransport: NotificationTransport? = null,
+        httpClientOverride: HttpClient? = null,
+    ) : this(config, notificationTransport, httpClientOverride, OAUTH_DIAGNOSTIC_PREPARATION_TIMEOUT_MS)
+
     init {
         // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
         ProtocolConversion.selfCheck()
@@ -354,6 +364,14 @@ class GatewayApplication(
     private var channelHealthIndexJob: Job? = null
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
+    val pluginInstallationRepository = dev.soven.prismllm.admin.persistence.PluginInstallationRepository(databaseFactory.database)
+    internal val connectivitySettingsLock = ConnectivitySettingsLock(databaseFactory.database)
+    private val pluginInstallationStore = PluginInstallationStoreAdapter(pluginInstallationRepository, databaseFactory.database, connectivitySettingsLock)
+    val pluginRuntime = dev.soven.prismllm.plugin.host.PluginRuntime(
+        catalog = dev.soven.prismllm.plugin.host.PluginCatalog(config.pluginCatalogDir),
+        managedDirectory = config.pluginInstallDir,
+        store = pluginInstallationStore,
+    )
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
@@ -481,7 +499,7 @@ class GatewayApplication(
         timeoutMs = config.iqJudgeTimeoutMs,
     )
 
-    val modelPriceReferenceService = ModelPriceReferenceService(httpClient)
+    val modelPriceReferenceService = ModelPriceReferenceService(httpClient, dynamicCatalogEnabled = config.modelPriceCatalogEnabled)
     val upstreamHeaderCatalogService = UpstreamHeaderCatalogService(
         httpClient = httpClient,
         repository = upstreamHeaderCatalogRepository,
@@ -509,15 +527,14 @@ class GatewayApplication(
      * Code Assist 的管理请求也必须像 Antigravity 客户端一样带上 UA；
      * 版本由全局请求头目录统一刷新，目录不可用时退回内置值。
      */
-    private val antigravityUserAgent: () -> String = {
-        upstreamHeaderCatalogService.profiles()
-            .firstOrNull { it.id == "antigravity" }
-            ?.headers?.get("User-Agent")
-            ?.takeIf(String::isNotBlank)
-            ?: dev.soven.prismllm.proxy.codeassist.DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT
-    }
-    /** 当前 Antigravity 客户端 UA；管理面的连通性测试与数据面使用同一份目录版本。 */
-    fun currentAntigravityUserAgent(): String = antigravityUserAgent()
+    private val antigravityUserAgent: () -> String = { currentAntigravityUserAgent() }
+    /** 允许请求复用已捕获的目录快照，避免准备期间刷新后混用两个版本。 */
+    fun currentAntigravityUserAgent(
+        profiles: List<UpstreamHeaderProfile> = upstreamHeaderCatalogService.profiles(),
+    ): String = profiles.firstOrNull { it.id == "antigravity" }
+        ?.headers?.get("User-Agent")
+        ?.takeIf(String::isNotBlank)
+        ?: dev.soven.prismllm.proxy.codeassist.DEFAULT_ANTIGRAVITY_CODE_ASSIST_USER_AGENT
 
     /** Antigravity 的 Code Assist project/tier 发现与缓存。 */
     val codeAssistProjectResolver = CodeAssistProjectResolver(
@@ -588,6 +605,22 @@ class GatewayApplication(
         runBlocking { upstreamRequestSettingsRepository.load() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
+        runBlocking {
+            try {
+                pluginRuntime.initialize(
+                    bootstrapId = CONNECTIVITY_PLUGIN_ID,
+                    initialConfiguration = {
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("defaultPrompt", modelTestSettingsRepository.loadInTransaction().defaultPrompt)
+                        }
+                    },
+                )
+            } catch (cause: CancellationException) {
+                throw cause
+            } catch (cause: Exception) {
+                logger.warn("诊断插件初始化失败，核心转发仍可使用；请检查插件页面和安装目录", cause)
+            }
+        }
         // 每次启动都处理 V54 留下的待搬迁账号；逐账号清除标记，上次失败的重启后继续。
         runBlocking { providerChannelProvisioner.reconcile() }
         runBlocking { candidateCooldown.restore(cooldownStateRepository.loadAll()) }
@@ -702,6 +735,17 @@ class GatewayApplication(
                     cause.status,
                 )
             }
+            exception<dev.soven.prismllm.plugin.host.PluginHostException> { call, cause ->
+                call.markAdminAuditError(cause.code)
+                if (!call.response.isCommitted) {
+                    call.respondGatewayError(
+                        HttpStatusCode.fromValue(cause.statusCode),
+                        cause.code,
+                        cause.message ?: "诊断插件不可用",
+                        "invalid_request_error",
+                    )
+                }
+            }
             exception<Throwable> { call, cause ->
                 call.markAdminAuditError("internal_error")
                 logger.error("unhandled request error", cause)
@@ -758,6 +802,7 @@ class GatewayApplication(
         }
         app.install(MicrometerMetrics) {
             registry = metrics.registry
+            metrics.ownBinders(meterBinders)
         }
 
         app.routing {
@@ -867,7 +912,9 @@ class GatewayApplication(
         runBlocking { notificationRuntime.closeAndDrain() }
         (notificationSender as? AutoCloseable)?.close()
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
+        pluginRuntime.close()
         oauthQuotaService.close()
+        runBlocking { oauthTokenService.drainRefreshes() }
         oauthTokenService.close()
         scope.cancel()
         iqJudgeService.close()
@@ -879,7 +926,11 @@ class GatewayApplication(
         searchHttpClient.close()
         channelQuotaService.close()
         channelQuotaProviderRegistry.close()
-        databaseFactory.close()
+        try {
+            metrics.close()
+        } finally {
+            databaseFactory.close()
+        }
     }
 
     companion object {
