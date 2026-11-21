@@ -30,7 +30,6 @@ import dev.soven.prismllm.oauth.infra.OAuthAccountDenyReason
 import dev.soven.prismllm.oauth.infra.OAuthRefreshException
 import dev.soven.prismllm.oauth.OAuthTokenUnavailableException
 import dev.soven.prismllm.oauth.OAuthUnavailableReason
-import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.parseCodexQuotaHeaders
 import dev.soven.prismllm.oauth.domain.parseRateLimitResetMs
 import dev.soven.prismllm.oauth.infra.proxyAddress
@@ -1336,8 +1335,7 @@ private suspend fun searchChatCaller(
 ): ChatCaller {
     val upstreamProtocol = GatewayProtocol.CHAT_COMPLETIONS
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
-    val acquired = decryptBoundCredential(app, candidate)
-    val credential = acquired.value
+    val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
@@ -1424,8 +1422,7 @@ private suspend fun proxyStream(
         stream = true,
         envelope = envelope,
     )
-    val acquired = decryptBoundCredential(app, candidate)
-    val credential = acquired.value
+    val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
@@ -1450,7 +1447,7 @@ private suspend fun proxyStream(
     }
     val bodyJson = policy.body(usageRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
-    val egressProxy = accountEgressProxy(app, candidate.copy(credential = acquired.account ?: candidate.credential))
+    val egressProxy = accountEgressProxy(app, candidate)
     // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
     // 发现 + 目录合计最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
     val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
@@ -1458,7 +1455,7 @@ private suspend fun proxyStream(
         System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
-            app.codeAssistProjectResolver.context(checkNotNull(acquired.account), credential, egressProxy)
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
         }
     } else {
         null
@@ -1736,8 +1733,7 @@ private suspend fun proxyJson(
         candidate.upstreamModel,
         envelope = envelope,
     )
-    val acquired = decryptBoundCredential(app, candidate)
-    val credential = acquired.value
+    val credential = decryptCredential(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
@@ -1757,7 +1753,7 @@ private suspend fun proxyJson(
     val nonStreamRequest = withUpstreamStreamFlag(convertedRequest, upstreamProtocol, stream = false)
     val bodyJson = policy.body(nonStreamRequest, candidate.upstreamModel, app.config.requestBodyLimitBytes)
     // 账号出口：OAuth 账号配置了 proxy_url 时，发现、目录与对话请求都必须走同一个代理。
-    val egressProxy = accountEgressProxy(app, candidate.copy(credential = acquired.account ?: candidate.credential))
+    val egressProxy = accountEgressProxy(app, candidate)
     // 准备阶段（project 发现、目录补拉）与对话请求共用同一份剩余预算：
     // 发现 + 目录合计最多花掉 min(剩余预算, 20s)，对话阶段只拿剩下的部分。
     val callDeadlineNanos = System.nanoTime() + timeoutMs * 1_000_000
@@ -1765,7 +1761,7 @@ private suspend fun proxyJson(
         System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
-            app.codeAssistProjectResolver.context(checkNotNull(acquired.account), credential, egressProxy)
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
         }
     } else {
         null
@@ -2009,16 +2005,8 @@ private fun accountEgressProxy(app: GatewayApplication, candidate: RouteCandidat
     }
 }
 
-private class BoundUpstreamCredential(val value: String, val account: OAuthAccountRecord? = null)
-
-private suspend fun decryptBoundCredential(app: GatewayApplication, candidate: RouteCandidate): BoundUpstreamCredential = try {
-    val oauth = candidate.oauthAccount
-    if (oauth == null) BoundUpstreamCredential(app.oauthTokenService.resolveCredential(candidate.credential))
-    else {
-        val bound = app.oauthTokenService.accessTokenWithSnapshot(oauth.id)
-            ?: throw OAuthTokenUnavailableException(OAuthUnavailableReason.REAUTH_REQUIRED, "订阅账号已删除")
-        BoundUpstreamCredential(bound.token.accessToken, bound.account)
-    }
+private suspend fun decryptCredential(app: GatewayApplication, candidate: RouteCandidate): String = try {
+    app.oauthTokenService.resolveCredential(candidate.credential)
 } catch (cause: CancellationException) {
     throw cause
 } catch (cause: OAuthTokenUnavailableException) {

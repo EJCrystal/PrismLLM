@@ -5,7 +5,6 @@ import dev.soven.prismllm.testsupport.db.TestDatabase
 import dev.soven.prismllm.channel.persistence.ChannelModels
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
-import dev.soven.prismllm.oauth.domain.OAuthAuthState
 import dev.soven.prismllm.oauth.persistence.OAuthAccounts
 import dev.soven.prismllm.oauth.persistence.OAuthAccountModels
 import dev.soven.prismllm.oauth.persistence.OAuthAccountChannels
@@ -599,59 +598,6 @@ class ProviderChannelProvisionerTest {
         provisioner.syncModelUnion(OAuthProvider.CHATGPT)
         if (!deleteKnownAccount) assertTrue(other.syncModelCatalog(known.id, emptyList()))
         assertEquals(after, shared(), "repeated sync must not advance the mapping revision")
-    }
-
-    @Test
-    fun `stale catalog snapshot does not provision a missing provider channel`() = runBlocking {
-        val account = account()
-        val fetchedWith = accounts.findDetailed(account.id)!!
-        assertNull(channels.findProviderChannel(OAuthProvider.CHATGPT))
-
-        accounts.updateCredentials(account.id, dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate(
-            provider = account.provider,
-            refreshToken = cipher.encrypt("replacement-authorization"),
-        ), now = fetchedWith.authorizedAt + 1_000)
-        val current = accounts.findDetailed(account.id)!!
-
-        assertFalse(provisioner.syncModelCatalog(
-            account.id,
-            listOf(OAuthAccountModelCatalogEntry("stale-catalog")),
-            expectedAccount = fetchedWith,
-        ))
-        assertNull(channels.findProviderChannel(OAuthProvider.CHATGPT), "a rejected stale snapshot must not commit a new channel")
-        assertNull(accounts.findDetailed(account.id)!!.modelCatalog)
-
-        assertTrue(provisioner.syncModelCatalog(
-            account.id,
-            listOf(OAuthAccountModelCatalogEntry("current-catalog")),
-            expectedAccount = current,
-        ))
-        assertEquals(listOf("current-catalog"), accounts.findDetailed(account.id)!!.modelCatalog!!.map { it.upstreamModel })
-        assertEquals(listOf("current-catalog"), providerChannel().models)
-    }
-
-    @Test
-    fun `catalog snapshot rejection preserves replacement catalog and current model grants`() = runBlocking {
-        val first = account()
-        sync(first, "old-model" to null, "still-authorized" to null)
-        assertNotNull(provisioner.updateSettings(first.id, models = listOf("still-authorized")))
-        val fetchedWith = accounts.findDetailed(first.id)!!
-        val before = shared()
-        accounts.updateCredentials(first.id, dev.soven.prismllm.oauth.persistence.OAuthAccountCredentialUpdate(
-            provider = first.provider,
-            refreshToken = cipher.encrypt("replacement-authorization"),
-        ), now = fetchedWith.authorizedAt + 1_000)
-        val current = accounts.findDetailed(first.id)!!
-        assertFalse(provisioner.syncModelCatalog(first.id,
-            listOf(OAuthAccountModelCatalogEntry("stale-catalog")), expectedAccount = fetchedWith))
-        assertEquals(current.modelCatalog, accounts.findDetailed(first.id)!!.modelCatalog)
-        assertEquals(current.models, accounts.findDetailed(first.id)!!.models)
-        assertEquals(before, shared(), "rejected fetch must not change the shared union or its revision")
-        assertTrue(provisioner.syncModelCatalog(first.id,
-            listOf(OAuthAccountModelCatalogEntry("new-catalog")), expectedAccount = current))
-        val accepted = accounts.findDetailed(first.id)!!
-        assertEquals(listOf("new-catalog"), accepted.modelCatalog!!.map { it.upstreamModel })
-        assertTrue("still-authorized" !in accepted.models, "an accepted current snapshot retains authorization pruning")
     }
 
     private suspend fun account(provider: OAuthProvider = OAuthProvider.CHATGPT, now: Long = System.currentTimeMillis()): OAuthAccountRecord = accounts.create(NewOAuthAccount(name = "account-" + UUID.randomUUID(), provider = provider, refreshToken = cipher.encrypt("refresh")), now)

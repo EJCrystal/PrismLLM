@@ -56,7 +56,6 @@ import kotlin.test.assertTrue
 @Tag("shard-2")
 @Tag("protocol")
 class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
-    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `marks usage unknown when upstream omits it`() = runBlocking {

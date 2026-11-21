@@ -13,7 +13,6 @@ import LogsView from './components/LogsView.vue'
 import UsageReportsView from './components/UsageReportsView.vue'
 import AdminAuditLogsView from './components/AdminAuditLogsView.vue'
 import SystemSettingsView from './components/SystemSettingsView.vue'
-import PluginMarketplaceView from './components/PluginMarketplaceView.vue'
 import AccountSettingsModal from './components/AccountSettingsModal.vue'
 import ThemeToggle from './components/ThemeToggle.vue'
 import InfoPopover from './components/InfoPopover.vue'
@@ -26,7 +25,6 @@ const navItems = [
   { id: 'logs', label: '请求日志', icon: 'logs' },
   { id: 'usage-reports', label: '用量报表', icon: 'chart' },
   { id: 'audit-logs', label: '操作审计', icon: 'shield' },
-  { id: 'plugins', label: '插件', icon: 'layers' },
   { id: 'system-config', label: '系统配置', icon: 'settings' },
 ] as const
 
@@ -59,10 +57,6 @@ const meta = {
     title: '操作审计',
     desc: '记录写操作与密钥自动禁用，仅追加、不可修改或删除。名称使用事件快照，不保存请求正文。',
   },
-  plugins: {
-    title: '插件',
-    desc: '管理受信任的诊断插件、能力授权与配置。安装和启用需重启生效，禁用立即停止新的诊断调用。',
-  },
   'system-config': {
     title: '系统配置',
     desc: '集中管理模型测试、上游请求、Web 搜索、密钥自动禁用与请求日志清理等全局设置，保存后立即生效。',
@@ -75,7 +69,6 @@ const view = ref<keyof typeof meta>('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
 const modelRoutesView = ref<InstanceType<typeof ModelRoutesView> | null>(null)
-const pluginMarketplaceView = ref<InstanceType<typeof PluginMarketplaceView> | null>(null)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
 const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
 /** 列表型页面：手机上统一成「工具条钉住 + 表格内部滚动」，避免列表末尾留下空白。 */
@@ -83,8 +76,7 @@ const isListView = computed(
   () =>
     isDataView.value ||
     view.value === 'oauth-accounts' ||
-    view.value === 'client-keys' ||
-    view.value === 'plugins',
+    view.value === 'client-keys',
 )
 
 async function restoreSession() {
@@ -98,9 +90,7 @@ async function restoreSession() {
 }
 
 function canLeaveCurrentView(): boolean {
-  if (view.value === 'model-routes') return modelRoutesView.value?.canLeave() !== false
-  if (view.value === 'plugins') return pluginMarketplaceView.value?.canLeave() !== false
-  return true
+  return view.value !== 'model-routes' || modelRoutesView.value?.canLeave() !== false
 }
 
 function onAuthenticated(authenticatedUser: MeResponse) {
@@ -256,7 +246,6 @@ onBeforeUnmount(() => {
         <LogsView v-else-if="view === 'logs'" />
         <UsageReportsView v-else-if="view === 'usage-reports'" />
         <AdminAuditLogsView v-else-if="view === 'audit-logs'" />
-        <PluginMarketplaceView v-else-if="view === 'plugins'" ref="pluginMarketplaceView" />
         <SystemSettingsView v-else-if="view === 'system-config'" />
       </main>
     </div>

@@ -101,7 +101,6 @@ class ModelPriceReferenceService(
      */
     private val staleFallbackDuration: Duration = Duration.ofDays(1),
     private val nanoTime: () -> Long = { System.nanoTime() },
-    private val dynamicCatalogEnabled: Boolean = true,
 ) {
     init {
         require(!cacheDuration.isZero && !cacheDuration.isNegative) {
@@ -217,7 +216,6 @@ class ModelPriceReferenceService(
      */
     @Synchronized
     fun start(scope: CoroutineScope): Job = refreshJob ?: scope.launch {
-        if (!dynamicCatalogEnabled) return@launch
         var needsInitialLoad = true
         while (isActive) {
             if (needsInitialLoad) {
@@ -291,7 +289,6 @@ class ModelPriceReferenceService(
     }
 
     private suspend fun currentCatalogState(): CatalogState? {
-        if (!dynamicCatalogEnabled) return null
         catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }
         loadDynamicCatalog()
         catalogCache.getIfPresent(CATALOG_CACHE_KEY)?.let { return it }

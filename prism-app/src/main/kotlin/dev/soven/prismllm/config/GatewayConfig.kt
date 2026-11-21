@@ -39,8 +39,6 @@ data class GatewayConfig(
     val upstreamHeaderRefreshIntervalMs: Long = 3_600_000,
     val upstreamHeaderCatalogUrl: String? = null,
     val upstreamHeaderRefreshEnabled: Boolean = true,
-    /** 是否联网加载 models.dev 参考目录；关闭时仍可查询内置官方基准价。 */
-    val modelPriceCatalogEnabled: Boolean = true,
     /** 可信额度插件 JAR 所在目录；不存在时视为空目录。 */
     val quotaPluginDir: Path = Path.of("plugins"),
     /** 智商检测的 HTML 作品是否交给满血AI 分类。关闭时 manxue 判分器不注册。 */
@@ -50,9 +48,6 @@ data class GatewayConfig(
     val iqDefaultJudge: String = "local",
     val iqJudgeTimeoutMs: Long = 60_000,
     val iqJudgePluginDir: Path = Path.of("plugins/iq-judges"),
-    /** 管理员受信任目录与独立可写安装区；不与旧 JAR 扩展混用。 */
-    val pluginCatalogDir: Path = Path.of("bundled-plugins"),
-    val pluginInstallDir: Path = Path.of("plugin-state"),
     /**
      * 智商检测单次等待上游的默认超时；为空时使用题目内置默认值（图形题 180 秒、推理题 120 秒）。
      * 单次检测的 timeoutMs 仍可覆盖它，但任何来源都不能超过 [IQ_TEST_TIMEOUT_MAX_MS]。
@@ -215,9 +210,6 @@ data class GatewayConfig(
                 upstreamHeaderRefreshEnabled = value("UPSTREAM_HEADER_REFRESH_ENABLED", "true")
                     .toBooleanStrictOrNull()
                     ?: error("UPSTREAM_HEADER_REFRESH_ENABLED 必须是 true 或 false"),
-                modelPriceCatalogEnabled = value("MODEL_PRICE_CATALOG_ENABLED", "true")
-                    .toBooleanStrictOrNull()
-                    ?: error("MODEL_PRICE_CATALOG_ENABLED 必须是 true 或 false"),
                 quotaPluginDir = Path.of(value("QUOTA_PLUGIN_DIR", "plugins")),
                 manxueEnabled = value("MANXUE_ENABLED", "true").toBooleanStrictOrNull()
                     ?: error("MANXUE_ENABLED 必须是 true 或 false"),
@@ -226,8 +218,6 @@ data class GatewayConfig(
                 iqDefaultJudge = iqDefaultJudge,
                 iqJudgeTimeoutMs = iqJudgeTimeoutMs,
                 iqJudgePluginDir = Path.of(value("IQ_JUDGE_PLUGIN_DIR", "plugins/iq-judges")),
-                pluginCatalogDir = Path.of(value("PLUGIN_CATALOG_DIR", "bundled-plugins")),
-                pluginInstallDir = Path.of(value("PLUGIN_INSTALL_DIR", "plugin-state")),
                 iqTestTimeoutMs = iqTestTimeoutMs,
                 trustedProxyNetworks = runCatching { TrustedProxyNetwork.parseList(value("TRUSTED_PROXY_CIDRS", "")) }
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },

@@ -5,7 +5,6 @@ import dev.soven.prismllm.shared.domain.Usage
 import io.micrometer.core.instrument.Timer
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Tags
-import io.micrometer.core.instrument.binder.MeterBinder
 import io.micrometer.prometheusmetrics.PrometheusConfig
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
 import java.util.concurrent.TimeUnit
@@ -17,35 +16,8 @@ import java.util.concurrent.atomic.AtomicReference
  * @author 文杰
  * @since 2026-10-21
  */
-class GatewayMetrics : AutoCloseable {
+class GatewayMetrics {
     val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
-    private val closeableBinders = mutableListOf<AutoCloseable>()
-    private var closed = false
-
-    @Synchronized
-    internal fun ownBinders(binders: List<MeterBinder>) {
-        check(!closed) { "metrics are already closed" }
-        closeableBinders += binders.filterIsInstance<AutoCloseable>()
-    }
-
-    @Synchronized
-    override fun close() {
-        if (closed) return
-        closed = true
-        var failure: Throwable? = null
-        fun closeResource(close: () -> Unit) {
-            try {
-                close()
-            } catch (error: Throwable) {
-                val previous = failure
-                if (previous == null) failure = error else if (previous !== error) previous.addSuppressed(error)
-            }
-        }
-        closeableBinders.forEach { closeResource(it::close) }
-        closeableBinders.clear()
-        closeResource(registry::close)
-        failure?.let { throw it }
-    }
     private val databaseReadyValue = AtomicReference(0.0)
     private val adminAuditWriteFailures =
         registry.counter("gateway_admin_audit_write_failures_total")
