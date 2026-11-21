@@ -176,26 +176,6 @@ class UpstreamRequestPolicyTest {
     }
 
     @Test
-    fun `diagnostic protection preserves host authentication against conflicting headers including removals`() {
-        for (replacement in listOf("Bearer synthetic-override", null)) {
-            val builder = HttpRequestBuilder()
-            builder.applyUpstreamAuthentication("bound-credential", "bearer", GatewayProtocol.RESPONSES)
-            val overrides = UpstreamRequestOverrides(headers = mapOf(
-                "aUtHoRiZaTiOn" to replacement,
-                "x-api-key" to "synthetic-extra-credential",
-                "Proxy-Authorization" to "synthetic-proxy-credential",
-                "X-Feature" to "kept-feature",
-            ))
-            UpstreamRequestPolicy(overrides, UpstreamRequestOverrides(), GatewayProtocol.RESPONSES, "bearer")
-                .applyHeaders(builder, protectedHeaders = MANAGED_HEADERS)
-            assertEquals(listOf("Bearer bound-credential"), builder.headers.getAll("Authorization"))
-            assertNull(builder.headers["x-api-key"])
-            assertNull(builder.headers["Proxy-Authorization"])
-            assertEquals("kept-feature", builder.headers["X-Feature"])
-        }
-    }
-
-    @Test
     fun `rejects illegal headers managed credentials transport headers and protected body fields at save time`() {
         val invalid = listOf(
             UpstreamRequestOverrides(userAgent = "ua\r\nX-Injected: yes"),

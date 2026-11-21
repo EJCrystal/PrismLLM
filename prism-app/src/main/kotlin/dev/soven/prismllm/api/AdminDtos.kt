@@ -1510,7 +1510,7 @@ fun IqTestRunRecord.toResponse(includeDetail: Boolean): IqTestRunResponse {
             // 旧版路由总会写入 judgeId；新版糖果题不再解析判分器，据此保留旧记录的结论与预览。
             evaluateLegacyCandy(responseText, verdict, expectedAnswer, matchedAnswer)
         } else {
-            val displayed = evaluateIqTest(
+            evaluateIqTest(
                 benchmark = benchmarkType,
                 success = success,
                 responseText = responseText,
@@ -1521,19 +1521,6 @@ fun IqTestRunRecord.toResponse(includeDetail: Boolean): IqTestRunResponse {
                 answerType = answerType,
                 expectedAnswerValue = expectedAnswerValue,
             )
-            if (benchmarkType == IqBenchmark.CANDY) {
-                // Grading used the bounded original answer. History contains only redacted text,
-                // so rebuilding detail must retain the persisted verdict rather than grade again.
-                displayed.copy(
-                    verdict = IqVerdict.entries.firstOrNull { it.value == verdict } ?: displayed.verdict,
-                    checks = if (displayed.verdict.value == verdict) displayed.checks else listOf(
-                        IqStructureCheck("answer", "本地答案判定", verdict == "passed", "按检测时的原始答案判定；展示文本已脱敏"),
-                    ),
-                    expectedAnswer = expectedAnswer,
-                    matchedAnswer = matchedAnswer,
-                    actualAnswer = actualAnswer,
-                )
-            } else displayed
         }
     } else {
         null

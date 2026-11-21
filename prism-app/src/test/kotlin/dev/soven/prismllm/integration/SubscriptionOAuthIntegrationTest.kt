@@ -71,7 +71,6 @@ import kotlin.test.assertTrue
 @Tag("shard-2")
 @Tag("channel")
 class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
-    override val requiresConnectivityPluginPackage = true
 
     @Test
     fun `shared mappings GET is authenticated provider scoped and never provisions or calls upstream`() = runBlocking {

@@ -10,9 +10,6 @@ from collections.abc import Mapping
 CHANGE_FLAGS = (
     "build",
     "shared",
-    "pluginsdk",
-    "pluginhost",
-    "extensions",
     "protocol",
     "channel",
     "routing",
@@ -26,8 +23,6 @@ CHANGE_FLAGS = (
 )
 
 DIRECT_MODULES = (
-    ("pluginsdk", "prism-plugin-sdk"),
-    ("pluginhost", "prism-plugin-host"),
     ("protocol", "prism-protocol"),
     ("channel", "prism-channel"),
     ("resilience", "prism-resilience"),
@@ -42,8 +37,6 @@ DIRECT_MODULES = (
 ALL_UPSTREAM_MODULES = (
     "prism-test-support",
     "prism-shared",
-    "prism-plugin-sdk",
-    "prism-plugin-host",
     "prism-protocol",
     "prism-channel",
     "prism-routing",
@@ -66,14 +59,6 @@ def resolve_modules(changes: Mapping[str, bool], full_regression: bool = False) 
         app_tests = True
     else:
         selected = {module for flag, module in DIRECT_MODULES if flag in changed}
-        if "pluginsdk" in changed:
-            selected.add("prism-plugin-host")
-        # Plugin-host changes reach the app composition adapter through the Maven graph.
-        # Independently built extensions are absent from the reactor graph.
-        # Exercise the host package boundary and existing channel regressions
-        # without promoting an extension-only PR to every slow app integration.
-        if "extensions" in changed:
-            selected.add("prism-plugin-host")
         if changed & {"channel", "protocol", "routing"}:
             selected.add("prism-routing")
         # Request-log consumes pricing in production and protocol in its tests.
@@ -83,12 +68,10 @@ def resolve_modules(changes: Mapping[str, bool], full_regression: bool = False) 
         # App-only changes do not rerun component tests moved to domain owners.
         # Support also runs only for shared/build/full changes, not every consumer.
         app_tests = bool(modules) or "app" in changed
-        # All non-integration tests still run. Keep the original protocol /
-        # channel integration trimming, adding the trusted plugin boundary to
-        # the channel scope. Mixed full-app owners continue to override it.
+        # All non-integration tests still run. Added downstream tests do not
+        # broaden or narrow the existing pure channel/protocol app selection.
         if not changed & FULL_APP_FLAGS:
-            channel_scope = bool(changed & {"channel", "pluginsdk", "pluginhost", "extensions"})
-            app_tags = "|".join(tag for tag, enabled in (("channel", channel_scope), ("protocol", "protocol" in changed)) if enabled)
+            app_tags = "|".join(flag for flag in ("channel", "protocol") if flag in changed)
     return {
         "modules": ",".join(modules),
         "app_tests": "true" if app_tests else "false",
