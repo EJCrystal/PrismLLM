@@ -15,6 +15,11 @@
       "finding_id": "e936ca18cc14",
       "reason": "PR #220 历史费用混算误报：生产库实证 request_logs 31,773 条非空费用记录全部 cost_currency='USD'（零 CNY/EUR 行，cost_amount IS NULL 的行被 sum 忽略），model_prices/model_default_prices 也仅 USD，不存在可混算的数据，加 WHERE cost_currency='USD' 是死代码。正文 token（cost_currency/cost_amount/costUsd）无点号，stale 检测失效导致永久 ACTIVE。已在线程回复附实证（comment 6790384541）。",
       "expires": "2026-12-31"
+    },
+    {
+      "finding_id": "1a1a8c0521ab",
+      "reason": "PR #262 授权请求覆盖误报：web/test/pluginContract.test.js 保留真实 API 方法并在 fetch 层断言 install/enable/configure 的请求体，包括 expectedSha256、expectedRevision、installedVersion；组件测试里的 API 替身不承担传输契约验证，因此该 finding 指出的缺失不存在。已在线程回复证据（comment 7055444847）。",
+      "expires": "2026-12-31"
     }
   ]
 }
