@@ -1761,6 +1761,52 @@ class ConnectivityPluginIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun channelOAuthDisableDuringSettingsPreparationCannotRefresh() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val session = client.adminSession()
+            val channel = directOAuthChannel("oauth-disable-during-settings")
+            val account = oauthAccount("oauth-disable-during-settings", OAuthProvider.CHATGPT, listOf("gpt-6-luna"), listOf(channel.id), cached = false)
+            val settings = app.upstreamRequestSettingsRepository
+            val tokens = assertNotNull(app.oauthTokenProviders.find(OAuthProvider.CHATGPT))
+            val entered = CompletableDeferred<Unit>()
+            val release = CompletableDeferred<Unit>()
+            val refreshes = AtomicInteger()
+            mockkObject(settings)
+            mockkObject(tokens)
+            coEvery { settings.load() } coAnswers {
+                val loaded = callOriginal()
+                entered.complete(Unit)
+                release.await()
+                loaded
+            }
+            coEvery { tokens.refresh(any(), any()) } coAnswers {
+                refreshes.incrementAndGet()
+                error("A disabled plugin must not start OAuth refresh")
+            }
+            try {
+                coroutineScope {
+                    val response = async {
+                        client.invokePlugin(session, "channel", channel.id,
+                            values("gpt-6-luna", GatewayProtocol.RESPONSES, keyId = account.id))
+                    }
+                    withTimeout(5_000) { entered.await() }
+                    assertFalse(app.pluginRuntime.disable(PLUGIN_ID).admissionEnabled)
+                    release.complete(Unit)
+                    withTimeout(5_000) { response.await() }.assertError(HttpStatusCode.Conflict, "PLUGIN_DISABLED")
+                }
+                assertEquals(0, refreshes.get(), "A stopped plugin must not refresh an OAuth credential")
+                assertTrue(probes.isEmpty())
+            } finally {
+                release.complete(Unit)
+                unmockkObject(tokens)
+                unmockkObject(settings)
+            }
+        }
+        assertNoDiagnosticSettlement()
+    }
+
+    @Test
     fun `failed stop writes block HTTP probes during persistence and restore confirmed enabled admission`() = runBlocking {
         val repository = app.pluginInstallationRepository
         val runtime = app.pluginRuntime

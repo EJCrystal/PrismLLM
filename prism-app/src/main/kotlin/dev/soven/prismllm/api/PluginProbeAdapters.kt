@@ -166,6 +166,7 @@ internal suspend fun GatewayApplication.executePluginProbe(
                 val (_, selectedCredential) = currentBinding()
                 val globalOverrides = upstreamRequestSettingsRepository.load().overrides
                 val headerProfiles = upstreamHeaderCatalogService.profiles()
+                pluginRuntime.requireActivePermission(id, expectedActiveVersion, PluginApi.CHANNEL_PROBE)
                 var preparedAccount: OAuthAccountRecord? = null
                 val preparedCredential = resolveSavedCredential(KeyCredentialResolver { candidate ->
                     if (candidate is OAuthAccountRecord) {
