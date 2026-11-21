@@ -75,6 +75,7 @@ export interface PluginRuntimeState {
   source: string
   installed: boolean
   installedVersion: string | null
+  installedSha256: string | null
   activeVersion: string | null
   desiredEnabled: boolean
   admissionEnabled: boolean

@@ -79,7 +79,8 @@ export function makePluginFixture(options = {}) {
   }
   const state = {
     id, revision: 0, displayName: manifest.displayName, description: manifest.description, source: 'bundled', installed: true,
-    installedVersion: version, activeVersion: version, desiredEnabled: true, admissionEnabled: true,
+    installedVersion: version, installedSha256: options.installedSha256 ?? catalog.sha256,
+    activeVersion: version, desiredEnabled: true, admissionEnabled: true,
     requiresRestart: false, status: 'active', loadError: null, permissions: [...manifest.permissions],
     approvedPermissions: [...manifest.permissions], configuration: clonePluginData(configuration),
     activeConfiguration: clonePluginData(configuration), configurationFields: clonePluginData(configurationFields),

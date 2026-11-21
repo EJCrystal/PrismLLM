@@ -84,6 +84,7 @@ final class PackagePlugin {
                 }
                 """.formatted(id, version, filename, digest);
         Files.writeString(catalog, catalogJson, StandardCharsets.UTF_8);
+        makeGatewayReadable(catalog);
         System.out.println("Trusted package: " + archive.getFileName() + " (sha256 " + digest + ")");
         System.out.println("Local catalog: " + catalog.getFileName());
     }

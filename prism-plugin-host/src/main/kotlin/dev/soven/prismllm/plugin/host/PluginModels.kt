@@ -61,6 +61,7 @@ data class PluginRuntimeState(
     val source: String,
     val installed: Boolean,
     val installedVersion: String?,
+    val installedSha256: String? = null,
     val activeVersion: String?,
     val desiredEnabled: Boolean,
     val admissionEnabled: Boolean,

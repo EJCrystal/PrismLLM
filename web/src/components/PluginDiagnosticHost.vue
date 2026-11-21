@@ -272,6 +272,11 @@ async function run() {
         if (!editedFields.has(fieldKey)) form[fieldKey] = values[fieldKey]!
       }
     }
+    // An unedited prompt stays unset, so the host resolves the saved default on every call
+    // instead of freezing the value read before the batch started.
+    for (const field of fields.value) {
+      if (field.key === 'prompt' && !field.required && !editedFields.has(field.key)) values[field.key] = null
+    }
     const inputError = pluginFormError(fields.value, values)
     if (inputError) throw new Error(inputError)
     rows.value = chosen.map((target) => {

@@ -440,7 +440,7 @@ export function parsePluginCatalog(value: unknown): PluginCatalogItem[] {
 
 export function parsePluginRuntimeState(value: unknown, expectedId?: string): PluginRuntimeState {
   const data = record(value, [
-    'id', 'displayName', 'description', 'source', 'installed', 'installedVersion', 'activeVersion',
+    'id', 'displayName', 'description', 'source', 'installed', 'installedVersion', 'installedSha256', 'activeVersion',
     'desiredEnabled', 'admissionEnabled', 'requiresRestart', 'status', 'loadError', 'permissions',
     'approvedPermissions', 'configuration', 'activeConfiguration', 'configurationFields', 'activeUi', 'revision',
   ])
@@ -448,6 +448,7 @@ export function parsePluginRuntimeState(value: unknown, expectedId?: string): Pl
   const desiredEnabled = boolean(data.desiredEnabled)
   const admissionEnabled = boolean(data.admissionEnabled)
   const installedVersion = data.installedVersion == null ? null : version(data.installedVersion)
+  const installedSha256 = data.installedSha256 == null ? null : text(data.installedSha256, 64, true).toLowerCase()
   const activeVersion = data.activeVersion == null ? null : version(data.activeVersion)
   requireContract(!installed || installedVersion !== null, '安装版本')
   requireContract(!admissionEnabled || (installed && desiredEnabled && activeVersion !== null && data.activeUi != null), '执行准入')
@@ -455,7 +456,7 @@ export function parsePluginRuntimeState(value: unknown, expectedId?: string): Pl
   if (expectedId !== undefined) requireContract(parsedId === expectedId, '响应身份')
   return {
     id: parsedId, revision: integer(data.revision, 0, Number.MAX_SAFE_INTEGER, 0), displayName: text(data.displayName, 200, true), description: text(data.description, 4_000),
-    source: text(data.source, 4_000, true), installed, installedVersion, activeVersion, desiredEnabled, admissionEnabled,
+    source: text(data.source, 4_000, true), installed, installedVersion, installedSha256, activeVersion, desiredEnabled, admissionEnabled,
     requiresRestart: boolean(data.requiresRestart), status: status(data.status), loadError: nullableText(data.loadError, 4_000),
     permissions: strings(data.permissions, 2, 128, true), approvedPermissions: strings(data.approvedPermissions, 2, 128, true),
     configuration: values(data.configuration, true),

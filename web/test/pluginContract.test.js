@@ -528,7 +528,7 @@ describe('bounded declarative plugin contracts', () => {
 describe('plugin lifecycle and admitted UI contracts', () => {
   it('normalizes omitted nullable and SDK state defaults without inventing an active instance', () => {
     assert.deepEqual(parsePluginRuntimeState(runtime()), {
-      ...runtime(), revision: 0, installedVersion: null, activeVersion: null, loadError: null,
+      ...runtime(), revision: 0, installedVersion: null, installedSha256: null, activeVersion: null, loadError: null,
       permissions: [], approvedPermissions: [], configuration: {}, activeConfiguration: null,
       configurationFields: [], activeUi: null,
     })

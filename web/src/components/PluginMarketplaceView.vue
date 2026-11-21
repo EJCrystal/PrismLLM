@@ -4,7 +4,6 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { ApiError } from '../types/api'
 import type { PluginCatalogItem, PluginRuntimeState, PluginUiContribution, PluginValues } from '../types/api'
-import { createLatestRequestGuard } from '../utils/latestRequest'
 import { PLUGIN_STATE_CHANGED, pluginFieldDefaults, pluginFormError, pluginPermissionLabel, pluginStateLabel } from '../utils/pluginForm'
 import Icon from './Icon.vue'
 import Modal from './Modal.vue'
@@ -37,7 +36,6 @@ const diagnosticGeneration = ref(0)
 const diagnosticRechecking = ref(false)
 const diagnosticRecheckError = ref('')
 const diagnosticRecovery = ref<HTMLElement | null>(null)
-const guard = createLatestRequestGuard()
 let controller: AbortController | null = null
 let diagnosticRecheckToken = 0
 let disposed = false
@@ -53,6 +51,20 @@ const versions = computed(() => catalog.value.filter((item) => item.manifest.id 
 const selectedCatalog = computed(() => versions.value.find((item) => item.manifest.version === selectedVersion.value))
 const selectedName = computed(() => selectedState.value?.displayName || selectedCatalog.value?.manifest.displayName || selectedId.value)
 const currentVersionSelected = computed(() => !!selectedState.value?.installed && selectedVersion.value === selectedState.value.installedVersion)
+const selectedDescription = computed(() => currentVersionSelected.value
+  ? selectedState.value?.description || selectedCatalog.value?.manifest.description || ''
+  : selectedCatalog.value?.manifest.description || selectedState.value?.description || '')
+const selectedDigest = computed(() => {
+  if (currentVersionSelected.value && selectedState.value?.installedSha256) {
+    return { label: '已安装包 SHA-256', value: selectedState.value.installedSha256 }
+  }
+  if (selectedCatalog.value) {
+    return { label: currentVersionSelected.value ? '目录同版本包 SHA-256' : '目录校验 SHA-256（待安装）', value: selectedCatalog.value.sha256 }
+  }
+  return null
+})
+const catalogDigestConflict = computed(() => currentVersionSelected.value && !!selectedState.value?.installedSha256 && !!selectedCatalog.value &&
+  selectedCatalog.value.sha256.toLowerCase() !== selectedState.value.installedSha256.toLowerCase())
 const permissions = computed(() => currentVersionSelected.value ? selectedState.value!.permissions : selectedCatalog.value?.manifest.permissions ?? selectedState.value?.permissions ?? [])
 const fullGrant = computed(() => permissions.value.every((permission) => approvedPermissions.value.includes(permission)))
 const canEnable = computed(() => installationStateKnown.value && !busy.value && !loading.value && !enableRefreshRequired.has(selectedId.value) &&
@@ -184,7 +196,6 @@ function syncVersion() {
 }
 
 function cancelListRequest() {
-  guard.invalidate()
   controller?.abort()
   controller = null
   loading.value = false
@@ -197,44 +208,57 @@ async function load(preserveDraft = true): Promise<boolean> {
   controller = current
   loading.value = true
   loadError.value = ''
-  let settled = false
+  const isCurrent = () => !disposed && controller === current && !current.signal.aborted
+  let catalogSettled = false
+  let catalogFulfilled = false
+  let statesFulfilled = false
+  // The catalog only gates new installs. Apply it on arrival so a stalled catalog read cannot
+  // keep installed-plugin management (including disable/uninstall) in the loading state.
+  void api.listPluginCatalog({ signal: current.signal }).then((loaded) => {
+    if (!isCurrent()) return
+    catalogSettled = true
+    catalogFulfilled = true
+    catalog.value = loaded
+    catalogError.value = ''
+    const selectionExists = !selectedId.value || catalog.value.some((item) => item.manifest.id === selectedId.value) ||
+      states.value.some((state) => state.id === selectedId.value)
+    if (!selectedId.value || (statesFulfilled && !selectionExists)) selectedId.value = items.value[0]?.id ?? ''
+    else if (!selectedVersion.value && !(preserveDraft && (dirty.value || draftConflict.value))) syncVersion()
+  }, (cause) => {
+    if (!isCurrent()) return
+    catalogSettled = true
+    catalogError.value = errorMessage(cause)
+    catalog.value = []
+  })
   try {
-    const result = await guard.run(() => Promise.allSettled([
-      api.listPluginCatalog({ signal: current.signal }), api.listPlugins({ signal: current.signal }),
-    ]))
-    if (!result.isLatest || disposed || current.signal.aborted) return false
+    const loadedStates = await api.listPlugins({ signal: current.signal })
+    if (!isCurrent()) return false
     const hadDraft = preserveDraft && (dirty.value || draftConflict.value)
-    const [catalogResult, statesResult] = result.value
-    catalogError.value = catalogResult.status === 'rejected' ? errorMessage(catalogResult.reason) : ''
-    catalog.value = catalogResult.status === 'fulfilled' ? catalogResult.value : []
-    if (statesResult.status === 'fulfilled') {
-      states.value = statesResult.value
-      installationStateKnown.value = true
-      if (enableRefreshRequired.has(selectedId.value)) {
-        approvedPermissions.value = [...(selectedState.value?.approvedPermissions ?? [])]
-      }
-      enableRefreshRequired.clear()
-    } else {
-      installationStateKnown.value = false
-      loadError.value = errorMessage(statesResult.reason)
+    states.value = loadedStates
+    installationStateKnown.value = true
+    if (enableRefreshRequired.has(selectedId.value)) {
+      approvedPermissions.value = [...(selectedState.value?.approvedPermissions ?? [])]
     }
+    enableRefreshRequired.clear()
     const selectionExists = catalog.value.some((item) => item.manifest.id === selectedId.value) ||
       states.value.some((state) => state.id === selectedId.value)
-    if (!selectedId.value || (catalogResult.status === 'fulfilled' && statesResult.status === 'fulfilled' && !selectionExists)) {
+    if (!selectedId.value || (catalogFulfilled && !selectionExists)) {
       selectedId.value = items.value[0]?.id ?? ''
     }
-    if (statesResult.status === 'fulfilled' && !hadDraft) syncVersion()
-    settled = true
-    return statesResult.status === 'fulfilled'
+    if (!hadDraft) syncVersion()
+    statesFulfilled = true
+    return true
   } catch (cause) {
-    if (!disposed && (cause as { isLatest?: boolean }).isLatest !== false && !current.signal.aborted) {
+    if (isCurrent()) {
+      installationStateKnown.value = false
       loadError.value = errorMessage(cause)
-      settled = true
     }
     return false
   } finally {
-    if (settled) loading.value = false
-    if (controller === current) controller = null
+    if (isCurrent()) loading.value = false
+    // Keep the controller while the catalog read is still in flight so its late result can
+    // still be applied; a new load or a mutation aborts and replaces it.
+    if (controller === current && catalogSettled) controller = null
   }
 }
 
@@ -317,7 +341,7 @@ function uninstall() {
 watch(selectedId, syncVersion)
 watch(selectedVersion, () => { approvedPermissions.value = [...(selectedState.value?.approvedPermissions ?? [])] })
 onMounted(() => { void load(false) })
-onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalidate(); controller?.abort() })
+onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; controller?.abort() })
 </script>
 
 <template>
@@ -344,7 +368,7 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
       </aside>
       <article v-if="selectedId" class="panel plugin-market-detail">
         <header class="plugin-market-detail-head"><div><h2>{{ selectedName }}</h2><code>{{ selectedId }}</code></div><span v-if="selectedState" class="badge" :class="selectedState.admissionEnabled ? 'success' : selectedState.loadError ? 'danger' : 'neutral'">{{ pluginStateLabel(selectedState.status) }}</span></header>
-        <p class="plugin-market-description">{{ selectedCatalog?.manifest.description || selectedState?.description }}</p>
+        <p class="plugin-market-description">{{ selectedDescription }}</p>
         <dl class="plugin-market-facts">
           <div><dt>安装选择</dt><dd>{{ selectedState?.installedVersion || '未安装' }}<span v-if="selectedState && !selectedState.installed && selectedState.installedVersion" class="muted">（已卸载，保留历史选择）</span></dd></div>
           <div><dt>当前生效</dt><dd>{{ selectedState?.admissionEnabled ? selectedState.activeVersion : '无可执行入口' }}<small v-if="selectedState?.activeVersion && !selectedState.admissionEnabled">进程仍载有 {{ selectedState.activeVersion }}，但已关闭准入。</small></dd></div>
@@ -359,7 +383,8 @@ onBeforeUnmount(() => { disposed = true; diagnosticTrigger = null; guard.invalid
           <p v-else class="muted small">安装记录仍在，但当前可信目录没有这个插件包。已暂存的版本仍可按原有安装选择加载。</p>
           <p v-if="!installationStateKnown && !loading" class="callout warning" role="status">安装状态尚未读取成功，请重新读取后再选择或安装版本。</p>
           <p v-if="selectedCatalog && !selectedCatalog.compatible" class="callout danger">{{ selectedCatalog.compatibilityReason || '此版本不支持当前宿主。' }}</p>
-          <p v-if="selectedCatalog" class="plugin-market-digest"><span class="muted small">目录校验 SHA-256</span><code>{{ selectedCatalog.sha256 }}</code></p>
+          <p v-if="selectedDigest" class="plugin-market-digest"><span class="muted small">{{ selectedDigest.label }}</span><code>{{ selectedDigest.value }}</code></p>
+          <p v-if="catalogDigestConflict" class="callout warning plugin-market-digest-conflict" role="status">目录中同版本包的摘要与已安装包不同。已安装版本按不可变记录固定，不能替换；如需更换包内容，请发布更高版本后重新审阅并安装。</p>
           <fieldset class="plugin-market-permissions" :disabled="busy"><legend>明确授权下列诊断能力</legend><label v-for="permission in permissions" :key="permission"><input v-model="approvedPermissions" type="checkbox" :value="permission" /><span>{{ pluginPermissionLabel(permission) }}</span></label><p v-if="!permissions.length" class="muted small">此版本未请求诊断能力。</p></fieldset>
           <small class="muted">JVM 插件是可信同进程代码，不是恶意代码沙箱；目录摘要校验不等同于发布者签名。</small>
           <div class="plugin-market-actions">

@@ -915,6 +915,56 @@ internal class PluginRuntimeTest : PluginTestSupport() {
     }
 
     @Test
+    fun pausedPlanRechecksTheDisableGenerationBeforeAnyTransportCallback(): Unit = runBlocking {
+        val ready = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val packaged = fixture(
+            id = "paused.plan.admission",
+            planPrefix = { property -> """
+                ((java.util.concurrent.CountDownLatch) System.getProperties().get("$property.plan-ready")).countDown();
+                boolean released = false;
+                long deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10);
+                while (!released && System.nanoTime() < deadline) {
+                    try { released = ((java.util.concurrent.CountDownLatch) System.getProperties().get("$property.plan-release")).await(10, java.util.concurrent.TimeUnit.MILLISECONDS); }
+                    catch (InterruptedException ignored) { }
+                }
+                if (!released) throw new IllegalStateException("plan was not released");
+            """.trimIndent() },
+        )
+        System.getProperties()["${packaged.property}.plan-ready"] = ready
+        System.getProperties()["${packaged.property}.plan-release"] = release
+        publish(packaged)
+        val decisions = MemoryInstallationStore()
+        val writer = runtime(decisions)
+        writer.initialize(packaged.manifest.id)
+        val observer = runtime(decisions)
+        observer.initialize()
+        try {
+            coroutineScope {
+                val transports = AtomicInteger()
+                val invocation = async(Dispatchers.Default) {
+                    runCatching {
+                        observer.execute(packaged.manifest.id, "1.0.0", input, target) { transports.incrementAndGet(); ok }
+                    }
+                }
+                assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "The observing instance must enter plan")
+                val stopped = writer.disable(packaged.manifest.id)
+                writer.enable(packaged.manifest.id, stopped.revision, "1.0.0", packaged.manifest.permissions)
+                release.countDown()
+                val error = assertNotNull(withTimeout(4_000) { invocation.await() }.exceptionOrNull() as? PluginHostException)
+                assertEquals("PLUGIN_DISABLED", error.code)
+                assertEquals(0, transports.get(), "A call paused in plan must not reach the transport after a disable cycle")
+            }
+        } finally {
+            release.countDown()
+            observer.close()
+            writer.close()
+            System.getProperties().remove("${packaged.property}.plan-ready")
+            System.getProperties().remove("${packaged.property}.plan-release")
+        }
+    }
+
+    @Test
     fun stopCycleDuringBootstrapReloadsTheCurrentDisableGeneration(): Unit = runBlocking {
         val packaged = ownedFixture()
         publish(packaged)
@@ -2305,6 +2355,58 @@ internal class PluginRuntimeTest : PluginTestSupport() {
             System.getProperties().remove("${packaged.providerClass}.ready")
             System.getProperties().remove("${packaged.providerClass}.release")
         }
+    }
+
+    @Test
+    fun loaderSurvivesUntilABlockedProviderCloseReturnsAfterTheWorkerExits(): Unit = runBlocking {
+        val ready = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val packaged = fixture(
+            id = "close.after.worker",
+            constructorPrefix = { property -> "System.getProperties().put(\"$property.loader\", getClass().getClassLoader());" },
+            planPrefix = { property -> """
+                ((java.util.concurrent.CountDownLatch) System.getProperties().get("$property.plan-ready")).countDown();
+                try { ((java.util.concurrent.CountDownLatch) System.getProperties().get("$property.plan-release")).await(10, java.util.concurrent.TimeUnit.SECONDS); }
+                catch (InterruptedException ignored) { }
+            """.trimIndent() },
+            closePrefix = { property -> """
+                mark("closed-with-loader");
+                mark("close-ready");
+                while (!"true".equals(System.getProperty("$property.close-release"))) {
+                    try { Thread.sleep(5); } catch (InterruptedException ignored) { }
+                }
+                if (getClass().getClassLoader().getResource("fixture/owned-resource.txt") == null) throw new IllegalStateException("loader closed during provider close");
+                mark("close-returned");
+            """.trimIndent() },
+            jarEntries = listOf(ZipFixtureEntry("fixture/owned-resource.txt", "owned".toByteArray())),
+        )
+        System.getProperties()["${packaged.property}.plan-ready"] = ready
+        System.getProperties()["${packaged.property}.plan-release"] = release
+        publish(packaged)
+        val host = runtime()
+        host.initialize(packaged.manifest.id)
+        try {
+            coroutineScope {
+                val invocation = async(Dispatchers.Default) { runCatching { invoke(host, id = packaged.manifest.id) } }
+                assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS), "The worker must enter plan")
+                val closing = async(Dispatchers.IO) { host.close() }
+                awaitProperty("${packaged.property}.close-ready", "1")
+                release.countDown()
+                assertNotNull(withTimeout(4_000) { invocation.await() }.exceptionOrNull(), "The worker must exit while provider close is blocked")
+                assertEquals(0, packaged.count("close-returned"), "Provider close must still be blocked")
+                assertNotNull(loader(packaged).findResource("fixture/owned-resource.txt"), "The loader must stay open until provider close returns")
+                System.setProperty("${packaged.property}.close-release", "true")
+                withTimeout(3_000) { closing.await() }
+            }
+        } finally {
+            release.countDown()
+            System.setProperty("${packaged.property}.close-release", "true")
+            host.close()
+            System.getProperties().remove("${packaged.property}.plan-ready")
+            System.getProperties().remove("${packaged.property}.plan-release")
+        }
+        awaitProperty("${packaged.property}.close-returned", "1")
+        assertDisposed(packaged)
     }
 
     @Test

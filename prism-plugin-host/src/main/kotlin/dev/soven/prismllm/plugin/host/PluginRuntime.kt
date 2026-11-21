@@ -683,6 +683,7 @@ class PluginRuntime(
             displayName = desired?.manifest?.displayName ?: loaded?.staged?.item?.manifest?.displayName ?: installation.id,
             description = desired?.manifest?.description ?: "",
             source = installation.source, installed = installation.installed, installedVersion = installation.version,
+            installedSha256 = installation.sha256,
             activeVersion = loaded?.staged?.item?.manifest?.version,
             desiredEnabled = installation.desiredEnabled, admissionEnabled = admitted, requiresRestart = requiresRestart,
             status = status, loadError = error, revision = installation.revision,

@@ -180,7 +180,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       const old = mock.states.get(id)
       const next = {
         id, displayName: item.manifest.displayName, description: item.manifest.description, source: item.source,
-        installed: true, installedVersion: payload.version, activeVersion: old?.activeVersion ?? null,
+        installed: true, installedVersion: payload.version, installedSha256: item.sha256, activeVersion: old?.activeVersion ?? null,
         revision: old ? old.revision + 1 : 0,
         desiredEnabled: old?.installed ? old.desiredEnabled : false, admissionEnabled: old?.admissionEnabled ?? false,
         requiresRestart: !!old?.desiredEnabled, status: old?.desiredEnabled ? 'pending-restart' : 'disabled', loadError: null,
@@ -435,6 +435,37 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.deepEqual(calls.configuration[0].payload.values, { label: 'changed', ...expected })
   })
 
+  it('keeps installed plugin management available while the catalog read is pending', async () => {
+    setFixtures(makePluginFixture())
+    const catalogRead = deferred()
+    mock.listCatalog = () => catalogRead.promise
+    const market = await mount('PluginMarketplaceView')
+    await waitFor(() => !market.state.loading.value && market.state.installationStateKnown.value)
+    assert.equal(market.state.catalogError.value, '')
+    assert.equal(fact(market.container, '安装选择'), '1.0.0')
+    const disable = button(market.container, '禁用')
+    assert.equal(disable.disabled, false, 'A stalled catalog read must not block disabling an installed plugin')
+    disable.click()
+    await waitFor(() => calls.enabled.length === 1 && !market.state.busy.value)
+    assert.deepEqual(calls.enabled[0].payload, { enabled: false })
+    catalogRead.resolve([])
+    await settle()
+  })
+
+  it('shows the installed package digest instead of a republished catalog digest', async () => {
+    const installedSha256 = 'b'.repeat(64)
+    const fixture = makePluginFixture({ sha256: 'a'.repeat(64), installedSha256 })
+    setFixtures(fixture)
+    const market = await mount('PluginMarketplaceView')
+    await waitFor(() => !market.state.loading.value)
+    const digest = text(market.container.querySelector('.plugin-market-digest'))
+    assert.match(digest, /已安装包 SHA-256/)
+    assert.match(digest, new RegExp(installedSha256))
+    assert.equal(digest.includes('a'.repeat(64)), false)
+    assert.ok(market.container.querySelector('.plugin-market-digest-conflict'), 'A republished same-version package must be reported')
+    assert.match(text(market.container.querySelector('.plugin-market-digest-conflict')), /更高版本/)
+  })
+
   it('blocks optional bad numeric input even when its DOM value is empty and accepts a real clear', async () => {
     const fixture = makePluginFixture({ extraFields: [makeField('optionalCount', '可选数量', 'number')] })
     const entry = await hostFor(fixture)
@@ -591,7 +622,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(host.state.fields.value.some(field => field.key === 'label'), true)
     await host.state.run(); await settle()
     assert.equal(calls.invocations[0].payload.expectedActiveVersion, '1.0.0')
-    assert.equal(calls.invocations[0].payload.values.prompt, 'old running configuration')
+    assert.equal(calls.invocations[0].payload.values.prompt, null, 'An unedited prompt is resolved by the host per call')
     host.unmount(); mounted.splice(mounted.indexOf(host), 1)
     const market = await mount('PluginMarketplaceView')
     await waitFor(() => !market.state.loading.value)
@@ -613,10 +644,9 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(captures.get('PluginDiagnosticHost').defaultValues.value.prompt, 'old running configuration')
   })
 
-  it('refreshes same-version defaults for future inputs without changing a captured invocation', async () => {
+  it('refreshes same-version defaults for future inputs without changing a captured job', async () => {
     const fixture = makePluginFixture()
     const entry = await hostFor(fixture)
-    const oldPrompt = entry.state.form.prompt
     const pending = deferred()
     mock.invoke = () => pending.promise
     const run = entry.state.run()
@@ -627,7 +657,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     window.dispatchEvent(new Event(PLUGIN_STATE_CHANGED))
     await waitFor(() => !entry.state.loading.value && entry.state.defaultValues.value.prompt === newConfiguration.defaultPrompt)
     assert.equal(entry.state.form.prompt, newConfiguration.defaultPrompt, 'Unedited future input follows the active configuration')
-    assert.equal(oldCall.payload.values.prompt, oldPrompt)
+    assert.equal(oldCall.payload.values.prompt, null, 'The host, not the captured job, resolves an unedited prompt')
     pending.resolve(responseFor(oldCall))
     await run; await settle()
     const meta = field(entry.container, '本次提示词').closest('label').nextElementSibling
@@ -635,8 +665,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     assert.equal(entry.state.form.prompt, newConfiguration.defaultPrompt)
     mock.invoke = undefined
     await entry.state.run(); await settle()
-    assert.equal(calls.invocations[1].payload.values.prompt, newConfiguration.defaultPrompt)
-    assert.equal(oldCall.payload.values.prompt, oldPrompt)
+    assert.equal(calls.invocations[1].payload.values.prompt, null)
+    assert.equal(oldCall.payload.values.prompt, null)
   })
 
   for (const edited of [false, true]) {
@@ -649,7 +679,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       await entry.state.run()
       await settle()
       assert.equal(calls.invocations.length, 1)
-      assert.equal(calls.invocations[0].payload.values.prompt, edited ? 'explicit request value' : updated.defaultPrompt)
+      assert.equal(calls.invocations[0].payload.values.prompt, edited ? 'explicit request value' : null)
       mock.getState = undefined
     })
   }
@@ -680,7 +710,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
       await entry.state.load(false); await settle()
       assert.equal(entry.state.form.prompt, 'newer default', 'Reset removes the local override and resumes following defaults')
       await entry.state.run(); await settle()
-      assert.equal(calls.invocations.at(-1).payload.values.prompt, 'newer default')
+      assert.equal(calls.invocations.at(-1).payload.values.prompt, null)
     })
   }
 
@@ -703,7 +733,7 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
     await run
 
     assert.equal(calls.invocations.length, 1)
-    assert.equal(calls.invocations[0].payload.values.prompt, latestConfiguration.defaultPrompt)
+    assert.equal(calls.invocations[0].payload.values.prompt, null)
     assert.equal(entry.state.form.prompt, latestConfiguration.defaultPrompt)
   })
 
@@ -3146,7 +3176,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
 
       if (catalogVersion !== installed.state.installedVersion) {
         assert.equal(entry.state.selectedCatalog.value, undefined)
-        assert.equal(entry.container.querySelector('.plugin-market-digest'), null)
+        assert.equal(entry.container.querySelector('.plugin-market-digest code').textContent, installed.state.installedSha256,
+          'the installed digest stays visible even when the catalogue no longer offers that version')
         assert.equal([...entry.container.querySelectorAll('button')].some(node => /安装此版本|选择此版本/.test(text(node))), false)
         await change(selector, catalogVersion)
         assert.deepEqual(entry.state.permissions.value, offered.manifest.permissions)
@@ -3221,7 +3252,8 @@ describe('descriptor-driven plugin UI (synthetic API data only)', () => {
         if (firstResponse === 'catalogue') catalogue.resolve(nextCatalog)
         else installations.resolve(nextStates)
         await settle()
-        assert.equal(entry.state.loading.value, true)
+        assert.equal(entry.state.loading.value, firstResponse !== 'installation state',
+          'installation state alone must unblock installed-plugin management; a pending catalogue cannot')
         assert.equal(entry.state.selectedId.value, removed.manifest.id, 'one response cannot prove the selection disappeared')
         if (firstResponse === 'catalogue') installations.resolve(nextStates)
         else catalogue.resolve(nextCatalog)
