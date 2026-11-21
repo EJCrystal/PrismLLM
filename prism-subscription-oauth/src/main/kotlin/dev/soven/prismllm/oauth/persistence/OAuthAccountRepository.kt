@@ -90,7 +90,7 @@ open class OAuthAccountRepository(
     private val quotaJson = Json { ignoreUnknownKeys = true }
 
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
-    open suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
+    suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
         OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
             ?.let { toRecord(it, emptyList(), emptySet()) }
     }
@@ -554,102 +554,21 @@ open class OAuthAccountRepository(
         scope: String?,
         rotatedRefreshToken: EncryptedCredential? = null,
         expectedRefreshCiphertext: String? = null,
-        /**
-         * Snapshot used by service-owned retries. The row lock makes the comparison a fence:
-         * an ambiguous commit is accepted only when this exact result is already present, or when
-         * the original authorization and credential snapshot is still current.
-         */
-        expectedAccount: OAuthAccountRecord? = null,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
         val row = OAuthAccounts.selectAll()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
-        val normalizedTokenType = tokenType.take(32)
-        val exactRefreshResult = expectedAccount != null && when {
-            rotatedRefreshToken == null -> sameRefresh(row, expectedAccount)
-            else -> row[OAuthAccounts.refreshTokenCiphertext] == rotatedRefreshToken.ciphertext &&
-                row[OAuthAccounts.refreshTokenNonce] == rotatedRefreshToken.nonce &&
-                row[OAuthAccounts.refreshTokenKeyVersion] == rotatedRefreshToken.keyVersion
-        }
-        val sameAccessResult =
-            row[OAuthAccounts.accessTokenCiphertext] == accessToken.ciphertext &&
-                row[OAuthAccounts.accessTokenNonce] == accessToken.nonce &&
-                row[OAuthAccounts.accessTokenKeyVersion] == accessToken.keyVersion &&
-                row[OAuthAccounts.accessTokenExpiresAt] == expiresAt &&
-                row[OAuthAccounts.tokenType] == normalizedTokenType &&
-                row[OAuthAccounts.scope] == scope &&
-                row[OAuthAccounts.authState] == OAuthAuthState.ACTIVE.value
-        // The original snapshot may be REAUTH_REQUIRED: refreshNow can force one last refresh.
-        // The current row must still be ACTIVE, and the exact result plus authorization context
-        // must match before an ambiguous commit is treated as already applied.
-        if (expectedAccount != null && expectedAccount.id == accountId &&
-            sameAuthorization(row, expectedAccount) && sameAccessResult && exactRefreshResult
-        ) {
-            return@suspendTransaction toRecord(row, emptyList(), emptySet())
-        }
-        if (expectedAccount != null && expectedAccount.id == accountId &&
-            sameAuthorizationExceptProxy(row, expectedAccount) &&
-            row[OAuthAccounts.authState] == OAuthAuthState.ACTIVE.value &&
-            row[OAuthAccounts.proxyUrl] != expectedAccount.proxyUrl &&
-            rotatedRefreshToken != null &&
-            row[OAuthAccounts.refreshTokenCiphertext] == rotatedRefreshToken.ciphertext &&
-            row[OAuthAccounts.refreshTokenNonce] == rotatedRefreshToken.nonce &&
-            row[OAuthAccounts.refreshTokenKeyVersion] == rotatedRefreshToken.keyVersion &&
-            isProxyRotationRetryResult(row, expectedAccount)
-        ) {
-            // A previous proxy-only fallback committed but its response was lost. Return the
-            // persisted empty-access result without applying it again or accepting newer credentials.
-            return@suspendTransaction toRecord(row, emptyList(), emptySet())
-        }
-        if (expectedRefreshCiphertext != null &&
-            row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext
-        ) {
+        if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
             return@suspendTransaction null
-        }
-        expectedAccount?.let { expected ->
-            if (expected.id != accountId || !sameAuthorization(row, expected) ||
-                row[OAuthAccounts.authState] != expected.authState.value ||
-                !sameRefresh(row, expected) || !sameAccess(row, expected)
-            ) {
-                // A concurrent proxy-only edit does not invalidate a refresh-token rotation, but
-                // the access token was minted through the old egress and must never be persisted.
-                if (expected.id != accountId || !sameAuthorizationExceptProxy(row, expected) ||
-                    row[OAuthAccounts.authState] != expected.authState.value ||
-                    row[OAuthAccounts.proxyUrl] == expected.proxyUrl ||
-                    !sameRefresh(row, expected) || !sameAccess(row, expected) ||
-                    rotatedRefreshToken == null
-                ) {
-                    return@suspendTransaction null
-                }
-                val updated = OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
-                    it[refreshTokenCiphertext] = rotatedRefreshToken.ciphertext
-                    it[refreshTokenNonce] = rotatedRefreshToken.nonce
-                    it[refreshTokenKeyVersion] = rotatedRefreshToken.keyVersion
-                    it[accessTokenCiphertext] = null
-                    it[accessTokenNonce] = null
-                    it[accessTokenKeyVersion] = null
-                    it[accessTokenExpiresAt] = null
-                    it[authState] = OAuthAuthState.ACTIVE.value
-                    it[refreshFailureCount] = 0
-                    it[lastRefreshError] = null
-                    it[lastRefreshedAt] = if (now != expected.lastRefreshedAt) now else now + 1
-                    it[OAuthAccounts.updatedAt] = now
-                }
-                if (updated == 0) return@suspendTransaction null
-                return@suspendTransaction OAuthAccounts.selectAll()
-                    .where { OAuthAccounts.id eq accountId }
-                    .single()
-                    .let { toRecord(it, emptyList(), emptySet()) }
-            }
         }
         val updated = OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
             it[accessTokenCiphertext] = accessToken.ciphertext
             it[accessTokenNonce] = accessToken.nonce
             it[accessTokenKeyVersion] = accessToken.keyVersion
             it[accessTokenExpiresAt] = expiresAt
-            it[OAuthAccounts.tokenType] = normalizedTokenType
+            it[OAuthAccounts.tokenType] = tokenType.take(32)
             it[OAuthAccounts.scope] = scope
             it[authState] = OAuthAuthState.ACTIVE.value
             it[refreshFailureCount] = 0
@@ -669,38 +588,6 @@ open class OAuthAccountRepository(
             .let { toRecord(it, emptyList(), emptySet()) }
     }
 
-    private fun sameAuthorization(row: ResultRow, expected: OAuthAccountRecord): Boolean =
-        sameAuthorizationExceptProxy(row, expected) && row[OAuthAccounts.proxyUrl] == expected.proxyUrl
-
-    private fun sameAuthorizationExceptProxy(row: ResultRow, expected: OAuthAccountRecord): Boolean =
-        row[OAuthAccounts.provider] == expected.provider.value &&
-            row[OAuthAccounts.authorizedAt] == expected.authorizedAt
-
-    private fun isProxyRotationRetryResult(row: ResultRow, expected: OAuthAccountRecord): Boolean =
-        row[OAuthAccounts.accessTokenCiphertext] == null &&
-            row[OAuthAccounts.accessTokenNonce] == null &&
-            row[OAuthAccounts.accessTokenKeyVersion] == null &&
-            row[OAuthAccounts.accessTokenExpiresAt] == null &&
-            row[OAuthAccounts.tokenType] == expected.tokenType &&
-            row[OAuthAccounts.scope] == expected.scope &&
-            row[OAuthAccounts.refreshFailureCount] == 0 &&
-            row[OAuthAccounts.lastRefreshError] == null &&
-            row[OAuthAccounts.lastRefreshedAt] != null &&
-            row[OAuthAccounts.lastRefreshedAt] != expected.lastRefreshedAt
-
-    private fun sameRefresh(row: ResultRow, expected: OAuthAccountRecord): Boolean =
-        row[OAuthAccounts.refreshTokenCiphertext] == expected.refreshTokenCiphertext &&
-            row[OAuthAccounts.refreshTokenNonce] == expected.refreshTokenNonce &&
-            row[OAuthAccounts.refreshTokenKeyVersion] == expected.refreshTokenKeyVersion
-
-    private fun sameAccess(row: ResultRow, expected: OAuthAccountRecord): Boolean =
-        row[OAuthAccounts.accessTokenCiphertext] == expected.accessTokenCiphertext &&
-            row[OAuthAccounts.accessTokenNonce] == expected.accessTokenNonce &&
-            row[OAuthAccounts.accessTokenKeyVersion] == expected.accessTokenKeyVersion &&
-            row[OAuthAccounts.accessTokenExpiresAt] == expected.accessTokenExpiresAt &&
-            row[OAuthAccounts.tokenType] == expected.tokenType &&
-            row[OAuthAccounts.scope] == expected.scope
-
     /**
      * 记录一次刷新失败；终态错误同时把账号标记为需要重新授权。
      * 传入 expectedRefreshCiphertext 时先锁账号行并校验凭据未被替换。
@@ -711,18 +598,12 @@ open class OAuthAccountRepository(
         terminal: Boolean,
         expectedRefreshCiphertext: String? = null,
         now: Long = System.currentTimeMillis(),
-        expectedAccount: OAuthAccountRecord? = null,
     ): OAuthAccountRecord? = suspendTransaction(database) {
         val row = OAuthAccounts.selectAll()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
         if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
-            return@suspendTransaction null
-        }
-        if (expectedAccount != null && (expectedAccount.id != accountId || !sameAuthorization(row, expectedAccount) ||
-                row[OAuthAccounts.authState] != expectedAccount.authState.value ||
-                !sameRefresh(row, expectedAccount) || !sameAccess(row, expectedAccount))) {
             return@suspendTransaction null
         }
         val failureCount = row[OAuthAccounts.refreshFailureCount] + 1
@@ -777,25 +658,6 @@ open class OAuthAccountRepository(
         }
     }
 
-    /** Read context and compare the captured credentials, authorization and proxy in one DB snapshot. */
-    open suspend fun upstreamContextIfSnapshotMatches(expectedAccount: OAuthAccountRecord): UpstreamContext? =
-        suspendTransaction(database) {
-            val row = OAuthAccounts.selectAll()
-                .where { OAuthAccounts.id eq expectedAccount.id }
-                .singleOrNull() ?: return@suspendTransaction null
-            if (!sameAuthorization(row, expectedAccount) ||
-                row[OAuthAccounts.authState] != expectedAccount.authState.value ||
-                !sameRefresh(row, expectedAccount) || !sameAccess(row, expectedAccount)
-            ) {
-                return@suspendTransaction null
-            }
-            UpstreamContext(
-                project = row[OAuthAccounts.upstreamProject],
-                tier = row[OAuthAccounts.upstreamTier],
-                checkedAt = row[OAuthAccounts.upstreamTierCheckedAt],
-            )
-        }
-
     /**
      * 写入一次协商结果。`tier` 为 null 表示上游这次没给出套餐信息，此时显式清空旧值，
      * 而不是留下上一次的 tier：内存中的协商状态与数据库必须一致，否则进程重启后会读到
@@ -808,33 +670,6 @@ open class OAuthAccountRepository(
         checkedAt: Long,
     ): Boolean = suspendTransaction(database) {
         OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
-            if (project != null) it[OAuthAccounts.upstreamProject] = project.take(128)
-            it[OAuthAccounts.upstreamTier] = tier?.take(64)
-            it[OAuthAccounts.upstreamTierCheckedAt] = checkedAt
-        } > 0
-    }
-
-    /**
-     * Persist Code Assist context only while the authorization and credentials used by discovery
-     * are still current. The row lock makes the snapshot check and context write one transaction.
-     */
-    open suspend fun saveUpstreamContextIfSnapshotMatches(
-        expectedAccount: OAuthAccountRecord,
-        project: String?,
-        tier: String?,
-        checkedAt: Long,
-    ): Boolean = suspendTransaction(database) {
-        val row = OAuthAccounts.selectAll()
-            .where { OAuthAccounts.id eq expectedAccount.id }
-            .forUpdate()
-            .singleOrNull() ?: return@suspendTransaction false
-        if (!sameAuthorization(row, expectedAccount) ||
-            row[OAuthAccounts.authState] != expectedAccount.authState.value ||
-            !sameRefresh(row, expectedAccount) || !sameAccess(row, expectedAccount)
-        ) {
-            return@suspendTransaction false
-        }
-        OAuthAccounts.update({ OAuthAccounts.id eq expectedAccount.id }) {
             if (project != null) it[OAuthAccounts.upstreamProject] = project.take(128)
             it[OAuthAccounts.upstreamTier] = tier?.take(64)
             it[OAuthAccounts.upstreamTierCheckedAt] = checkedAt

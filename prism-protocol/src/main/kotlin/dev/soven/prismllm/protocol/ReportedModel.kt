@@ -8,11 +8,7 @@ import kotlinx.serialization.json.JsonPrimitive
 internal const val MAX_REPORTED_MODEL_CHARS = 200
 
 /** Extract the model identifier declared by an upstream response, when present. */
-fun extractReportedModel(protocol: GatewayProtocol, json: JsonObject?): String? =
-    extractReportedModel(protocol, json) { it }
-
-/** Transform the decoded display value before the identifier is trimmed or bounded. */
-fun extractReportedModel(protocol: GatewayProtocol, json: JsonObject?, display: (String) -> String): String? {
+fun extractReportedModel(protocol: GatewayProtocol, json: JsonObject?): String? {
     if (json == null) return null
 
     val candidates = when (protocol) {
@@ -26,7 +22,6 @@ fun extractReportedModel(protocol: GatewayProtocol, json: JsonObject?, display: 
         (element as? JsonPrimitive)
             ?.takeIf { it.isString }
             ?.content
-            ?.let(display)
             ?.trim()
             ?.takeIf { it.isNotEmpty() }
             ?.take(MAX_REPORTED_MODEL_CHARS)

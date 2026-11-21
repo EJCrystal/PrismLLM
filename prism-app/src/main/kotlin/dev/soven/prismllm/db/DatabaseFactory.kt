@@ -9,12 +9,6 @@ import org.flywaydb.core.api.callback.Callback
 import org.flywaydb.core.api.callback.Context
 import org.flywaydb.core.api.callback.Event
 import org.jetbrains.exposed.v1.jdbc.Database
-import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.ThreadFactory
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 数据库连接与迁移入口。启动时执行 Flyway，运行期只暴露 DataSource 与 Exposed Database。
@@ -36,23 +30,7 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
         },
     )
 
-    private val diagnosticConnectionSequence = AtomicInteger()
-    private val diagnosticConnectionAcquisition = ThreadPoolExecutor(
-        2, 2, 0, TimeUnit.MILLISECONDS, ArrayBlockingQueue(16),
-        ThreadFactory { task -> Thread(task, "prism-diagnostic-db-${diagnosticConnectionSequence.incrementAndGet()}").apply { isDaemon = true } },
-        ThreadPoolExecutor.AbortPolicy(),
-    )
-    private val transactionDataSource = object : javax.sql.DataSource by dataSource {
-        override fun getConnection(): java.sql.Connection {
-            val connection = DiagnosticPreparationDeadline.acquireConnection(diagnosticConnectionAcquisition) { dataSource.connection }
-            return DiagnosticPreparationDeadline.diagnosticConnection(connection, dataSource::evictConnection)
-        }
-    }
-
-    val database: Database = Database.connect(
-        transactionDataSource,
-        manager = { DiagnosticPreparationDeadline.transactionManager(it) },
-    )
+    val database: Database = Database.connect(dataSource)
 
     /** Register one migration-scoped prerequisite, committed before its SQL script is run. */
     fun beforeMigration(version: String, action: () -> Unit) {
@@ -100,12 +78,6 @@ class DatabaseFactory(config: GatewayConfig) : AutoCloseable {
     }.isSuccess
 
     override fun close() {
-        try {
-            TransactionManager.closeAndUnregister(database)
-        } finally {
-            migrationCallbacks.clear()
-            diagnosticConnectionAcquisition.shutdown()
-            dataSource.close()
-        }
+        dataSource.close()
     }
 }

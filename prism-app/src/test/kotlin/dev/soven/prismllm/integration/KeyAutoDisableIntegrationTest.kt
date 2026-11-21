@@ -83,7 +83,6 @@ import kotlin.test.assertFailsWith
 @Tag("shard-3")
 @Tag("channel")
 class KeyAutoDisableIntegrationTest : GatewayIntegrationTestBase() {
-    override val requiresConnectivityPluginPackage = true
 
     /**
      * 审计失败用例会临时给 admin_audit_logs 加 CHECK 约束。约束名是本类专用，
