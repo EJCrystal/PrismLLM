@@ -55,6 +55,38 @@ class UpstreamConversationTest {
     }
 
     @Test
+    fun `headerless text input keeps its identity when represented as message history`() {
+        val inputs = listOf(
+            """{"input":"hello"}""",
+            """{"input":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"next"}]}""",
+            """{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"role":"assistant","content":"hi"}]}""",
+            """{"messages":[{"role":"system","content":"rules"},{"role":"user","content":"hello"}]}""",
+            """{"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}""",
+            """{"contents":[{"parts":[{"text":"hello"}]}]}""",
+            """{"contents":[{"role":"user","parts":[{"text":"hello"}]},{"role":"model","parts":[{"text":"hi"}]}]}""",
+        )
+        val expected = UpstreamConversation.fromRequest({ null }, json(inputs.first()), "caller")
+        inputs.forEach { input ->
+            val actual = UpstreamConversation.fromRequest({ null }, json(input), "caller")
+            assertEquals(expected, actual, input)
+            assertNotEquals(expected.sessionId, UpstreamConversation.fromRequest({ null }, json(input), "other-caller").sessionId)
+        }
+        assertNotEquals(expected.sessionId, UpstreamConversation.fromRequest({ null }, json("""{"input":"other text"}"""), "caller").sessionId)
+    }
+
+    @Test
+    fun `normalizing the opening preserves multimodal content and ignores JSON member ordering`() {
+        val first = json("""{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"https://example.invalid/first.png"}]}]}""")
+        val reordered = json("""{"input":[{"role":"user","content":[{"text":"hello","type":"input_text"},{"image_url":"https://example.invalid/first.png","type":"input_image"}]}]}""")
+        val otherImage = json("""{"input":[{"role":"user","content":[{"type":"input_text","text":"hello"},{"type":"input_image","image_url":"https://example.invalid/other.png"}]}]}""")
+        fun session(body: kotlinx.serialization.json.JsonObject) = UpstreamConversation.fromRequest({ null }, body, "caller").sessionId
+        assertEquals(session(first), session(reordered))
+        assertNotEquals(session(first), session(otherImage))
+        assertNotEquals(session(first), session(json("""{"input":"hello"}""")))
+        assertEquals("native", UpstreamConversation.fromRequest({ if (it == "session_id") "native" else null }, first, "caller").sessionId)
+    }
+
+    @Test
     fun `headers remove unsafe identity bytes and own test sessions differ`() {
         val c = UpstreamConversation("s\r\n\t\u007f你")
         assertEquals("s", c.expand("\${sessionId}", header = true))

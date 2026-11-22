@@ -48,7 +48,7 @@ data class UpstreamConversation(
                 val digest = MessageDigest.getInstance("SHA-256")
                 digest.update(callerId.toByteArray(Charsets.UTF_8))
                 digest.update(0.toByte())
-                val hash = digest.digest(opening.toString().toByteArray(Charsets.UTF_8))
+                val hash = digest.digest(openingIdentity(opening).toString().toByteArray(Charsets.UTF_8))
                 "prismllm-" + hash.take(12).joinToString("") { "%02x".format(it) }
             }
             val clientMetadata = body["client_metadata"] as? JsonObject
@@ -61,6 +61,27 @@ data class UpstreamConversation(
                 ?.takeIf { it.isString }?.contentOrNull?.trim()?.takeIf { it.length in 1..128 }
                 ?: named("thread-id") ?: session
             return UpstreamConversation(session, thread, named("x-claude-code-agent-id").orEmpty())
+        }
+
+        /** Hash user content, not protocol-specific message envelopes or JSON member order. */
+        private fun openingIdentity(opening: JsonElement): JsonElement {
+            val content = (opening as? JsonObject)?.let { it["content"] ?: it["parts"] } ?: opening
+            val parts = (content as? JsonArray)?.toList() ?: listOf(content)
+            return JsonArray(parts.map { part ->
+                val block = part as? JsonObject
+                val text = block?.get("text") as? JsonPrimitive
+                val type = (block?.get("type") as? JsonPrimitive)?.contentOrNull
+                if (block != null && text?.isString == true && type in setOf(null, "text", "input_text") &&
+                    block.keys.all { it == "type" || it == "text" }
+                ) text else canonicalIdentity(part)
+            })
+        }
+
+        /** Keep non-text data intact, including images, while making object ordering immaterial. */
+        private fun canonicalIdentity(value: JsonElement): JsonElement = when (value) {
+            is JsonObject -> JsonObject(value.toSortedMap().mapValues { (_, item) -> canonicalIdentity(item) })
+            is JsonArray -> JsonArray(value.map(::canonicalIdentity))
+            else -> value
         }
 
         private fun firstUserTurn(body: JsonObject): JsonElement? {

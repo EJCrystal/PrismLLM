@@ -83,6 +83,44 @@ class ExtraBodyIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `headerless Responses keeps configured session headers and cache keys across input shapes`() = runBlocking {
+        createChannelWithBaseUrl(
+            "stable-session", fake.baseUrl + "/ok/v1", protocols = listOf(GatewayProtocol.RESPONSES),
+            modelMappings = mappingsOf("m1"),
+            requestOverrides = UpstreamRequestOverrides(protocols = mapOf("responses" to UpstreamProtocolOverrides(
+                headers = mapOf("X-Configured-Session" to "${'$'}{sessionId}"),
+                extraBody = Json.parseToJsonElement("""{"prompt_cache_key":"${'$'}{sessionId}"}""").jsonObject,
+            ))),
+        )
+        val key = createClientKey()
+        val inputs = listOf(
+            """"hello"""",
+            """[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"},{"role":"user","content":"next"}]""",
+            """[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]},{"role":"assistant","content":"hi"}]""",
+        )
+        testApplication {
+            application { app.install(this) }
+            var firstKey: String? = null
+            for ((index, input) in inputs.withIndex()) {
+                val response = client.post("/v1/responses") {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"model":"m1","input":$input,"stream":${index % 2 == 1}}""")
+                }
+                assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+                response.bodyAsText()
+                val sent = fake.requests.last()
+                val sentBody = Json.parseToJsonElement(sent.body).jsonObject
+                val cacheKey = sentBody["prompt_cache_key"]!!.jsonPrimitive.content
+                if (firstKey == null) firstKey = cacheKey
+                assertEquals(firstKey, cacheKey)
+                assertEquals(listOf(cacheKey), sent.requestHeaders["x-configured-session"])
+                assertEquals(Json.parseToJsonElement(input), sentBody["input"], "identity normalization must not rewrite caller content")
+            }
+        }
+    }
+
+    @Test
     fun `failover preserves caller session but not another channels extra fields`() = runBlocking {
         val headers = mapOf("X-Configured-Session" to "${'$'}{sessionId}")
         val bad = createChannelWithBaseUrl(
