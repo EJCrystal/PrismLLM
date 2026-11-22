@@ -57,6 +57,7 @@ import dev.soven.prismllm.oauth.infra.OAuthWindowStateWriter
 import dev.soven.prismllm.oauth.buildOAuthTokenProviders
 import dev.soven.prismllm.channel.persistence.ModelTestSettingsRepository
 import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
+import dev.soven.prismllm.admin.persistence.SystemPromptSettingsRepository
 import dev.soven.prismllm.admin.persistence.NotificationRepository
 import dev.soven.prismllm.channel.persistence.KeyStateObserver
 import dev.soven.prismllm.notification.NotificationCredentials
@@ -356,6 +357,7 @@ class GatewayApplication(
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
+    val systemPromptSettingsRepository = SystemPromptSettingsRepository(databaseFactory.database)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
 

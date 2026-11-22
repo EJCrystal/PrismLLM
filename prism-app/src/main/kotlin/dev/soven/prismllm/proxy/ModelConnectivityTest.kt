@@ -71,6 +71,7 @@ suspend fun testChannelModelConnectivity(
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
     isolatedIqRequest: Boolean = false,
+    systemPrompt: String? = null,
 ): ModelConnectivityTestResult {
     val credential = resolveSavedCredential(credentials, credentialRef)
     return runModelConnectivityTest(
@@ -89,6 +90,7 @@ suspend fun testChannelModelConnectivity(
         globalOverrides = globalOverrides,
         headerProfiles = headerProfiles,
         isolatedIqRequest = isolatedIqRequest,
+        systemPrompt = systemPrompt,
     )
 }
 
@@ -111,6 +113,7 @@ suspend fun testOAuthAccountModelConnectivity(
     maxResponseChars: Int = MAX_RESPONSE_CHARS,
     globalOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
+    systemPrompt: String? = null,
 ): ModelConnectivityTestResult = runModelConnectivityTest(
     channel = channel,
     credential = accessToken,
@@ -126,6 +129,7 @@ suspend fun testOAuthAccountModelConnectivity(
     maxResponseChars = maxResponseChars,
     globalOverrides = globalOverrides,
     headerProfiles = headerProfiles,
+    systemPrompt = systemPrompt,
 )
 
 private suspend fun runModelConnectivityTest(
@@ -144,6 +148,7 @@ private suspend fun runModelConnectivityTest(
     globalOverrides: UpstreamRequestOverrides,
     headerProfiles: List<UpstreamHeaderProfile>,
     isolatedIqRequest: Boolean = false,
+    systemPrompt: String? = null,
 ): ModelConnectivityTestResult {
     if (envelope == UpstreamEnvelope.CODE_ASSIST && project.isNullOrBlank()) {
         return ModelConnectivityTestResult(
@@ -161,6 +166,7 @@ private suspend fun runModelConnectivityTest(
             val authType = channel.authTypeFor(protocol)
             val policy = UpstreamRequestPolicy(
                 globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
+                systemPrompt = if (isolatedIqRequest) null else systemPrompt,
             )
             val original = Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject
             val overridden = policy.body(original, model)
@@ -168,7 +174,8 @@ private suspend fun runModelConnectivityTest(
             val limited = limitModelTestTokens(requestBody, protocol, maxOutputTokens)
             val body = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
                 // 连通性探测只验证信封可达，不参与真实对话的档位/编号；labels/sessionId 用默认派生值。
-                CodeAssistEnvelope.wrap(CodeAssistCloak.apply(limited), model, project).toString()
+                val instruction = if (systemPrompt == null || isolatedIqRequest) CodeAssistCloak.apply(limited) else limited
+                CodeAssistEnvelope.wrap(instruction, model, project).toString()
             } else {
                 limited.toString()
             }

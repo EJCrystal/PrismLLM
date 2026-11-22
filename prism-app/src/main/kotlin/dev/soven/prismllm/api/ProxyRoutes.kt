@@ -1,5 +1,7 @@
 package dev.soven.prismllm.api
 
+import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
+
 import dev.soven.prismllm.shared.error.GatewayError
 import dev.soven.prismllm.shared.error.badRequest
 import dev.soven.prismllm.shared.error.notFound
@@ -342,6 +344,7 @@ private suspend fun handleProxyRequest(
             null
         }
         val globalOverrides = app.upstreamRequestSettingsRepository.load().overrides
+        state.systemPromptSettings = app.systemPromptSettingsRepository.load()
         val headerProfiles = app.upstreamHeaderCatalogService.profiles()
 
         phase = FailureStage.UPSTREAM
@@ -1048,6 +1051,7 @@ private val QUOTA_REJECTION_CODES = setOf(
 )
 
 private class ProxyState {
+    var systemPromptSettings = SystemPromptSettingsRecord()
     var committed = false
     var statusCode = HttpStatusCode.OK.value
     var usage: Usage? = null
@@ -1346,6 +1350,7 @@ private suspend fun searchChatCaller(
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
         candidate.channel.baseUrl,
+        systemPrompt = state.systemPromptSettings.replacementFor(candidate.channel.id, upstreamProtocol),
     )
     return ChatCaller { messages ->
         val body = buildJsonObject {
@@ -1433,6 +1438,7 @@ private suspend fun proxyStream(
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
         headerProfiles, candidate.channel.baseUrl,
+        systemPrompt = state.systemPromptSettings.replacementFor(candidate.channel.id, upstreamProtocol),
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
@@ -1493,6 +1499,7 @@ private suspend fun proxyStream(
             clientKeyId,
             codeAssistProject,
             codeAssistCatalog,
+            cloak = state.systemPromptSettings.replacementFor(candidate.channel.id, upstreamProtocol) == null,
         )
     } else {
         bodyJson.toString()
@@ -1744,6 +1751,7 @@ private suspend fun proxyJson(
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
         headerProfiles, candidate.channel.baseUrl,
+        systemPrompt = state.systemPromptSettings.replacementFor(candidate.channel.id, upstreamProtocol),
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
@@ -1799,6 +1807,7 @@ private suspend fun proxyJson(
             clientKeyId,
             codeAssistProject,
             codeAssistCatalog,
+            cloak = state.systemPromptSettings.replacementFor(candidate.channel.id, upstreamProtocol) == null,
         )
     } else {
         bodyJson.toString()
@@ -1966,10 +1975,11 @@ private fun codeAssistRequestBody(
     clientKeyId: String?,
     codeAssistProject: String?,
     codeAssistCatalog: CodeAssistModelCatalog.Catalog?,
+    cloak: Boolean = true,
 ): String {
     val effort = ReasoningEffort.fromRequest(bodyJson, GatewayProtocol.GEMINI)
     val sentModel = codeAssistCatalog?.sentId(candidate.upstreamModel, effort) ?: candidate.upstreamModel
-    val request = CodeAssistCloak.apply(bodyJson)
+    val request = if (cloak) CodeAssistCloak.apply(bodyJson) else bodyJson
     return CodeAssistEnvelope.wrap(
         request,
         sentModel,

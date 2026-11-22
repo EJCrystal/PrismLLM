@@ -8,6 +8,7 @@ import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.protocol.ChatReasoningContentNormalizer
 import dev.soven.prismllm.protocol.DeveloperRoleNormalizer
 import dev.soven.prismllm.protocol.MessagesThinkingNormalizer
+import dev.soven.prismllm.protocol.replaceSystemPrompt
 import dev.soven.prismllm.proxy.codeassist.antigravityUserAgent
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
@@ -84,6 +85,7 @@ class UpstreamRequestPolicy(
     private val profiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
     /** 目标渠道地址，仅用于判断上游是否需要回传 reasoning_content（看 host）。 */
     private val baseUrl: String = "",
+    private val systemPrompt: String? = null,
 ) {
     private val layers: List<UpstreamProtocolOverrides> = buildList {
         if (channel.inheritGlobal) {
@@ -136,11 +138,14 @@ class UpstreamRequestPolicy(
             merged
         }
         val normalized = DeveloperRoleNormalizer.normalize(compatible, protocol)
-        val result = when (protocol) {
+        val compatibleBody = when (protocol) {
             GatewayProtocol.CHAT_COMPLETIONS -> ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, baseUrl)
             GatewayProtocol.MESSAGES -> MessagesThinkingNormalizer.normalize(normalized, upstreamModel, baseUrl)
             else -> normalized
         }
+        val result = if (systemPrompt != null && protocol != null) {
+            replaceSystemPrompt(compatibleBody, protocol, systemPrompt)
+        } else compatibleBody
         if (result.toString().toByteArray(Charsets.UTF_8).size.toLong() > limitBytes) {
             throw GatewayError(
                 HttpStatusCode.PayloadTooLarge, "request_too_large",

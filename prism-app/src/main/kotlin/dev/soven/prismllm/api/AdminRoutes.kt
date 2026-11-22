@@ -24,6 +24,8 @@ import dev.soven.prismllm.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.prismllm.shared.domain.effectiveAuthType
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
+import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
+import dev.soven.prismllm.admin.domain.systemPromptSettingsError
 import dev.soven.prismllm.domain.effective
 import dev.soven.prismllm.proxy.validateUpstreamRequestOverrides
 import dev.soven.prismllm.pricing.domain.BILLING_CURRENCY
@@ -399,6 +401,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(updated.toResponse())
         }
 
+        get("/system-prompt-settings") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.systemPromptSettingsRepository.load())
+        }
+
+        put("/system-prompt-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<SystemPromptSettingsRecord>()
+            systemPromptSettingsError(request)?.let { throw badRequest("invalid_system_prompt_settings", it) }
+            val channelIds = app.channelRepository.listNames().keys
+            if (request.rules.any { rule -> rule.channelIds.any { it !in channelIds } }) {
+                throw badRequest("invalid_system_prompt_settings", "规则包含已删除或不存在的渠道，请重新选择")
+            }
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.systemPromptSettingsRepository.save(request))
+        }
+
         get("/upstream-request-settings") {
             call.requireAdmin(app)
             call.respond(
@@ -718,6 +738,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 httpClient = upstreamClient(app, channelEgressProxy(app, channel, credential)),
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                systemPrompt = app.systemPromptSettingsRepository.load().replacementFor(channel.id, protocol),
             )
             call.respond(result.toResponse(model, protocol, credential.id, credential.name, prompt))
         }
@@ -1569,6 +1590,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 codeAssistUserAgent = app.currentAntigravityUserAgent(),
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                systemPrompt = app.systemPromptSettingsRepository.load().replacementFor(channel.id, protocol),
             )
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", accountId)

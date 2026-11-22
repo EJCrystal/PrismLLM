@@ -160,6 +160,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/request-log-retention/cleanup" -> "request_log.cleanup"
     method == "PUT" && path == "/admin/api/model-test-settings" -> "model_test_settings.update"
     method == "PUT" && path == "/admin/api/upstream-request-settings" -> "upstream_request_settings.update"
+    method == "PUT" && path == "/admin/api/system-prompt-settings" -> "system_prompt_settings.update"
     method == "PUT" && path == "/admin/api/key-auto-disable-settings" -> "key_auto_disable_settings.update"
     method == "PUT" && path == "/admin/api/notification-settings" -> "notification.settings.update"
     method == "POST" && path == "/admin/api/notification-targets" -> "notification.target.create"
