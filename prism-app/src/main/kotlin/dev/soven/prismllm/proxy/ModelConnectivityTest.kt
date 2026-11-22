@@ -167,6 +167,7 @@ private suspend fun runModelConnectivityTest(
             val policy = UpstreamRequestPolicy(
                 globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
                 systemPrompt = if (isolatedIqRequest) null else systemPrompt,
+                conversation = UpstreamConversation.own("prismllm-test-"),
             )
             val original = Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject
             val overridden = policy.body(original, model)
@@ -260,7 +261,7 @@ private suspend fun runModelConnectivityTest(
 internal fun isolateIqRequestBody(original: JsonObject, overridden: JsonObject, protocol: GatewayProtocol): JsonObject {
     val scalarSettings = when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> setOf("temperature", "top_p", "seed", "presence_penalty", "frequency_penalty", "reasoning_effort", "max_tokens", "max_completion_tokens")
-        GatewayProtocol.RESPONSES -> setOf("temperature", "top_p", "max_output_tokens")
+        GatewayProtocol.RESPONSES -> setOf("temperature", "top_p", "max_output_tokens", "prompt_cache_key")
         GatewayProtocol.MESSAGES -> setOf("temperature", "top_p", "top_k", "max_tokens")
         GatewayProtocol.GEMINI -> emptySet()
     }
@@ -337,7 +338,7 @@ internal fun buildModelTestBody(
 /** Administrative checks keep their documented token budget after applying user overrides. */
 internal fun limitModelTestTokens(body: JsonObject, protocol: GatewayProtocol, maxTokens: Int): JsonObject {
     val field = when (protocol) {
-        GatewayProtocol.CHAT_COMPLETIONS -> if ("max_completion_tokens" in body) "max_completion_tokens" else "max_tokens"
+        GatewayProtocol.CHAT_COMPLETIONS -> if (hasCompletionTokenBudget(body)) "max_completion_tokens" else "max_tokens"
         GatewayProtocol.RESPONSES -> "max_output_tokens"
         GatewayProtocol.GEMINI -> "maxOutputTokens"
         else -> "max_tokens"

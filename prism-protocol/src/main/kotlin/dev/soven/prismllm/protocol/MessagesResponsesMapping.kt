@@ -17,6 +17,7 @@ internal fun messagesToResponsesRequest(
 ): JsonObject = buildJsonObject {
     validateMessagesRequest(request)
     put("model", upstreamModel)
+    request["prompt_cache_key"]?.let { put("prompt_cache_key", it) }
     listOf("stream", "temperature", "top_p").forEach { field -> request[field]?.let { put(field, it) } }
     request.number("max_tokens")?.let { put("max_output_tokens", it) }
     if (request["stop_sequences"].let { it != null && it !is JsonNull }) unsupported("stop_sequences", "Responses 不支持 stop_sequences")

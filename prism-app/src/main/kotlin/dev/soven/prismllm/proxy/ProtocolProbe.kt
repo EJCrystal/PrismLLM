@@ -52,6 +52,7 @@ suspend fun probeUpstreamProtocols(
     headerProfiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
 ): List<ProtocolProbeResult> {
     val credential = resolveSavedCredential(credentials, credentialRef)
+    val conversation = UpstreamConversation.own("prismllm-test-")
 
     return GatewayProtocol.entries.map { protocol ->
         try {
@@ -59,6 +60,7 @@ suspend fun probeUpstreamProtocols(
                 val authType = channel.authTypeFor(protocol)
                 val policy = UpstreamRequestPolicy(
                     globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
+                    conversation = conversation,
                 )
                 val body = policy.body(
                     kotlinx.serialization.json.Json.parseToJsonElement(probeBody(protocol, model)) as kotlinx.serialization.json.JsonObject,

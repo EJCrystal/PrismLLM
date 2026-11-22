@@ -10,6 +10,8 @@ data class UpstreamProtocolOverrides(
     val userAgent: String? = null,
     val headers: Map<String, String?> = emptyMap(),
     val body: JsonObject = JsonObject(emptyMap()),
+    /** Magpie-style top-level defaults; a leading ! forces replacement, null is a value. */
+    val extraBody: JsonObject = JsonObject(emptyMap()),
 )
 
 /** Channel settings inherit the global layers unless explicitly opted out. */
@@ -21,6 +23,7 @@ data class UpstreamRequestOverrides(
     val headers: Map<String, String?> = emptyMap(),
     val body: JsonObject = JsonObject(emptyMap()),
     val protocols: Map<String, UpstreamProtocolOverrides> = emptyMap(),
+    val extraBody: JsonObject = JsonObject(emptyMap()),
 ) {
-    fun common() = UpstreamProtocolOverrides(headerProfile, userAgent, headers, body)
+    fun common() = UpstreamProtocolOverrides(headerProfile, userAgent, headers, body, extraBody)
 }

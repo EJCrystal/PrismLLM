@@ -184,6 +184,7 @@ export interface UpstreamProtocolOverrides {
   userAgent: string | null
   headers: Record<string, string | null>
   body: JsonObject
+  extraBody: JsonObject
 }
 
 export interface UpstreamRequestOverrides extends UpstreamProtocolOverrides {

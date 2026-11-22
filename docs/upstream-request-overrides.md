@@ -1,6 +1,6 @@
 # 上游请求配置：优先级与示例
 
-上游请求配置用于设置 UA、客户端请求头和 JSON 请求体补丁。它作用于实际发往上游的请求，不会将 Chat、Responses、Anthropic 或 Gemini 请求互相转换。
+上游请求配置用于设置 UA、客户端请求头、JSON 请求体补丁（`body`）和 Magpie 风格的请求体补充（`extraBody`）。两者是并列的 JSON 对象，通用层和各协议层均可配置。它作用于实际发往上游的请求，不会将 Chat、Responses、Anthropic 或 Gemini 请求互相转换。
 
 ## 配置入口与保存行为
 
@@ -13,12 +13,12 @@
 
 「配置范围」只决定正在编辑哪一层，不会切换或限制渠道路由：
 
-- **通用配置**：应用于全部出站协议，也用于模型发现、连通性测试和协议探测。适合团队标识、通用 UA 等所有协议都能接受的请求头。
+- **通用配置**：应用于全部出站协议、连通性测试和协议探测。模型发现只使用请求头规则，不应用 `body` 或 `extraBody`。适合团队标识、通用 UA 等所有协议都能接受的请求头。
 - **协议专用配置**：只在实际出站协议匹配时应用。可以分别给 Chat、Responses、Messages 和 Gemini 设置不同 UA、请求头和请求体参数，例如 Responses 的 `reasoning`、Messages 的 `anthropic-beta`、Gemini 的 `generationConfig`。
 
 同一层的协议专用配置高于通用配置。完整的全局/渠道组合顺序仍是：最终预设 → 全局通用 → 全局协议 → 渠道通用 → 渠道协议。
 
-保存后新请求立即使用新配置，重启后保留。全局写入会整体替换 `overrides`；渠道写入时，省略整个 `requestOverrides` 字段会保留原配置，传入该字段则整体替换渠道请求配置。修改其中一个协议时，也要保留还需要的其他协议规则。
+保存后新请求立即使用新配置，重启后保留。全局写入会整体替换 `overrides`；渠道写入时，省略整个 `requestOverrides` 字段会保留原配置，传入该字段则整体替换渠道请求配置。修改其中一个协议时，也要保留还需要的其他协议规则。仅配置非空 `extraBody` 的协议也会保留；管理面切换范围不丢草稿，无效或未完成的 JSON 仍计入未保存状态，修正前不能保存。
 
 全局配置在单实例网关启动时加载到进程内缓存，后续请求复用该快照。通过管理接口保存并完成数据库提交后立即更新缓存；保存失败时继续使用原快照，重启后重新读取持久化配置。正在进行的请求保持自己的快照，下一次请求使用新配置。
 
@@ -59,6 +59,17 @@
 同一层先设置 `userAgent`，再设置 `headers`。因此同层 `headers` 中的 `User-Agent` 比 `userAgent` 优先；请求头名称不区分大小写。不要在两处重复配置 UA，除非确实需要这个顺序。
 
 `inheritGlobal:false` 只跳过全局通用和全局协议两层，仍会使用渠道配置及默认协议预设。`headerProfile:"none"` 只关闭预设，仍会应用继承的自定义规则；两者作用不同。
+
+### 3. 最后应用 extraBody
+
+先按 **全局通用 → 全局协议 → 渠道通用 → 渠道协议** 合并 `extraBody` 规则，以字段名去除首尾空格、开头的一个 `!` 再去除首尾空格后的目标名匹配，高层规则整体取代低层规则，包括是否强制替换。随后完成所有层的 `body` 补丁，最后才将合并后的 `extraBody` 应用一次：
+
+- 普通顶层键只补充不存在的字段。已有值即使是 `""`、`null`、`false` 或 `0` 也保留；已有对象不再递归补充其成员。
+- `!字段名` 强制替换整个顶层值，不合并旧对象；`null` 是发送给上游的显式值，普通补充和强制替换都不会将它解释为删除。
+- `body` 补丁写入的值也视为已有值，普通补充保留它，`!` 才能替换它。`body` 删除字段后，普通补充可以重新添加该字段。
+- 未配置 `extraBody` 或配置为空对象时，不自动补充任何字段或缓存键。
+
+例如全局 `extraBody:{"!metadata":{"source":"global"}}` 被渠道 `extraBody:{"metadata":{"source":"channel"}}` 覆盖后，最终规则是普通补充，已有 `metadata` 会被保留。若最终规则是 `{"!metadata":null}`，则整个 `metadata` 变为 JSON `null`。
 
 ## 各协议自动预设
 
@@ -133,7 +144,7 @@ manifest 格式如下。只接受已知的 `claude`、`codex`、`google`、`anti
 
 Google 官方根地址 `https://generativelanguage.googleapis.com` 和完整模型列表地址 `https://generativelanguage.googleapis.com/v1beta/models` 都不应填入 `baseUrl`；前者缺少版本，后者会重复追加端点。使用其他版本时需确认上游支持该版本。
 
-Gemini 模型发现每页请求 `pageSize=1000`，通过 `nextPageToken` 拉取后续页面，去掉模型 ID 的 `models/` 前缀后跨页去重并排序。每页使用相同的渠道凭据及请求头覆盖。整个发现过程共享 15 秒超时和 2 MB 响应大小上限；后续页失败、累计超限或返回重复分页标记时，整个发现返回错误，不返回不完整列表。GET 模型发现不应用请求体补丁。
+Gemini 模型发现每页请求 `pageSize=1000`，通过 `nextPageToken` 拉取后续页面，去掉模型 ID 的 `models/` 前缀后跨页去重并排序。每页使用相同的渠道凭据及请求头覆盖。整个发现过程共享 15 秒超时和 2 MB 响应大小上限；后续页失败、累计超限或返回重复分页标记时，整个发现返回错误，不返回不完整列表。GET 模型发现不应用 `body` 或 `extraBody`，只为请求头变量创建独立会话；同次发现的分页复用该会话。
 
 例如保存前发现 Google 模型：
 
@@ -155,15 +166,38 @@ Gemini 入站兼容 `?key=<gateway-key>`，出站仅使用渠道凭据，不转�
 | `userAgent:""` | 显式清空 UA；管理面对应「清空 User-Agent」 |
 | `headers:{"X-App":"cli"}` | 设置或替换该请求头 |
 | `headers:{"X-App":null}` | 删除较低层设置的该请求头；更高层仍可重新设置 |
-| `headers:{}` / `body:{}` | 本层没有对应覆盖，保留较低层效果 |
+| `headers:{}` / `body:{}` / `extraBody:{}` | 本层没有对应规则，保留较低层效果 |
 | `body:{"store":false}` | 将请求体的 `store` 改为布尔值 `false` |
 | `body:{"store":null}` | 删除请求体的 `store` 字段，而不是发送 JSON `null` |
+| `extraBody:{"store":false}` | 仅当所有 `body` 补丁完成后仍无 `store` 字段时补充 `false` |
+| `extraBody:{"!metadata":{"source":"gateway"}}` | 整体替换顶层 `metadata`，不递归合并 |
+| `extraBody:{"!store":null}` | 将 `store` 显式设置为 JSON `null`，不删除 |
 
-请求体采用 RFC 7396 JSON Merge Patch：对象逐层合并，数组和标量整体替换，`null` 删除对象成员。各层依次对当前请求体应用补丁，不会先把所有补丁简单拼成一个对象。每次故障转移都会从原始请求重新应用全局规则与本次渠道规则，不携带上一个渠道的改写。
+`body` 采用 RFC 7396 JSON Merge Patch：对象逐层合并，数组和标量整体替换，`null` 删除对象成员。各层依次对当前请求体应用补丁，不会先把所有补丁简单拼成一个对象。每次故障转移都会从原始请求重新应用全局规则与本次渠道规则，不携带上一个渠道的改写。
 
 UA 删除有特殊处理：`userAgent:""` 或 `headers:{"User-Agent":null}` 都会发送空 UA 值，避免 Java HTTP 客户端补回默认 UA。只选 `none` 不等于清空 UA。
 
 管理面 UA 输入框留空表示本层不覆盖，不表示删除。通用请求体补丁会作用于全部协议；`reasoning`、`max_tokens`、`generationConfig` 等协议专用字段应放在相应的 `protocols` 规则中，以免其他协议拒绝参数。
+
+## 会话变量与 prompt_cache_key
+
+`headers` 的字符串值，以及 `extraBody` 值中的字符串（包括嵌套对象和数组），支持 `${sessionId}`、`${threadId}`、`${subagentId}`。字段名不展开，`body` 仍按原来的 RFC 7396 补丁语义处理；管理面只保存模板，变量由后端按请求展开。
+
+| 变量 | 来源 |
+| --- | --- |
+| `${sessionId}` | 优先沿用原生客户端会话头的值，不再哈希；没有会话头时，由最早的用户消息与 `clientKey.id` 通过 SHA-256 稳定派生，不发送消息明文，并按调用方隔离；也没有用户消息时生成随机会话 |
+| `${threadId}` | 优先解析 `x-codex-turn-metadata` 头（缺省时取 `client_metadata["x-codex-turn-metadata"]` JSON 字符串）中的 `thread_id`；其次使用 `thread-id` 头，否则使用 `sessionId` |
+| `${subagentId}` | 使用 `x-claude-code-agent-id`，没有时为空串 |
+
+同一个出站请求的请求头与 `extraBody` 共用变量值，故障转移继续使用该请求的会话。连通性测试、协议探测每次使用独立随机会话，请求头和请求体保持一致；模型发现也使用独立会话，但只展开请求头变量，不发送 `extraBody`。
+
+**`prompt_cache_key` 是请求体字段，不是请求头。** 建议仅在 Responses 层的「请求体补充（extraBody）」填写：
+
+```json
+{"prompt_cache_key":"${sessionId}"}
+```
+
+这样仅在调用方和 `body` 补丁均未设置该字段时补充会话键。若确实需要覆盖已有值，使用 `{"!prompt_cache_key":"${sessionId}"}`。
 
 ## reasoning_content 与 developer 角色（自动处理，无配置项）
 
@@ -182,7 +216,7 @@ UA 删除有特殊处理：`userAgent:""` 或 `headers:{"User-Agent":null}` 都�
 
 ## 示例 1：全局保留自动预设，只覆盖 Responses 参数
 
-完整请求见 [upstream-request-global.json](examples/upstream-request-global.json)。该配置保留各协议自动 UA，为全部请求加入团队标识，仅为 Responses 设置推理强度与 `store`。
+完整请求见 [upstream-request-global.json](examples/upstream-request-global.json)。该配置保留各协议自动 UA，为全部请求加入团队标识，仅为 Responses 设置推理强度与 `store`，并在缺少 `prompt_cache_key` 时补充会话键。
 
 ```json
 {
@@ -203,6 +237,9 @@ UA 删除有特殊处理：`userAgent:""` 或 `headers:{"User-Agent":null}` 都�
             "effort": "high",
             "summary": "auto"
           }
+        },
+        "extraBody": {
+          "prompt_cache_key": "${sessionId}"
         }
       }
     }
@@ -269,6 +306,7 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels \
 | `X-Remove` | 不发送 | 渠道通用显式删除 |
 | `reasoning.effort` | `medium` | 渠道协议覆盖全局协议 |
 | `reasoning.summary`、`store` | 请求体中不包含 | 渠道协议补丁删除这些字段 |
+| `prompt_cache_key` | 原值；缺失时为本次 `sessionId` | 全局 Responses 的普通补充保留已有值 |
 
 `model` 仍按渠道映射从 `custom-reasoner` 改为 `upstream-model`；其他未命中的请求体字段保留。
 
@@ -300,8 +338,9 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/channels \
 
 ## 校验与管理测试
 
-- 请求头与 UA 必须合法；每层最多 64 个请求头，每个值最多 8192 字符，整体请求覆盖配置最多 64KB，JSON 嵌套最多 32 层。
-- 补丁不能修改顶层 `model` / `stream`，也不能覆盖鉴权、Cookie、Host、连接/长度/类型/编码头及 `traceparent`。`Content-Encoding` 和 `Accept-Encoding` 均禁止设置或删除：网关发送明文 JSON，并按明文解析上游 JSON/SSE，不支持通过覆盖请求头要求压缩。凭据通过渠道密钥配置，模型名通过模型映射配置。
-- 生成请求、连通性测试和协议探测均应用请求体补丁；模型列表使用请求头规则，不使用请求体补丁。改写后的生成请求仍受请求体大小上限约束。
+- 请求头与 UA 必须合法；每层最多 64 个请求头，每个值最多 8192 字符。包含所有 `extraBody` 在内的整体请求覆盖配置最多 64KB（UTF-8），`body` 和 `extraBody` 均最多嵌套 32 层。
+- `body` 补丁仍只禁止修改顶层 `model` / `stream`。`extraBody` 额外拒绝空字段名、规范化后重复目标名（如 `foo` / `!foo` 或首尾空格变体），以及保留字段 `model`、`stream`、`messages`、`input`、`contents`、`system`、`systemInstruction`、`system_instruction`、`instructions`、`tools`；`!` 和空格不能绕过校验，嵌套对象的成员不受这份顶层保留名单限制。
+- 请求头不能覆盖鉴权、Cookie、Host、连接/长度/类型/编码头及 `traceparent`。`Content-Encoding` 和 `Accept-Encoding` 均禁止设置或删除：网关发送明文 JSON，并按明文解析上游 JSON/SSE，不支持通过覆盖请求头要求压缩。凭据通过渠道密钥配置，模型名通过模型映射配置。
+- 生成请求、连通性测试和协议探测均先完成所有 `body` 补丁，再应用合并后的 `extraBody`；模型列表只使用请求头规则。改写后的生成请求仍受请求体大小上限约束。
 - 模型发现支持尚未保存的渠道请求头规则；连通性测试和协议探测使用已保存规则，编辑后先保存再测试。输出预算仍分别限制为 128 / 1 token，包括 Chat 的 `max_completion_tokens`。
 - Google / Antigravity 预设只设置请求头，不实现订阅 OAuth 登录、自动续期或 Antigravity 内部请求封装。上游必须支持当前请求协议与配置的凭据类型。
