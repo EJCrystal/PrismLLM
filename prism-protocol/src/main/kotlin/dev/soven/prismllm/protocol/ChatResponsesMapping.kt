@@ -129,6 +129,7 @@ internal fun chatToResponsesRequest(
 ): JsonObject = buildJsonObject {
     rejectUnknownFields(chat, chatRequestFields, "request")
     put("model", upstreamModel)
+    chat["prompt_cache_key"]?.let { put("prompt_cache_key", it) }
     chat.boolean("stream")?.let { put("stream", it) }
     chat.number("temperature")?.let { put("temperature", it) }
     chat.number("top_p")?.let { put("top_p", it) }

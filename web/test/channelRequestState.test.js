@@ -114,6 +114,20 @@ describe('channel request state', () => {
     assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: null }), false)
   })
 
+  it('仅 extraBody 的协议配置变更也需保存后才能探测', () => {
+    const requestOverrides = { protocols: { responses: { extraBody: { prompt_cache_key: '${sessionId}' } } } }
+    const saved = { baseUrl: 'https://example.com/v1', authType: 'bearer', requestOverrides }
+    const inputs = { baseUrl: saved.baseUrl, authType: saved.authType, credential: '' }
+    assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: structuredClone(requestOverrides) }), true)
+    assert.equal(canProbeSavedChannel(saved, { ...inputs, requestOverrides: {} }), false)
+    assert.equal(canProbeSavedChannel(saved, {
+      ...inputs, requestOverrides: { protocols: { responses: { extraBody: { prompt_cache_key: '${threadId}' } } } },
+    }), false)
+    assert.equal(canProbeSavedChannel(saved, {
+      ...inputs, requestOverrides: { protocols: { responses: { extraBody: { '!prompt_cache_key': '${sessionId}' } } } },
+    }), false)
+  })
+
   it('协议快照按集合比较，任何增删都使模型发现结果过期', () => {
     assert.equal(sameProtocolSelection(['chat_completions', 'responses'], ['responses', 'chat_completions']), true)
     assert.equal(sameProtocolSelection(['chat_completions'], []), false)

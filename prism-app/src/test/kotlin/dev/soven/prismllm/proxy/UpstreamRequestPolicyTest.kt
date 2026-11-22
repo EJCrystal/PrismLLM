@@ -152,6 +152,94 @@ class UpstreamRequestPolicyTest {
     }
 
     @Test
+    fun `extra body fills absent fields but preserves client values including null and empty`() {
+        val policy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(),
+            UpstreamRequestOverrides(extraBody = json("""{"prompt_cache_key":"${'$'}{sessionId}","metadata":{"nested":["${'$'}{threadId}","${'$'}{subagentId}"]},"explicit_null":null}""")),
+            GatewayProtocol.RESPONSES, "bearer", conversation = UpstreamConversation("session", "thread", "agent"),
+        )
+        val first = policy.body(json("{}"), "m")
+        assertEquals("session", first["prompt_cache_key"]?.jsonPrimitive?.content)
+        assertEquals(json("""{"nested":["thread","agent"]}"""), first["metadata"])
+        assertTrue(first.containsKey("explicit_null"))
+        for (value in listOf("\"caller\"", "\"\"", "null")) {
+            val original = json("""{"prompt_cache_key":$value,"metadata":{"client":true}}""")
+            val result = policy.body(original, "m")
+            assertEquals(original["prompt_cache_key"], result["prompt_cache_key"])
+            assertEquals(original["metadata"], result["metadata"], "defaults replace no existing top-level value")
+        }
+    }
+
+    @Test
+    fun `extra body resolves normalized field precedence before applying and forces whole values`() {
+        val global = UpstreamRequestOverrides(
+            extraBody = json("""{"!prompt_cache_key":"global-forced","choice":"global"}"""),
+            protocols = mapOf("responses" to UpstreamProtocolOverrides(extraBody = json("""{"choice":"global-protocol"}"""))),
+        )
+        val channel = UpstreamRequestOverrides(
+            body = json("""{"patched":"kept"}"""),
+            extraBody = json("""{"prompt_cache_key":"channel","choice":"channel","patched":"unused"}"""),
+            protocols = mapOf("responses" to UpstreamProtocolOverrides(extraBody = json("""{"choice":"channel-protocol"," !metadata ":{"replacement":true},"!drop":null}"""))),
+        )
+        val policy = UpstreamRequestPolicy(global, channel, GatewayProtocol.RESPONSES, "bearer")
+        val result = policy.body(json("""{"prompt_cache_key":"caller","metadata":{"original":true},"drop":"value"}"""), "m")
+        assertEquals("caller", result["prompt_cache_key"]?.jsonPrimitive?.content)
+        assertEquals("channel-protocol", result["choice"]?.jsonPrimitive?.content)
+        assertEquals("kept", result["patched"]?.jsonPrimitive?.content)
+        assertEquals(json("""{"replacement":true}"""), result["metadata"])
+        assertEquals("null", result["drop"].toString())
+        assertFalse(result.containsKey(" !metadata "))
+        val isolated = UpstreamRequestPolicy(global, UpstreamRequestOverrides(inheritGlobal = false), GatewayProtocol.RESPONSES, "bearer")
+        assertFalse(isolated.body(json("{}"), "m").containsKey("prompt_cache_key"))
+    }
+
+    @Test
+    fun `custom header placeholders match extra body without expanding caller text`() {
+        val policy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(),
+            UpstreamRequestOverrides(
+                headers = mapOf("X-Session" to "${'$'}{sessionId}/${'$'}{threadId}/${'$'}{subagentId}"),
+                extraBody = json("""{"prompt_cache_key":"${'$'}{sessionId}"}"""),
+            ),
+            GatewayProtocol.RESPONSES, "bearer", conversation = UpstreamConversation("session", "thread", "agent"),
+        )
+        assertEquals("session/thread/agent", policy.resolvedHeaders()["x-session"])
+        val original = json("""{"input":"literal ${'$'}{sessionId}"}""")
+        val result = policy.body(original, "m")
+        assertEquals(original["input"], result["input"])
+        assertEquals("session", result["prompt_cache_key"]?.jsonPrimitive?.content)
+    }
+
+    @Test
+    fun `rejects duplicate blank reserved and over deep extra body fields`() {
+        val invalid = listOf(
+            """{"":"x"}""", """{" ! ":"x"}""", """{"field":1,"!field":2}""", """{"field":1," field ":2}""",
+        ) + listOf("model", "stream", "messages", "input", "contents", "system", "systemInstruction", "system_instruction", "instructions", "tools")
+            .flatMap { listOf("""{"$it":null}""", """{" !$it ":null}""") }
+        invalid.forEach { text ->
+            val error = assertFailsWith<GatewayError> { validateUpstreamRequestOverrides(UpstreamRequestOverrides(extraBody = json(text))) }
+            assertEquals("invalid_request_overrides", error.code)
+        }
+        val deep = "{\"nested\":".repeat(34) + "null" + "}".repeat(34)
+        assertFailsWith<GatewayError> { validateUpstreamRequestOverrides(UpstreamRequestOverrides(extraBody = json(deep))) }
+        val legacy = Json.decodeFromString<UpstreamRequestOverrides>("{}")
+        assertTrue(legacy.extraBody.isEmpty())
+        assertEquals(UpstreamRequestOverrides(), legacy)
+    }
+
+    @Test
+    fun `extra body and expanded headers obey output size limits`() {
+        val overrides = UpstreamRequestOverrides(extraBody = json("""{"value":"a very long generated value"}"""))
+        val policy = UpstreamRequestPolicy(UpstreamRequestOverrides(), overrides, GatewayProtocol.RESPONSES, "bearer")
+        assertFailsWith<GatewayError> { policy.body(json("{}"), "m", limitBytes = 24) }
+        val headers = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(), UpstreamRequestOverrides(headers = mapOf("X-Test" to "${'$'}{sessionId}".repeat(65))),
+            GatewayProtocol.RESPONSES, "bearer", conversation = UpstreamConversation("x".repeat(128)),
+        )
+        assertFailsWith<GatewayError> { headers.resolvedHeaders() }
+    }
+
+    @Test
     fun `a channel may opt out of global settings and presets`() {
         val builder = HttpRequestBuilder()
         val policy = UpstreamRequestPolicy(
@@ -242,6 +330,33 @@ class UpstreamRequestPolicyTest {
             assertEquals("200", body["max_completion_tokens"]?.jsonPrimitive?.content)
             assertFalse(body.containsKey("max_tokens"), "max_tokens should be stripped when max_completion_tokens is configured")
         }
+    }
+
+    @Test
+    fun `only a positive numeric completion budget replaces the callers token limit`() {
+        val original = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":7}""")
+        for (value in listOf("null", "0", "-1", "\"32\"", "false", "{}", "[]")) {
+            val policy = UpstreamRequestPolicy(
+                UpstreamRequestOverrides(),
+                UpstreamRequestOverrides(extraBody = json("""{"max_completion_tokens":$value}""")),
+                GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+            )
+            val body = policy.body(original, "m")
+            assertEquals("7", body["max_tokens"]?.jsonPrimitive?.content, "invalid budget $value must not remove max_tokens")
+            val limited = limitModelTestTokens(body, GatewayProtocol.CHAT_COMPLETIONS, 128)
+            assertEquals("7", limited["max_tokens"]?.jsonPrimitive?.content, "administrative checks must retain the lower caller budget")
+        }
+        val policy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(),
+            UpstreamRequestOverrides(extraBody = json("""{"max_completion_tokens":32}""")),
+            GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+        )
+        val body = policy.body(original, "m")
+        assertFalse(body.containsKey("max_tokens"))
+        assertEquals("32", body["max_completion_tokens"]?.jsonPrimitive?.content)
+        val limited = limitModelTestTokens(body, GatewayProtocol.CHAT_COMPLETIONS, 16)
+        assertFalse(limited.containsKey("max_tokens"))
+        assertEquals("16", limited["max_completion_tokens"]?.jsonPrimitive?.content)
     }
 
     @Test

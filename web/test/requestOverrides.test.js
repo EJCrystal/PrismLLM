@@ -52,7 +52,11 @@ describe('上游请求覆盖配置', () => {
   })
 
   it('渠道保存携带配置，单独修改优先级时不覆盖配置', () => {
-    const requestOverrides = { userAgent: 'channel-UA' }
+    const requestOverrides = normalizeRequestOverrides({
+      userAgent: 'channel-UA',
+      extraBody: { metadata: { thread: '${threadId}' } },
+      protocols: { responses: { extraBody: { prompt_cache_key: '${sessionId}' } } },
+    })
     const form = { name: 'c', baseUrl: 'https://example.com/v1', protocols: ['responses'], enabled: true, requestOverrides }
     assert.deepEqual(buildChannelPayload(form, [], {}).requestOverrides, requestOverrides)
     assert.equal(Object.hasOwn(buildPriorityUpdatePayload(form, 2), 'requestOverrides'), false)
@@ -63,6 +67,141 @@ describe('上游请求覆盖配置', () => {
     drafts.messages.bodyText = '{broken'
     assert.throws(() => buildRequestOverrides(drafts), /Anthropic Messages请求体不是有效的 JSON/)
     assert.equal(drafts.messages.bodyText, '{broken')
+  })
+
+  it('旧配置缺省 extraBody 时保持为空，不自动添加缓存字段', () => {
+    const value = normalizeRequestOverrides({ userAgent: 'legacy-UA', protocols: { responses: { body: { store: false } } } })
+    assert.deepEqual(value.extraBody, {})
+    assert.deepEqual(value.protocols.responses.extraBody, {})
+    assert.deepEqual(buildRequestOverrides(createRequestOverrideDrafts(value)), value)
+    assert.deepEqual(buildRequestOverrides(createRequestOverrideDrafts()).protocols, {})
+  })
+
+  it('各范围仅配置 extraBody 时读取、保存和重新打开都不丢失', () => {
+    const extraBody = {
+      prompt_cache_key: '${sessionId}',
+      '!metadata': { thread: '${threadId}', nested: ['agent-${subagentId}', { session: '${sessionId}' }] },
+      explicit_null: null,
+      '!replace_null': null,
+      empty: '',
+      disabled: false,
+      count: 0,
+      ' spaced ': 'preserve draft spelling',
+    }
+    for (const { id } of REQUEST_OVERRIDE_SCOPES) {
+      const source = id === 'common' ? { extraBody } : { protocols: { [id]: { extraBody } } }
+      const normalized = normalizeRequestOverrides(source)
+      const drafts = createRequestOverrideDrafts(normalized)
+      assert.deepEqual(JSON.parse(drafts[id].extraBodyText), extraBody)
+      const saved = buildRequestOverrides(drafts)
+      assert.deepEqual(id === 'common' ? saved.extraBody : saved.protocols[id].extraBody, extraBody)
+      assert.deepEqual(buildRequestOverrides(createRequestOverrideDrafts(saved)), saved)
+    }
+  })
+
+  it('extraBody 草稿与 body、请求头分别保留，变量保存为原始模板', () => {
+    const drafts = createRequestOverrideDrafts()
+    drafts.common.extraBodyText = '{"tenant":"shared"}'
+    drafts.responses.bodyText = '{"store":null,"reasoning":{"effort":"high"},"messages":[]}'
+    drafts.responses.extraBodyText = '{"prompt_cache_key":"${sessionId}","!reasoning":{"summary":"auto"},"store":null}'
+    drafts.responses.headersText = '{"X-Session":"${sessionId}","X-Thread":"${threadId}","X-Agent":"${subagentId}","X-Remove":null}'
+    drafts.gemini.extraBodyText = '{"generationConfig":{"temperature":0.7}}'
+    const saved = buildRequestOverrides(drafts, false)
+    assert.equal(saved.inheritGlobal, false)
+    assert.deepEqual(saved.extraBody, { tenant: 'shared' })
+    assert.deepEqual(saved.protocols.responses.body, { store: null, reasoning: { effort: 'high' }, messages: [] })
+    assert.deepEqual(saved.protocols.responses.extraBody, { prompt_cache_key: '${sessionId}', '!reasoning': { summary: 'auto' }, store: null })
+    assert.deepEqual(saved.protocols.responses.headers, { 'X-Session': '${sessionId}', 'X-Thread': '${threadId}', 'X-Agent': '${subagentId}', 'X-Remove': null })
+    assert.deepEqual(saved.protocols.gemini.extraBody, { generationConfig: { temperature: 0.7 } })
+    assert.deepEqual(buildRequestOverrides(createRequestOverrideDrafts(saved), false), saved)
+  })
+
+  it('extraBody 未完成或无效 JSON 仍计入 dirty snapshot，恢复后清除标记', () => {
+    const drafts = reactive(createRequestOverrideDrafts())
+    const baseline = requestOverrideDraftSnapshot(drafts, true)
+    const dirty = computed(() => requestOverrideDraftSnapshot(drafts, true) !== baseline)
+    drafts.responses.extraBodyText = '{unfinished'
+    assert.equal(dirty.value, true)
+    assert.throws(() => buildRequestOverrides(drafts), /Responses请求体补充（extraBody）不是有效的 JSON/)
+    assert.equal(drafts.responses.extraBodyText, '{unfinished')
+    drafts.responses.extraBodyText = '{"prompt_cache_key":"${sessionId}"}'
+    assert.equal(dirty.value, true)
+    drafts.responses.extraBodyText = '{}'
+    assert.equal(dirty.value, false)
+  })
+
+  it('extraBody 必须是 JSON 对象，未显示范围的错误也阻止保存', () => {
+    for (const { id, errorLabel } of REQUEST_OVERRIDE_SCOPES) {
+      for (const text of ['{broken', '[]', 'null', '"text"', '1']) {
+        const drafts = createRequestOverrideDrafts()
+        drafts[id].extraBodyText = text
+        assert.throws(() => buildRequestOverrides(drafts), error => error.message.startsWith(`${errorLabel}请求体补充（extraBody）`))
+        assert.equal(drafts[id].extraBodyText, text)
+      }
+      const drafts = createRequestOverrideDrafts()
+      drafts[id].extraBodyText = '  '
+      assert.deepEqual(buildRequestOverrides(drafts), buildRequestOverrides(createRequestOverrideDrafts()))
+    }
+  })
+
+  it('extraBody 拒绝空字段名与去 !、trim 后重复的目标名', () => {
+    const invalid = [
+      { '': 1 }, { '   ': 1 }, { '!': 1 }, { ' !   ': 1 },
+      { foo: 1, '!foo': 2 }, { ' foo ': 1, foo: 2 }, { '!foo': 1, ' ! foo ': 2 },
+    ]
+    for (const { id } of REQUEST_OVERRIDE_SCOPES) {
+      for (const extraBody of invalid) {
+        const drafts = createRequestOverrideDrafts()
+        drafts[id].extraBodyText = JSON.stringify(extraBody)
+        assert.throws(() => buildRequestOverrides(drafts), /字段名不能为空|字段名规范化后不能重复/)
+      }
+    }
+  })
+
+  it('extraBody 普通和强制规则均禁止改写保留的顶层字段', () => {
+    const reserved = ['model', 'stream', 'messages', 'input', 'contents', 'system', 'systemInstruction', 'system_instruction', 'instructions', 'tools']
+    for (const { id } of REQUEST_OVERRIDE_SCOPES) {
+      for (const name of reserved) {
+        for (const field of [name, `!${name}`, ` ${name} `, ` ! ${name} `]) {
+          const drafts = createRequestOverrideDrafts()
+          drafts[id].extraBodyText = JSON.stringify({ [field]: null })
+          assert.throws(() => buildRequestOverrides(drafts), /不能修改保留字段/)
+        }
+      }
+      const drafts = createRequestOverrideDrafts()
+      drafts[id].extraBodyText = '{"metadata":{"model":"nested","tools":[]}}'
+      assert.doesNotThrow(() => buildRequestOverrides(drafts))
+    }
+  })
+
+  it('body 与 extraBody 均保留 32 层限制，嵌套数组也计入深度', () => {
+    for (const { id } of REQUEST_OVERRIDE_SCOPES) {
+      for (const field of ['bodyText', 'extraBodyText']) {
+        for (const wrap of [value => ({ nested: value }), value => [value]]) {
+          const drafts = createRequestOverrideDrafts()
+          let nested = 'value'
+          for (let depth = 0; depth < 31; depth += 1) nested = wrap(nested)
+          drafts[id][field] = JSON.stringify({ value: nested })
+          assert.doesNotThrow(() => buildRequestOverrides(drafts))
+          drafts[id][field] = JSON.stringify({ value: wrap(nested) })
+          assert.throws(() => buildRequestOverrides(drafts), /嵌套不能超过 32 层/)
+        }
+      }
+    }
+  })
+
+  it('extraBody 与其他范围共同受整体 64KB UTF-8 大小限制', () => {
+    const drafts = createRequestOverrideDrafts()
+    drafts.common.headersText = '{"X-Session":"${sessionId}"}'
+    drafts.responses.bodyText = '{"store":false}'
+    drafts.gemini.extraBodyText = '{"metadata":""}'
+    const overhead = new TextEncoder().encode(JSON.stringify(buildRequestOverrides(drafts))).length
+    drafts.gemini.extraBodyText = JSON.stringify({ metadata: 'a'.repeat(65536 - overhead) })
+    assert.equal(new TextEncoder().encode(JSON.stringify(buildRequestOverrides(drafts))).length, 65536)
+    drafts.gemini.extraBodyText = JSON.stringify({ metadata: 'a'.repeat(65537 - overhead) })
+    assert.throws(() => buildRequestOverrides(drafts), /不能超过 64KB/)
+    drafts.gemini.extraBodyText = JSON.stringify({ metadata: '汉'.repeat(22000) })
+    assert.throws(() => buildRequestOverrides(drafts), /不能超过 64KB/)
   })
 
   it('拒绝非法请求头、凭据和传输头覆盖，以及 model/stream 改写', () => {

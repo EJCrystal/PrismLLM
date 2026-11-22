@@ -3,6 +3,14 @@ import assert from 'node:assert/strict'
 import { countUpstreamOverrides } from '../src/utils/systemConfig'
 
 describe('systemConfig: 系统配置展示', () => {
+  it('统计通用和协议请求体补充项并兼容旧配置', () => {
+    assert.equal(countUpstreamOverrides({
+      extraBody: { tenant: 'shared' },
+      protocols: { responses: { extraBody: { prompt_cache_key: '${sessionId}', '!service_tier': 'default' } } },
+    }), 3)
+    assert.equal(countUpstreamOverrides({ protocols: {} }), 0)
+  })
+
   it('统计上游请求覆盖项', () => {
     assert.equal(
       countUpstreamOverrides({

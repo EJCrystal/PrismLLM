@@ -47,7 +47,7 @@ if (props.profiles === null) {
 
 const current = computed(() => drafts[scope.value])
 const scopeHints: Record<string, string> = {
-  common: '应用于全部出站协议，也用于模型发现、连通性测试和协议探测。适合团队标识等通用请求头。',
+  common: '应用于全部出站协议、连通性测试和协议探测。通用请求头也用于模型发现；模型发现不应用 body 或 extraBody。',
   chat_completions: '仅作用于实际发往上游的 Chat Completions 请求；覆盖同层通用配置。',
   responses: '仅作用于实际发往上游的 Responses 请求；可单独设置 reasoning、store 等参数。',
   messages: '仅作用于实际发往上游的 Anthropic Messages 请求；可单独设置 anthropic-* 请求头。',
@@ -64,6 +64,7 @@ const scopeSummaries = computed(() => REQUEST_OVERRIDE_SCOPES.map(({ id, label, 
   else if (layer.userAgent?.trim()) fields.push('UA')
   if (layer.headersText?.trim() && layer.headersText.trim() !== '{}') fields.push('请求头')
   if (layer.bodyText?.trim() && layer.bodyText.trim() !== '{}') fields.push('请求体')
+  if (layer.extraBodyText?.trim() && layer.extraBodyText.trim() !== '{}') fields.push('请求体补充')
   return {
     id,
     label: errorLabel || label,
@@ -143,17 +144,26 @@ defineExpose({ getValue, getSnapshot })
       <span>清空 User-Agent</span>
     </label>
     <details class="request-overrides-details">
-      <summary>更多请求头与请求体覆盖</summary>
+      <summary>更多请求头、请求体覆盖与补充</summary>
       <div class="request-overrides-fields">
         <label class="field">
           <span>请求头（JSON 对象）</span>
           <textarea v-model="current.headersText" rows="5" :disabled="disabled" spellcheck="false"></textarea>
-          <small>值为字符串时设置请求头，为 null 时删除；名称不区分大小写。上游鉴权仍使用渠道密钥。</small>
+          <small>值为字符串时设置请求头，为 null 时删除；名称不区分大小写。值支持 ${sessionId}、${threadId}、${subagentId}。上游鉴权仍使用渠道密钥。</small>
         </label>
         <label class="field">
           <span>请求体（JSON 合并补丁）</span>
           <textarea v-model="current.bodyText" rows="6" :disabled="disabled" spellcheck="false"></textarea>
           <small>嵌套对象逐层合并，数组整体替换，null 删除字段。model 和 stream 由网关管理。</small>
+        </label>
+        <label class="field">
+          <span>请求体补充（extraBody）</span>
+          <textarea v-model="current.extraBodyText" rows="6" :disabled="disabled" spellcheck="false"></textarea>
+          <small>普通顶层键仅补不存在的字段，已有空串或 null 也保留；!字段名强制替换整个顶层值，null 是显式值，不删除。</small>
+          <small>全局通用 → 全局协议 → 渠道通用 → 渠道协议，按去除 ! 和首尾空格后的字段名合并，高层规则优先；所有 body 补丁完成后再应用 extraBody。</small>
+          <small>对象、数组内的字符串值递归支持 ${sessionId}、${threadId}、${subagentId}；变量不会在管理面展开，无配置不补充字段。</small>
+          <small>prompt_cache_key 是 body 字段，不是请求头。建议在 Responses 范围的 extraBody 配置 {"prompt_cache_key":"${sessionId}"}。</small>
+          <small>字段名不能为空或规范化后重复；不能设置 model、stream、messages、input、contents、system、systemInstruction、system_instruction、instructions、tools。最多嵌套 32 层，整体请求覆盖配置最多 64KB。</small>
         </label>
       </div>
     </details>

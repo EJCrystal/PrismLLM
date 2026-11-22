@@ -8,6 +8,10 @@ import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.protocol.extractReportedModel
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.OAuthProvider
+import dev.soven.prismllm.shared.domain.KeyCredentialResolver
+import dev.soven.prismllm.shared.domain.UpstreamProtocolOverrides
+import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
+import dev.soven.prismllm.channel.domain.ChannelKeyRecord
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
 import kotlinx.coroutines.runBlocking
@@ -513,6 +517,72 @@ class ModelConnectivityTestTest {
 
         assertEquals("responses-model", extractReportedModel(GatewayProtocol.RESPONSES, responses))
         assertEquals("messages-model", extractReportedModel(GatewayProtocol.MESSAGES, messages))
+    }
+
+    @Test
+    fun `channel test and detection expand extra body on independent sessions matching custom headers`() = runBlocking {
+        val received = java.util.concurrent.CopyOnWriteArrayList<Pair<String, kotlinx.serialization.json.JsonObject>>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange ->
+            val body = Json.parseToJsonElement(exchange.requestBody.readAllBytes().decodeToString()).jsonObject
+            received += exchange.requestHeaders.getFirst("X-Session") to body
+            if (exchange.requestURI.path == "/responses" && body["prompt_cache_key"] == null) {
+                val error = """{"error":{"message":"prompt_cache_key is required"}}""".toByteArray()
+                exchange.sendResponseHeaders(400, error.size.toLong())
+                exchange.responseBody.use { it.write(error) }
+            } else {
+                reply(exchange, """{"output":[{"content":[{"type":"output_text","text":"OK"}]}]}""")
+            }
+        }
+        server.start()
+        val client = HttpClient(Java)
+        try {
+            val overrides = UpstreamRequestOverrides(
+                headers = mapOf("X-Session" to "${'$'}{sessionId}"),
+                protocols = mapOf("responses" to UpstreamProtocolOverrides(
+                    extraBody = Json.parseToJsonElement("""{"prompt_cache_key":"${'$'}{sessionId}"}""").jsonObject,
+                )),
+            )
+            val channel = ChannelRecord(
+                id = "channel", name = "channel", baseUrl = "http://127.0.0.1:${server.address.port}",
+                authType = "bearer", protocols = listOf(GatewayProtocol.RESPONSES), enabled = true,
+                createdAt = 0, updatedAt = 0, requestOverrides = overrides,
+            )
+            val key = ChannelKeyRecord(
+                id = "key", channelId = "channel", name = "key", credentialCiphertext = "unused",
+                credentialNonce = "unused", credentialKeyVersion = 1,
+                state = dev.soven.prismllm.channel.domain.key.ChannelKeyState.ACTIVE,
+                priority = 0, createdAt = 0, updatedAt = 0,
+            )
+            val credentials = KeyCredentialResolver { "upstream-secret" }
+            suspend fun test(c: ChannelRecord, isolated: Boolean = false) = testChannelModelConnectivity(
+                channel = c, credentialRef = key, model = "m", protocol = GatewayProtocol.RESPONSES,
+                prompt = "say OK", credentials = credentials, httpClient = client, isolatedIqRequest = isolated,
+                systemPrompt = "dedicated test system prompt",
+            )
+            val missing = test(channel.copy(requestOverrides = overrides.copy(protocols = emptyMap())))
+            assertFalse(missing.success)
+            assertEquals(400, missing.statusCode)
+            assertEquals("prompt_cache_key is required", missing.errorMessage)
+            assertTrue(test(channel).success)
+            assertTrue(test(channel, isolated = true).success)
+            val samples = received.takeLast(2)
+            samples.forEach { (header, body) ->
+                assertTrue(header.startsWith("prismllm-test-"))
+                assertEquals(header, body["prompt_cache_key"]?.jsonPrimitive?.content)
+                assertEquals("128", body["max_output_tokens"]?.jsonPrimitive?.content)
+            }
+            assertEquals("dedicated test system prompt", samples[0].second["instructions"]?.jsonPrimitive?.content)
+            assertNull(samples[1].second["instructions"], "isolated tests keep their own prompt while still using extraBody")
+            assertTrue(samples[0].first != samples[1].first)
+            val probes = probeUpstreamProtocols(channel, key, "m", credentials, client)
+            assertTrue(probes.first { it.protocol == GatewayProtocol.RESPONSES }.supported)
+            val (header, body) = received.first { it.second["max_output_tokens"]?.jsonPrimitive?.content == "1" }
+            assertEquals(header, body["prompt_cache_key"]?.jsonPrimitive?.content)
+        } finally {
+            client.close()
+            server.stop(0)
+        }
     }
 
     private fun reply(exchange: HttpExchange, body: String) {
