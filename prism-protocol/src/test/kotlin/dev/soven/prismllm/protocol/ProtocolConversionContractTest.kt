@@ -294,7 +294,7 @@ class ProtocolConversionContractTest {
     }
 
     @Test
-    fun `prompt_cache_key and client_metadata are accepted across protocols and safely omitted from converted upstream request`() {
+    fun `cache keys survive conversion to Responses while unsupported metadata is omitted`() {
         val targets = listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI)
 
         // Responses -> Chat / Messages / Gemini
@@ -319,7 +319,11 @@ class ProtocolConversionContractTest {
         }""")
         listOf(GatewayProtocol.RESPONSES, GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI).forEach { target ->
             val converted = ProtocolConversion.convertRequest(GatewayProtocol.CHAT_COMPLETIONS, target, chatRequest, "upstream")
-            assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            if (target == GatewayProtocol.RESPONSES) {
+                assertEquals(chatRequest["prompt_cache_key"], converted["prompt_cache_key"])
+            } else {
+                assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            }
             assertFalse(converted.containsKey("client_metadata"), "$target 不应包含 client_metadata")
         }
 
@@ -333,7 +337,11 @@ class ProtocolConversionContractTest {
         }""")
         listOf(GatewayProtocol.CHAT_COMPLETIONS, GatewayProtocol.RESPONSES, GatewayProtocol.GEMINI).forEach { target ->
             val converted = ProtocolConversion.convertRequest(GatewayProtocol.MESSAGES, target, messagesRequest, "upstream")
-            assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            if (target == GatewayProtocol.RESPONSES) {
+                assertEquals(messagesRequest["prompt_cache_key"], converted["prompt_cache_key"])
+            } else {
+                assertFalse(converted.containsKey("prompt_cache_key"), "$target 不应包含 prompt_cache_key")
+            }
             assertFalse(converted.containsKey("client_metadata"), "$target 不应包含 client_metadata")
         }
     }

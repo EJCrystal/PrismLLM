@@ -558,6 +558,7 @@ class ModelConnectivityTestTest {
             suspend fun test(c: ChannelRecord, isolated: Boolean = false) = testChannelModelConnectivity(
                 channel = c, credentialRef = key, model = "m", protocol = GatewayProtocol.RESPONSES,
                 prompt = "say OK", credentials = credentials, httpClient = client, isolatedIqRequest = isolated,
+                systemPrompt = "dedicated test system prompt",
             )
             val missing = test(channel.copy(requestOverrides = overrides.copy(protocols = emptyMap())))
             assertFalse(missing.success)
@@ -571,6 +572,8 @@ class ModelConnectivityTestTest {
                 assertEquals(header, body["prompt_cache_key"]?.jsonPrimitive?.content)
                 assertEquals("128", body["max_output_tokens"]?.jsonPrimitive?.content)
             }
+            assertEquals("dedicated test system prompt", samples[0].second["instructions"]?.jsonPrimitive?.content)
+            assertNull(samples[1].second["instructions"], "isolated tests keep their own prompt while still using extraBody")
             assertTrue(samples[0].first != samples[1].first)
             val probes = probeUpstreamProtocols(channel, key, "m", credentials, client)
             assertTrue(probes.first { it.protocol == GatewayProtocol.RESPONSES }.supported)

@@ -119,6 +119,7 @@ class TestClassificationTest {
             "ClientKeyAccessPolicyIntegrationTest" to setOf("shard-1", "channel"),
             "ClientKeyRoutingAccessIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "CodeAssistIntegrationTest" to setOf("shard-3", "protocol"),
+            "ExtraBodyIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "GeminiNativeIntegrationTest" to setOf("shard-3", "protocol"),
             "GracefulShutdownIntegrationTest" to setOf("shard-4"),
             "IqQuestionBankIntegrationTest" to setOf("shard-3"),
@@ -135,6 +136,7 @@ class TestClassificationTest {
             "RequestLogQueryIntegrationTest" to setOf("shard-2"),
             "RoutingFailoverIntegrationTest" to setOf("shard-4", "channel"),
             "SubscriptionOAuthIntegrationTest" to setOf("shard-2", "channel"),
+            "SystemPromptIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "UpstreamOverridesIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "UsageReportLatencyIntegrationTest" to setOf("shard-4"),
         )

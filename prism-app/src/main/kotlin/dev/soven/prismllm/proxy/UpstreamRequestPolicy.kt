@@ -8,6 +8,7 @@ import dev.soven.prismllm.channel.domain.UpstreamHeaderProfile
 import dev.soven.prismllm.protocol.ChatReasoningContentNormalizer
 import dev.soven.prismllm.protocol.DeveloperRoleNormalizer
 import dev.soven.prismllm.protocol.MessagesThinkingNormalizer
+import dev.soven.prismllm.protocol.replaceSystemPrompt
 import dev.soven.prismllm.proxy.codeassist.antigravityUserAgent
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import io.ktor.client.request.HttpRequestBuilder
@@ -18,6 +19,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 /** Bundled header templates and protocol-based profile selection. */
 object UpstreamHeaderProfiles {
@@ -84,6 +86,7 @@ class UpstreamRequestPolicy(
     private val profiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
     /** 目标渠道地址，仅用于判断上游是否需要回传 reasoning_content（看 host）。 */
     private val baseUrl: String = "",
+    private val systemPrompt: String? = null,
     private val conversation: UpstreamConversation = UpstreamConversation.own(),
 ) {
     private val layers: List<UpstreamProtocolOverrides> = buildList {
@@ -149,17 +152,20 @@ class UpstreamRequestPolicy(
             if (forced || name !in supplemented) supplemented[name] = conversation.expand(value)
         }
         val merged = JsonObject(supplemented)
-        val compatible = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && "max_completion_tokens" in merged) {
+        val compatible = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && hasCompletionTokenBudget(merged)) {
             JsonObject(merged - "max_tokens")
         } else {
             merged
         }
         val normalized = DeveloperRoleNormalizer.normalize(compatible, protocol)
-        val result = when (protocol) {
+        val compatibleBody = when (protocol) {
             GatewayProtocol.CHAT_COMPLETIONS -> ChatReasoningContentNormalizer.normalize(normalized, upstreamModel, baseUrl)
             GatewayProtocol.MESSAGES -> MessagesThinkingNormalizer.normalize(normalized, upstreamModel, baseUrl)
             else -> normalized
         }
+        val result = if (systemPrompt != null && protocol != null) {
+            replaceSystemPrompt(compatibleBody, protocol, systemPrompt)
+        } else compatibleBody
         if (result.toString().toByteArray(Charsets.UTF_8).size.toLong() > limitBytes) {
             throw GatewayError(
                 HttpStatusCode.PayloadTooLarge, "request_too_large",
@@ -169,6 +175,12 @@ class UpstreamRequestPolicy(
         return result
     }
 }
+
+/** A null or malformed optional budget must never suppress the caller's legacy token limit. */
+internal fun hasCompletionTokenBudget(body: JsonObject): Boolean =
+    (body["max_completion_tokens"] as? JsonPrimitive)
+        ?.takeUnless { it.isString }
+        ?.longOrNull?.let { it > 0 } == true
 
 /** RFC 7396: objects merge recursively; arrays/scalars replace; null deletes an object member. */
 internal fun mergePatch(original: JsonObject, patch: JsonObject): JsonObject {

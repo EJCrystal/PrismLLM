@@ -1,5 +1,7 @@
 package dev.soven.prismllm.integration
 
+import dev.soven.prismllm.admin.domain.SystemPromptRule
+import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.UpstreamProtocolOverrides
@@ -31,6 +33,10 @@ import kotlin.test.assertFalse
 class ExtraBodyIntegrationTest : GatewayIntegrationTestBase() {
     @Test
     fun `native and translated stream and whole requests share configured session headers and body`() = runBlocking {
+        app.systemPromptSettingsRepository.save(SystemPromptSettingsRecord(
+            enabled = true,
+            rules = listOf(SystemPromptRule("extra-body-prompt", "请求补充组合验证", prompt = "dedicated system prompt")),
+        ))
         val channel = createChannelWithBaseUrl(
             "extra-body", fake.baseUrl + "/ok/v1", protocols = listOf(GatewayProtocol.RESPONSES),
             modelMappings = listOf(ChannelModelRecord("m1")),
@@ -68,6 +74,7 @@ class ExtraBodyIntegrationTest : GatewayIntegrationTestBase() {
                         assertEquals(if (ownKey) "client-key" else "session-1", body["prompt_cache_key"]?.jsonPrimitive?.content)
                         assertEquals(listOf("session-1/thread-2/agent-3"), sent.requestHeaders["x-configured-session"])
                         assertEquals("default", body["service_tier"]?.jsonPrimitive?.content)
+                        assertEquals("dedicated system prompt", body["instructions"]?.jsonPrimitive?.content)
                         assertFalse(body.containsKey("!service_tier"))
                     }
                 }

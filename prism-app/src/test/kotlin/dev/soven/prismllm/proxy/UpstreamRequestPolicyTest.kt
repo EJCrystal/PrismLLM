@@ -333,6 +333,33 @@ class UpstreamRequestPolicyTest {
     }
 
     @Test
+    fun `only a positive numeric completion budget replaces the callers token limit`() {
+        val original = json("""{"model":"m","messages":[{"role":"user","content":"hi"}],"max_tokens":7}""")
+        for (value in listOf("null", "0", "-1", "\"32\"", "false", "{}", "[]")) {
+            val policy = UpstreamRequestPolicy(
+                UpstreamRequestOverrides(),
+                UpstreamRequestOverrides(extraBody = json("""{"max_completion_tokens":$value}""")),
+                GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+            )
+            val body = policy.body(original, "m")
+            assertEquals("7", body["max_tokens"]?.jsonPrimitive?.content, "invalid budget $value must not remove max_tokens")
+            val limited = limitModelTestTokens(body, GatewayProtocol.CHAT_COMPLETIONS, 128)
+            assertEquals("7", limited["max_tokens"]?.jsonPrimitive?.content, "administrative checks must retain the lower caller budget")
+        }
+        val policy = UpstreamRequestPolicy(
+            UpstreamRequestOverrides(),
+            UpstreamRequestOverrides(extraBody = json("""{"max_completion_tokens":32}""")),
+            GatewayProtocol.CHAT_COMPLETIONS, "bearer",
+        )
+        val body = policy.body(original, "m")
+        assertFalse(body.containsKey("max_tokens"))
+        assertEquals("32", body["max_completion_tokens"]?.jsonPrimitive?.content)
+        val limited = limitModelTestTokens(body, GatewayProtocol.CHAT_COMPLETIONS, 16)
+        assertFalse(limited.containsKey("max_tokens"))
+        assertEquals("16", limited["max_completion_tokens"]?.jsonPrimitive?.content)
+    }
+
+    @Test
     fun `chat completion body fills reasoning_content on tool turns only`() {
         val request = json("""
             {
