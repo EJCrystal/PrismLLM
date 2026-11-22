@@ -3,6 +3,7 @@ package dev.soven.prismllm.integration
 import dev.soven.prismllm.admin.domain.SystemPromptRule
 import dev.soven.prismllm.admin.domain.SystemPromptScope
 import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
+import dev.soven.prismllm.admin.domain.encodeForStorage
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
 import com.sun.net.httpserver.HttpServer
 import java.net.InetSocketAddress
@@ -98,6 +99,19 @@ class SystemPromptIntegrationTest : GatewayIntegrationTestBase() {
             }
             assertEquals(HttpStatusCode.BadRequest, rejected.status)
             assertTrue(rejected.bodyAsText().contains("invalid_system_prompt_settings"))
+            assertEquals(configuration.rules, app.systemPromptSettingsRepository.load().rules)
+            val tooLarge = SystemPromptSettingsRecord(true, listOf(SystemPromptRule("a", "a", prompt = "a".repeat(65_450))))
+            val compact = Json.encodeToString(tooLarge)
+            assertTrue(compact.toByteArray(Charsets.UTF_8).size < 65_536)
+            assertTrue(tooLarge.encodeForStorage().toByteArray(Charsets.UTF_8).size > 65_536)
+            val oversized = client.put("/admin/api/system-prompt-settings") {
+                header(HttpHeaders.Cookie, "gw_session=" + session.token)
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(compact)
+            }
+            assertEquals(HttpStatusCode.BadRequest, oversized.status)
+            assertTrue(oversized.bodyAsText().contains("64KB"))
             assertEquals(configuration.rules, app.systemPromptSettingsRepository.load().rules)
         }
     }
@@ -279,6 +293,46 @@ class SystemPromptIntegrationTest : GatewayIntegrationTestBase() {
             }
         } finally {
             search.stop(0)
+        }
+    }
+
+    @Test
+    fun cachedGeminiRequestsFailLocallyOnlyWhenReplacementIsActiveForBothStreamingModes() = runBlocking {
+        val channel = createChannelWithBaseUrl(
+            "prompt-cached-gemini", fake.baseUrl + "/ok/v1beta", protocols = listOf(GatewayProtocol.GEMINI),
+            modelMappings = mappingsOf("gemini-cached"),
+        )
+        exposeAsModel("gemini-cached", channel to "gemini-cached")
+        val key = createClientKey()
+        testApplication {
+            application { app.install(this) }
+            for (stream in listOf(false, true)) {
+                val request = JsonObject(
+                    (callerBody(GatewayProtocol.GEMINI, "gemini-cached", stream) - "systemInstruction") +
+                        ("cachedContent" to JsonPrimitive("cachedContents/context-one")),
+                )
+                val path = "/v1beta/models/gemini-cached:" + if (stream) "streamGenerateContent?alt=sse" else "generateContent"
+                app.systemPromptSettingsRepository.save(settings("new-system"))
+                val before = fake.requests.size
+                val rejected = client.post(path) {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody(request.toString())
+                }
+                assertEquals(HttpStatusCode.BadRequest, rejected.status)
+                assertTrue(rejected.bodyAsText().contains("cachedContent"))
+                assertEquals(before, fake.requests.size)
+                app.systemPromptSettingsRepository.save(SystemPromptSettingsRecord())
+                val untouched = client.post(path) {
+                    header(HttpHeaders.Authorization, "Bearer $key")
+                    contentType(ContentType.Application.Json)
+                    setBody(request.toString())
+                }
+                assertEquals(HttpStatusCode.OK, untouched.status, untouched.bodyAsText())
+                val sent = Json.parseToJsonElement(fake.requests.last().body).jsonObject
+                assertEquals(request["cachedContent"], sent["cachedContent"])
+                assertFalse("systemInstruction" in sent)
+            }
         }
     }
 }

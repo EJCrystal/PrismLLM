@@ -3,6 +3,9 @@ package dev.soven.prismllm.admin.domain
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+
+private val systemPromptStorageJson = Json { encodeDefaults = true }
 
 @Serializable
 enum class SystemPromptScope(val specificity: Int) {
@@ -58,6 +61,9 @@ data class SystemPromptSettingsRecord(
         resolve(channelId, protocol)?.takeIf { it.action == SystemPromptAction.REPLACE }?.prompt
 }
 
+fun SystemPromptSettingsRecord.encodeForStorage(): String =
+    systemPromptStorageJson.encodeToString(copy(updatedAt = 0))
+
 fun systemPromptSettingsError(settings: SystemPromptSettingsRecord): String? {
     if (settings.rules.map { it.id }.toSet().size != settings.rules.size) return "规则 ID 不能重复"
     for (rule in settings.rules) {
@@ -73,5 +79,6 @@ fun systemPromptSettingsError(settings: SystemPromptSettingsRecord): String? {
         if (requiresProtocols != rule.protocols.isNotEmpty()) return "请按作用域选择出口协议"
         if (requiresChannels != rule.channelIds.isNotEmpty() || rule.channelIds.any { it.isBlank() }) return "请按作用域选择渠道"
     }
+    if (settings.encodeForStorage().toByteArray(Charsets.UTF_8).size > 65_536) return "系统提示词配置不能超过 64KB"
     return null
 }

@@ -1,6 +1,7 @@
 package dev.soven.prismllm.admin.persistence
 
 import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
+import dev.soven.prismllm.admin.domain.encodeForStorage
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -24,7 +25,7 @@ class SystemPromptSettingsRepository(
     private val database: Database,
     private val nowMs: () -> Long = System::currentTimeMillis,
 ) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val json = Json { ignoreUnknownKeys = true }
     private val updateMutex = Mutex()
 
     @Volatile
@@ -44,7 +45,7 @@ class SystemPromptSettingsRepository(
 
     suspend fun save(settings: SystemPromptSettingsRecord): SystemPromptSettingsRecord = updateMutex.withLock {
         withContext(NonCancellable) {
-            val encoded = json.encodeToString(settings.copy(updatedAt = 0))
+            val encoded = settings.encodeForStorage()
             val record = suspendTransaction(database) {
                 val updatedAt = nowMs()
                 SystemPromptSettings.upsert(SystemPromptSettings.id) {

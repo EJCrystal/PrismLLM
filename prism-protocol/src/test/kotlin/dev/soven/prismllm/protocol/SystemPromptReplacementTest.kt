@@ -75,4 +75,23 @@ class SystemPromptReplacementTest {
         }
         assertEquals("messages", error.field)
     }
+
+    @Test
+    fun geminiCachedContextIsRejectedBeforeAddingIncompatibleInstructionsWithoutDroppingContext() {
+        for (field in listOf("cachedContent", "cached_content")) {
+            val original = body("""{"contents":[{"role":"user","parts":[{"text":"continue"}]}],"$field":"cachedContents/context-one"}""")
+            val before = original.toString()
+            val error = assertFailsWith<ProtocolConversionException> {
+                replaceSystemPrompt(original, GatewayProtocol.GEMINI, prompt)
+            }
+            assertEquals(field, error.field)
+            assertEquals(before, original.toString())
+            assertEquals(JsonPrimitive("cachedContents/context-one"), original[field])
+            assertFalse("systemInstruction" in original)
+        }
+        for (source in listOf("{}", """{"cachedContent":null}""", """{"cachedContent":""}""")) {
+            val rewritten = replaceSystemPrompt(body(source), GatewayProtocol.GEMINI, prompt)
+            assertNotNull(rewritten["systemInstruction"])
+        }
+    }
 }

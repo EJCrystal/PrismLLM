@@ -79,4 +79,21 @@ class SystemPromptSettingsTest {
         val exception = global.copy(action = SystemPromptAction.PRESERVE, prompt = "")
         assertNull(systemPromptSettingsError(settings.copy(rules = listOf(exception))))
     }
+
+    @Test
+    fun sizeLimitUsesTheExactStoredDefaultsAndIgnoresClientTimestamp() {
+        val empty = SystemPromptSettingsRecord(true, listOf(SystemPromptRule("a", "a", prompt = "")))
+        val payloadBytes = 65_536 - empty.encodeForStorage().toByteArray(Charsets.UTF_8).size
+        val boundary = empty.copy(
+            rules = listOf(empty.rules.single().copy(prompt = "a".repeat(payloadBytes))),
+            updatedAt = Long.MAX_VALUE,
+        )
+        assertEquals(65_536, boundary.encodeForStorage().toByteArray(Charsets.UTF_8).size)
+        assertNull(systemPromptSettingsError(boundary))
+        val tooLarge = boundary.copy(rules = listOf(boundary.rules.single().copy(prompt = "a".repeat(payloadBytes + 1))))
+        assertEquals("系统提示词配置不能超过 64KB", systemPromptSettingsError(tooLarge))
+        val utf8Overflow = boundary.copy(rules = listOf(boundary.rules.single().copy(prompt = "中".repeat(payloadBytes))))
+        assertEquals("系统提示词配置不能超过 64KB", systemPromptSettingsError(utf8Overflow))
+        assertEquals(boundary.copy(updatedAt = 0).encodeForStorage(), boundary.encodeForStorage())
+    }
 }

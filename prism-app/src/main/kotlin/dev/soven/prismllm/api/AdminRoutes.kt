@@ -26,7 +26,6 @@ import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
 import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
 import dev.soven.prismllm.admin.domain.systemPromptSettingsError
-import kotlinx.serialization.json.Json
 import dev.soven.prismllm.domain.effective
 import dev.soven.prismllm.proxy.validateUpstreamRequestOverrides
 import dev.soven.prismllm.pricing.domain.BILLING_CURRENCY
@@ -412,9 +411,6 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<SystemPromptSettingsRecord>()
             systemPromptSettingsError(request)?.let { throw badRequest("invalid_system_prompt_settings", it) }
-            if (Json.encodeToString(request).toByteArray(Charsets.UTF_8).size > 65_536) {
-                throw badRequest("invalid_system_prompt_settings", "系统提示词配置不能超过 64KB")
-            }
             val channelIds = app.channelRepository.listNames().keys
             if (request.rules.any { rule -> rule.channelIds.any { it !in channelIds } }) {
                 throw badRequest("invalid_system_prompt_settings", "规则包含已删除或不存在的渠道，请重新选择")
