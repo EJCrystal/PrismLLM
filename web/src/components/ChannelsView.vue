@@ -24,6 +24,9 @@ import ChannelHealthModal from './ChannelHealthModal.vue'
 import ChannelHealthSummary from './ChannelHealthSummary.vue'
 import ChannelModelPreview from './ChannelModelPreview.vue'
 import ChannelKeyEditor from './ChannelKeyEditor.vue'
+import ChannelEgressProxyEditor from './ChannelEgressProxyEditor.vue'
+import type { ChannelEgressProxyDraft } from '../utils/channelForm'
+import { buildChannelProxyPayload, channelProxyConfigurationSnapshot } from '../utils/channelForm'
 import { cooldownSummaryText } from '../utils/cooldown'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -66,7 +69,7 @@ interface RequestOverridesEditorExpose {
   getSnapshot: () => string
 }
 
-type NewKeyOverrides = Partial<Pick<ChannelKeyEditorDraft, 'id' | 'name' | 'state' | 'priority' | 'stateVersion' | 'autoDisableReason' | 'autoDisableUntil' | 'probeUntil' | 'models'>> & {
+type NewKeyOverrides = Partial<Pick<ChannelKeyEditorDraft, 'id' | 'name' | 'state' | 'priority' | 'stateVersion' | 'autoDisableReason' | 'autoDisableUntil' | 'probeUntil' | 'models' | 'egressProxyId'>> & {
   enabled?: boolean
   rateLimit?: unknown
 }
@@ -75,6 +78,7 @@ interface ChannelFormState extends Omit<ChannelFormDraft, 'requestOverrides' | '
   authType: string
   protocolAuthTypes: Record<string, string>
   requestOverrides: UpstreamRequestOverrides
+  egressProxies: ChannelEgressProxyDraft[]
 }
 
 interface ChannelTestTarget {
@@ -272,6 +276,7 @@ function channelFormSnapshot(useEditor = true): string {
       baseUrl: form.baseUrl,
       authType: form.authType,
       protocolAuthTypes: form.protocolAuthTypes,
+      egressProxies: form.egressProxies,
       protocols: form.protocols,
       enabled: form.enabled,
       priority: form.priority,
@@ -293,6 +298,7 @@ function keyDirtySnapshot(key: ChannelKeyEditorDraft) {
   return {
     id: key.id, name: key.name, credential: key.credential, state: key.state, priority: key.priority,
     stateVersion: key.stateVersion, models: key.models, rateLimit: key.rateLimit,
+    egressProxyId: key.egressProxyId,
     ...(key.id && key.credential.trim() ? {} : { manualModels: key.manualModels }),
   }
 }
@@ -346,6 +352,7 @@ const form = reactive<ChannelFormState>({
   enabled: true,
   priority: 1,
   requestOverrides: normalizeRequestOverrides(),
+  egressProxies: [],
 })
 
 const protocolOptions: Array<{ value: string; label: string }> = [
@@ -405,6 +412,21 @@ watchKeyCredentials(() => channelKeys.value, () => !hydratingChannelForm, () => 
   if (probeAddedProtocols.length) form.protocols = removeProbeAddedProtocols(form.protocols, probeAddedProtocols)
   probeAddedProtocols = []
 })
+
+watch(
+  () => JSON.stringify([form.egressProxies, channelKeys.value.map(key => [key.localId, key.egressProxyId])]),
+  () => {
+    if (hydratingChannelForm) return
+    channelKeys.value.forEach(key => {
+      key.modelsRequestId += 1
+      key.modelsLoading = false
+      key.modelsError = ''
+    })
+    probeRequests.invalidate()
+    probeResults.value = []
+  },
+  { flush: 'sync' },
+)
 
 const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
 const channelStatusOptions = computed(() => [
@@ -493,6 +515,8 @@ watch(mappingCount, (count) => {
 const canProbeProtocols = computed(() => {
   const savedChannel = channels.value.find((channel) => channel.id === editingId.value)
   if (!savedChannel?.keys?.length) return false
+  if (channelProxyConfigurationSnapshot(form.egressProxies) !== channelProxyConfigurationSnapshot(savedChannel.egressProxies || [])) return false
+  if (channelKeys.value.some(key => (key.egressProxyId || null) !== (savedChannel.keys.find(saved => saved.id === key.id)?.egressProxyId || null))) return false
   let requestOverrides: UpstreamRequestOverrides
   try {
     requestOverrides = overrideEditor.value?.getValue() || form.requestOverrides
@@ -595,6 +619,7 @@ function newKeyDraft(overrides: NewKeyOverrides = {}): ChannelKeyEditorDraft {
     originalState: overrides.state || state,
     priority: overrides.priority ?? 1,
     stateVersion: overrides.stateVersion ?? null,
+    egressProxyId: overrides.egressProxyId ?? null,
     autoDisableReason: overrides.autoDisableReason ?? null,
     autoDisableUntil: overrides.autoDisableUntil ?? null,
     probeUntil: overrides.probeUntil ?? null,
@@ -674,12 +699,17 @@ async function loadKeyModels(key: ChannelKeyEditorDraft): Promise<void> {
   const authType = form.authType
   const protocolAuthTypes = { ...form.protocolAuthTypes }
   const protocols = [...form.protocols]
+  const egressProxy = form.egressProxies.find(proxy => proxy.id === key.egressProxyId)
   if (!baseUrl) {
     notify('请先填写基础地址', 'warning')
     return
   }
   if (!key.id && !credential) {
     notify('新建密钥需要填写上游凭据才能加载模型', 'warning')
+    return
+  }
+  if (key.egressProxyId && !egressProxy) {
+    notify('密钥绑定的出口代理不存在，请重新选择', 'warning')
     return
   }
   const requestId = ++key.modelsRequestId
@@ -695,6 +725,8 @@ async function loadKeyModels(key: ChannelKeyEditorDraft): Promise<void> {
       keyId: credential ? null : (key.id || null),
       protocols,
       requestOverrides: overrideEditor.value?.getValue() || form.requestOverrides,
+      egressProxy: egressProxy ? buildChannelProxyPayload(egressProxy) : null,
+      clearEgressProxy: !egressProxy,
     })
     if (
       requestId !== key.modelsRequestId ||
@@ -910,6 +942,7 @@ function openCreate() {
       enabled: true,
       priority: 1,
       requestOverrides: normalizeRequestOverrides(),
+      egressProxies: [],
     })
   } finally {
     hydratingChannelForm = false
@@ -957,6 +990,7 @@ function openEdit(channel: Channel): void {
       enabled: channel.enabled,
       priority: channel.priority ?? 1,
       requestOverrides: channel.requestOverrides || {},
+      egressProxies: (channel.egressProxies || []).map(proxy => ({ ...proxy })),
     })
   } finally {
     hydratingChannelForm = false
@@ -1641,7 +1675,7 @@ onMounted(() => {
                 {{ probing ? '探测中…' : '探测全部协议' }}
               </button>
               <span v-if="!editingId" class="muted small">保存渠道后可探测。</span>
-              <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据或鉴权后可探测。</span>
+              <span v-else-if="!canProbeProtocols" class="muted small">保存地址、凭据、鉴权或出口代理后可探测。</span>
               <span v-else class="muted small">使用已保存密钥探测四种协议，每种最多 1 token。</span>
             </div>
             <p class="channel-form-note">同协议优先；需要转换时按上方顺序选择目标协议。</p>
@@ -1669,6 +1703,7 @@ onMounted(() => {
             </div>
 
             <p class="channel-form-note">全局密钥自动禁用规则在「系统配置」页统一管理。</p>
+            <ChannelEgressProxyEditor :proxies="form.egressProxies" :keys="channelKeys" />
 
             <p v-if="channelKeys.length === 0" class="muted small">
               当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
@@ -1716,6 +1751,7 @@ onMounted(() => {
                 <ChannelKeyEditor
                   :key="selectedChannelKey.localId"
                   :channel-key="selectedChannelKey"
+                  :egress-proxies="form.egressProxies"
                   :concurrent="channelKeyConcurrent(editingId, selectedChannelKey.id)"
                   @remove="removeSelectedKey"
                   @edit-rate-limit="openRateLimitEditor(selectedChannelKey)"
@@ -1759,6 +1795,7 @@ onMounted(() => {
                   <ChannelKeyEditor
                     :key="key.localId"
                     :channel-key="key"
+                    :egress-proxies="form.egressProxies"
                     :concurrent="channelKeyConcurrent(editingId, key.id)"
                     @remove="removeKey(index)"
                     @edit-rate-limit="openRateLimitEditor(key)"

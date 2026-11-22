@@ -17,6 +17,7 @@ export interface ChannelKeyEditorDraft {
   originalState: ChannelKeyState
   priority: number | string | null
   stateVersion: number | null
+  egressProxyId: string | null
   autoDisableReason: string | null
   autoDisableUntil: number | null
   /** 探测租约到期时间；后端返回，编辑时原样带上，不参与提交。 */

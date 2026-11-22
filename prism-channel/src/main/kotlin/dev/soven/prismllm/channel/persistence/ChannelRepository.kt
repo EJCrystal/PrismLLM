@@ -2,6 +2,9 @@ package dev.soven.prismllm.channel.persistence
 
 import dev.soven.prismllm.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
+import dev.soven.prismllm.channel.domain.ChannelEgressProxy
+import dev.soven.prismllm.channel.domain.ChannelEgressConfigurationException
+import dev.soven.prismllm.channel.domain.validateChannelEgress
 import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.domain.ChannelQuotaSettings
@@ -47,6 +50,7 @@ data class NewChannelKey(
     val priority: Int = 1,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
+    val egressProxyId: String? = null,
 )
 
 /** 更新渠道密钥的输入。credential 与 state 为空时分别保持原凭据和原状态。 */
@@ -60,6 +64,8 @@ data class ChannelKeyUpdate(
     /** `null` 表示保留该密钥已有的限流规则。 */
     val rateLimit: ChannelKeyRateLimitPolicy? = null,
     val stateVersion: Long? = null,
+    val egressProxyId: String? = null,
+    val clearEgressProxy: Boolean = false,
 )
 
 class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
@@ -191,7 +197,9 @@ class ChannelRepository(
         protocolAuthTypes: Map<String, String> = emptyMap(),
         kind: ChannelKind = ChannelKind.CUSTOM,
         provider: OAuthProvider? = null,
+        egressProxies: List<ChannelEgressProxy> = emptyList(),
     ): ChannelRecord = suspendTransaction(database) {
+        validateChannelEgress(egressProxies, keys.map { it.egressProxyId })
         val storedProtocols = protocols.distinct()
         require(storedProtocols.isNotEmpty()) { "channel requires at least one protocol" }
         val now = System.currentTimeMillis()
@@ -208,6 +216,7 @@ class ChannelRepository(
             it[Channels.kind] = kind.value
             it[Channels.provider] = provider?.value
             it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
+            it[Channels.egressProxies] = Json.encodeToString(egressProxies)
             it[Channels.quotaSettings] = Json.encodeToString(quota)
             it.setQuotaCredential(quotaCredential, clear = false)
             it[createdAt] = now
@@ -222,6 +231,7 @@ class ChannelRepository(
                 priority = key.priority,
                 models = key.models,
                 rateLimit = key.rateLimit,
+                egressProxyId = key.egressProxyId,
             )
         }, now)
         Channels.selectAll().where { Channels.id eq id }.single().let(::toRecordWithRelations)
@@ -242,12 +252,23 @@ class ChannelRepository(
         quotaCredential: EncryptedCredential? = null,
         clearQuotaCredential: Boolean = false,
         protocolAuthTypes: Map<String, String>? = null,
+        egressProxies: List<ChannelEgressProxy>? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         val existingChannel = Channels.selectAll()
             .where { Channels.id eq id }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
+        val existingBindings = ChannelKeys.select(ChannelKeys.id, ChannelKeys.egressProxyId)
+            .where { ChannelKeys.channelId eq id }
+            .associate { it[ChannelKeys.id] to it[ChannelKeys.egressProxyId] }
+        val assignments = keys?.map { key ->
+            if (key.clearEgressProxy) null else key.egressProxyId ?: existingBindings[key.id]
+        } ?: existingBindings.values.toList()
+        validateChannelEgress(
+            egressProxies ?: requestOverridesJson.decodeFromString<List<ChannelEgressProxy>>(existingChannel[Channels.egressProxies]),
+            assignments,
+        )
         require(modelMappings == null || existingChannel[Channels.kind] != ChannelKind.PROVIDER.value) {
             "provider models require shared write boundary"
         }
@@ -264,6 +285,7 @@ class ChannelRepository(
             it[Channels.enabled] = enabled
             if (priority != null) it[Channels.priority] = priority
             if (requestOverrides != null) it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
+            if (egressProxies != null) it[Channels.egressProxies] = Json.encodeToString(egressProxies)
             if (quota != null) it[Channels.quotaSettings] = Json.encodeToString(quota)
             it.setQuotaCredential(quotaCredential, clearQuotaCredential)
             it[updatedAt] = now
@@ -414,6 +436,9 @@ class ChannelRepository(
             .toSet()
         val keptIds = mutableSetOf<String>()
         keys.forEach { key ->
+            if (key.clearEgressProxy && key.egressProxyId != null) {
+                throw ChannelEgressConfigurationException("不能同时绑定和清除密钥出口代理")
+            }
             val keyId = when {
                 key.id == null -> UUID.randomUUID().toString()
                 key.id in existing -> key.id
@@ -437,6 +462,7 @@ class ChannelRepository(
                 val resetHealth = key.credential != null || stateChanged
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
                     it[name] = key.name
+                    if (key.clearEgressProxy || key.egressProxyId != null) it[egressProxyId] = key.egressProxyId
                     key.credential?.let { credential ->
                         it[credentialCiphertext] = credential.ciphertext
                         it[credentialNonce] = credential.nonce
@@ -472,6 +498,7 @@ class ChannelRepository(
                     it[id] = keyId
                     it[ChannelKeys.channelId] = channelId
                     it[name] = key.name
+                    it[egressProxyId] = key.egressProxyId
                     it[credentialCiphertext] = credential.ciphertext
                     it[credentialNonce] = credential.nonce
                     it[credentialKeyVersion] = credential.keyVersion
@@ -535,6 +562,7 @@ class ChannelRepository(
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
         requestOverrides = requestOverridesJson.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
+        egressProxies = requestOverridesJson.decodeFromString<List<ChannelEgressProxy>>(row[Channels.egressProxies]),
         quota = Json.decodeFromString<ChannelQuotaSettings>(row[Channels.quotaSettings]),
         quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
@@ -614,6 +642,7 @@ internal fun loadChannelKeysInTransaction(
                 priority = row[ChannelKeys.priority],
                 models = modelsByKey[row[ChannelKeys.id]].orEmpty(),
                 rateLimit = rateLimitsByKey[row[ChannelKeys.id]] ?: ChannelKeyRateLimitPolicy(),
+                egressProxyId = row[ChannelKeys.egressProxyId],
                 createdAt = row[ChannelKeys.createdAt],
                 updatedAt = row[ChannelKeys.updatedAt],
                 stateVersion = row[ChannelKeys.stateVersion],

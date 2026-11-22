@@ -222,15 +222,15 @@ data class OAuthConfig(
         }
 
         /** 账号代理主机白名单；条目只接受主机名或 IPv4，避免把协议、端口或凭据混进来。 */
-        private fun parseProxyAllowedHosts(raw: String?): Set<String> {
+        internal fun parseProxyAllowedHosts(raw: String?, setting: String = "OAUTH_PROXY_ALLOWED_HOSTS"): Set<String> {
             if (raw == null) return emptySet()
             val hosts = raw.split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
             require(hosts.size <= MAX_PROXY_ALLOWED_HOSTS) {
-                "OAUTH_PROXY_ALLOWED_HOSTS 最多允许 $MAX_PROXY_ALLOWED_HOSTS 个主机"
+                "$setting 最多允许 $MAX_PROXY_ALLOWED_HOSTS 个主机"
             }
             hosts.forEach { host ->
                 require(host.length <= 253 && PROXY_HOST_PATTERN.matches(host)) {
-                    "OAUTH_PROXY_ALLOWED_HOSTS 只接受主机名或 IPv4，不能包含协议、端口、路径或凭据：$host"
+                    "$setting 只接受主机名或 IPv4，不能包含协议、端口、路径或凭据：$host"
                 }
             }
             return hosts.toSet()

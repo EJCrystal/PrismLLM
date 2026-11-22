@@ -35,6 +35,7 @@ import dev.soven.prismllm.oauth.domain.parseRateLimitResetMs
 import dev.soven.prismllm.oauth.infra.proxyAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
+import java.net.Proxy
 import dev.soven.prismllm.proxy.UpstreamRequestPolicy
 import dev.soven.prismllm.proxy.upstreamRequestUrl
 import dev.soven.prismllm.quota.infra.RequestLimitLease
@@ -74,6 +75,10 @@ import dev.soven.prismllm.channel.domain.key.KeyAttemptSignal
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
+import io.ktor.client.engine.okhttp.OkHttp
+import dev.soven.prismllm.proxy.AuthenticatedChannelProxy
+import dev.soven.prismllm.proxy.authenticatedChannelProxyClient
+import dev.soven.prismllm.proxy.channelProxyPoolKey
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.request.header
@@ -1336,6 +1341,7 @@ private suspend fun searchChatCaller(
     val upstreamProtocol = GatewayProtocol.CHAT_COMPLETIONS
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
     val credential = decryptCredential(app, candidate)
+    val egressClient = upstreamClient(app, accountEgressProxy(app, candidate))
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
@@ -1351,7 +1357,7 @@ private suspend fun searchChatCaller(
         }
         val requestBody = policy.body(body, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
         state.upstreamCallStarted = true
-        val response = app.httpClient.post(upstreamUrl) {
+        val response = egressClient.post(upstreamUrl) {
             applyUpstreamAuthentication(
                 credential = credential,
                 authType = authType,
@@ -1455,7 +1461,7 @@ private suspend fun proxyStream(
         System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
-            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy?.address() as? InetSocketAddress)
         }
     } else {
         null
@@ -1471,7 +1477,7 @@ private suspend fun proxyStream(
                     credential,
                     codeAssistProject,
                     listOfNotNull(codeAssistContext?.tier),
-                    egressProxy,
+                    egressProxy?.address() as? InetSocketAddress,
                 )
             }
         }
@@ -1761,7 +1767,7 @@ private suspend fun proxyJson(
         System.nanoTime() + preparationTimeoutMs(timeoutMs) * 1_000_000
     val codeAssistContext = if (envelope == UpstreamEnvelope.CODE_ASSIST) {
         withTimeoutOrNull(remainingMs(preparationDeadlineNanos)) {
-            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy)
+            app.codeAssistProjectResolver.context(candidate.oauthAccount!!, credential, egressProxy?.address() as? InetSocketAddress)
         }
     } else {
         null
@@ -1777,7 +1783,7 @@ private suspend fun proxyJson(
                     credential,
                     codeAssistProject,
                     listOfNotNull(codeAssistContext?.tier),
-                    egressProxy,
+                    egressProxy?.address() as? InetSocketAddress,
                 )
             }
         }
@@ -1909,9 +1915,24 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
  * 配置了 proxy_url 时改用按该代理创建的客户端，没有解析结果时沿用应用共享客户端。
  */
 internal fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): HttpClient =
-    proxy?.let { address ->
-        app.accountEgressClients.computeIfAbsent(address.hostString + ":" + address.port) { _ ->
-            HttpClient(Java) {
+    upstreamClient(app, proxy?.let { Proxy(Proxy.Type.HTTP, it) })
+
+internal fun upstreamClient(app: GatewayApplication, proxy: Proxy?): HttpClient =
+    proxy?.let { endpoint ->
+        val address = endpoint.address() as InetSocketAddress
+        app.accountEgressClients.computeIfAbsent(channelProxyPoolKey(endpoint)) { _ ->
+            if (endpoint is AuthenticatedChannelProxy) authenticatedChannelProxyClient(endpoint, app.config.connectTimeoutMs)
+            else if (endpoint.type() == Proxy.Type.SOCKS) HttpClient(OkHttp) {
+                engine {
+                    this.proxy = endpoint
+                    config { retryOnConnectionFailure(false) }
+                }
+                install(HttpTimeout) {
+                    connectTimeoutMillis = app.config.connectTimeoutMs
+                    requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                    socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
+                }
+            } else HttpClient(Java) {
                 engine {
                     config { proxy(ProxySelector.of(address)) }
                 }
@@ -1990,10 +2011,11 @@ private const val PREPARATION_TIMEOUT_MS = 20_000L
  * 账号代理配置无效时拒绝请求，绝不静默回落直连：那会绕过账号指定出口并暴露网关源 IP。
  * 按渠道配置错误处理，不切换到其他候选。
  */
-private fun accountEgressProxy(app: GatewayApplication, candidate: RouteCandidate): InetSocketAddress? {
+private fun accountEgressProxy(app: GatewayApplication, candidate: RouteCandidate): Proxy? {
+    if (!candidate.credential.isOAuth) return channelEgressProxy(app, candidate.channel, candidate.credential)
     val proxyUrl = candidate.oauthAccount?.proxyUrl?.trim()?.takeIf { it.isNotEmpty() } ?: return null
     return try {
-        proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts)
+        proxyAddress(proxyUrl, app.config.oauth.proxyAllowedHosts)?.let { Proxy(Proxy.Type.HTTP, it) }
     } catch (cause: OAuthRefreshException) {
         proxyLogger.warn("invalid account proxy, channelId={}, errorCode={}", candidate.channel.id, cause.errorCode)
         throw GatewayError(

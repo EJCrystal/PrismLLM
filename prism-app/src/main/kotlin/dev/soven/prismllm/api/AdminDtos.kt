@@ -4,6 +4,7 @@ import dev.soven.prismllm.requestlog.domain.requestOutcome
 
 import dev.soven.prismllm.channel.domain.ChannelQuotaSettings
 import dev.soven.prismllm.channel.domain.ChannelRecord
+import dev.soven.prismllm.channel.domain.ChannelEgressProxy
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
 import dev.soven.prismllm.channel.domain.ChannelQuotaCredentialSource
 
@@ -142,6 +143,8 @@ data class ChannelKeyRequest(
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitRequest? = null,
     val stateVersion: Long? = null,
+    val egressProxyId: String? = null,
+    val clearEgressProxy: Boolean = false,
 )
 
 @Serializable
@@ -160,7 +163,31 @@ data class ChannelRequest(
     /** Optional protocol-specific overrides; omitted entries inherit authType. */
     val protocolAuthTypes: Map<String, String>? = null,
     val quota: ChannelQuotaSettingsRequest? = null,
+    val egressProxies: List<ChannelEgressProxyRequest>? = null,
 )
+
+@Serializable
+data class ChannelEgressProxyRequest(
+    val id: String,
+    val name: String,
+    val url: String,
+    val username: String? = null,
+    val password: String? = null,
+    val clearAuthentication: Boolean = false,
+) {
+    override fun toString(): String = "ChannelEgressProxyRequest(id=$id, authentication=[REDACTED])"
+}
+
+@Serializable
+data class ChannelEgressProxyResponse(
+    val id: String,
+    val name: String,
+    val url: String,
+    val username: String? = null,
+    val passwordSet: Boolean = false,
+)
+
+fun ChannelEgressProxy.toResponse() = ChannelEgressProxyResponse(id, name, url, authentication?.username, authentication != null)
 
 /** 写入凭据后只返回 credentialSet；省略或留空保留，clearCredential 显式清除。 */
 @Serializable
@@ -204,6 +231,7 @@ data class ChannelResponse(
     val modelMappings: List<ChannelModelMappingResponse>,
     val priority: Int,
     val keys: List<ChannelKeyResponse> = emptyList(),
+    val egressProxies: List<ChannelEgressProxyResponse> = emptyList(),
     val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),
     val protocolAuthTypes: Map<String, String> = emptyMap(),
     val quota: ChannelQuotaSettingsResponse = ChannelQuotaSettingsResponse(),
@@ -256,6 +284,7 @@ fun ChannelKeyRateLimitPolicy.toResponse() = ChannelKeyRateLimitResponse(
 data class ChannelKeyResponse(
     val id: String,
     val name: String,
+    val egressProxyId: String? = null,
     val state: ChannelKeyState,
     val priority: Int,
     val credentialSet: Boolean,
@@ -272,6 +301,7 @@ data class ChannelKeyResponse(
 fun ChannelKeyRecord.toResponse() = ChannelKeyResponse(
     id = id,
     name = name,
+    egressProxyId = egressProxyId,
     state = state,
     priority = priority,
     credentialSet = credentialSet,
@@ -378,6 +408,7 @@ fun ChannelRecord.toResponse(oauthAccounts: List<UpstreamCredential> = emptyList
     },
     priority = priority,
     keys = keys.map { it.toResponse() },
+    egressProxies = egressProxies.map { it.toResponse() },
     oauthAccounts = oauthAccounts.map { it.toOAuthAccountResponse() },
     requestOverrides = requestOverrides,
     quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
@@ -1192,6 +1223,8 @@ data class ChannelModelDiscoveryRequest(
     val protocols: List<String>? = null,
     val requestOverrides: UpstreamRequestOverrides? = null,
     val protocolAuthTypes: Map<String, String>? = null,
+    val egressProxy: ChannelEgressProxyRequest? = null,
+    val clearEgressProxy: Boolean = false,
 )
 
 /**
