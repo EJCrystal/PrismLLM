@@ -57,11 +57,12 @@ internal fun OkHttpClient.Builder.configureChannelProxyAuthentication(endpoint: 
         })
     } else {
         proxyAuthenticator { _, response ->
-            if (response.request.header("Proxy-Authorization") != null) throw IOException("HTTP 代理认证失败") else {
-                response.request.newBuilder()
-                    .header("Proxy-Authorization", Credentials.basic(endpoint.credentials.username, endpoint.credentials.password, Charsets.UTF_8))
-                    .build()
-            }
+            val request = response.request
+            if (response.handshake != null || (request.url.isHttps && request.method != "CONNECT")) return@proxyAuthenticator null
+            if (request.header("Proxy-Authorization") != null) throw IOException("HTTP 代理认证失败")
+            request.newBuilder()
+                .header("Proxy-Authorization", Credentials.basic(endpoint.credentials.username, endpoint.credentials.password, Charsets.UTF_8))
+                .build()
         }
     }
 }

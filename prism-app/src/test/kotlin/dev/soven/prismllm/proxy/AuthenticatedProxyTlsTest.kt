@@ -5,9 +5,14 @@ import com.sun.net.httpserver.HttpsServer
 import dev.soven.prismllm.fake.RecordingSocks5Proxy
 import io.ktor.network.tls.extensions.HashAlgorithm
 import io.ktor.network.tls.certificates.buildKeyStore
+import okhttp3.CipherSuite
 import okhttp3.Credentials
+import okhttp3.Handshake
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
+import okhttp3.Response
+import okhttp3.TlsVersion
 import org.junit.jupiter.api.Tag
 import java.io.InputStream
 import java.net.InetAddress
@@ -25,8 +30,9 @@ import javax.net.ssl.TrustManagerFactory
 import javax.net.ssl.X509TrustManager
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
 
 @Tag("component")
 class AuthenticatedProxyTlsTest {
@@ -44,6 +50,23 @@ class AuthenticatedProxyTlsTest {
         } finally {
             client.connectionPool.evictAll()
             client.dispatcher.executorService.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `https proxy authentication is limited to tunnel negotiation`() {
+        val endpoint = AuthenticatedChannelProxy(Proxy.Type.HTTP, InetSocketAddress("127.0.0.1", 8080), ProxyCredentials("user", "password"))
+        val client = OkHttpClient.Builder().apply { configureChannelProxyAuthentication(endpoint, 2_000) }.build()
+        val handshake = Handshake.get(TlsVersion.TLS_1_3, CipherSuite.TLS_AES_128_GCM_SHA256, emptyList(), emptyList())
+        for ((method, tlsHandshake) in listOf("GET" to null, "GET" to handshake, "CONNECT" to handshake)) {
+            val challenge = Response.Builder()
+                .request(Request.Builder().url("https://upstream.invalid/").method(method, null).build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(407)
+                .message("Proxy Authentication Required")
+                .handshake(tlsHandshake)
+                .build()
+            assertNull(client.proxyAuthenticator.authenticate(null, challenge), "$method, TLS handshake: ${tlsHandshake != null}")
         }
     }
 
