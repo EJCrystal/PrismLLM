@@ -78,6 +78,7 @@ data class ChannelKeyRecord(
     /** null 表示尚未单独配置；不继承渠道的账户身份。 */
     val quota: ChannelQuotaSettings? = null,
     val quotaCredential: EncryptedCredential? = null,
+    val egressProxyId: String? = null,
 ) : UpstreamCredential {
     override val isOAuth: Boolean get() = false
 
@@ -122,6 +123,7 @@ data class ChannelRecord(
     val modelMappings: List<ChannelModelRecord> = emptyList(),
     val priority: Int = 0,
     val keys: List<ChannelKeyRecord> = emptyList(),
+    val egressProxies: List<ChannelEgressProxy> = emptyList(),
     /** 通过 oauth_account_channels 关联到本渠道的订阅账号。 */
     val oauthAccounts: List<UpstreamCredential> = emptyList(),
     val requestOverrides: UpstreamRequestOverrides = UpstreamRequestOverrides(),

@@ -556,11 +556,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val credential = resolveChannelCredential(channel, call.request.queryParameters["keyId"])
             val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
-            val models = fetchUpstreamModels(
-                channel, credential, app.oauthTokenService, app.httpClient, authorizedOnly = false,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-            )
+            val models = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                fetchUpstreamModels(
+                    channel, credential, app.oauthTokenService, egressClient, authorizedOnly = false,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                )
+            }
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -624,13 +626,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val protocolAuthTypes = request.protocolAuthTypes ?: saved?.protocolAuthTypes.orEmpty()
             val discoveryProtocol = modelListProtocol(discoveryProtocols, authType, protocolAuthTypes)
             val discoveryAuthType = effectiveAuthType(authType, protocolAuthTypes, discoveryProtocol)
-            val models = fetchUpstreamModels(
-                baseUrl, credential, app.httpClient, discoveryAuthType,
-                protocol = discoveryProtocol,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-            )
+            if (request.clearEgressProxy && request.egressProxy != null) {
+                throw badRequest("invalid_channel_proxy", "不能同时指定和清除出口代理")
+            }
+            val egressProxy = request.egressProxy?.let {
+                val proxy = normalizeChannelProxies(app, listOf(it), saved?.egressProxies.orEmpty()).single()
+                parseChannelProxy(app, proxy)
+            } ?: if (!request.clearEgressProxy && saved != null && savedCredential != null) {
+                channelEgressProxy(app, saved, savedCredential)
+            } else null
+            val models = withUpstreamClient(app, egressProxy) { egressClient ->
+                fetchUpstreamModels(
+                    baseUrl, credential, egressClient, discoveryAuthType,
+                    protocol = discoveryProtocol,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
+                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                )
+            }
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -658,11 +671,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 channel.models.firstOrNull { credential.supports(it) }
                     ?: throw badRequest("model_not_authorized", "系统端点渠道或账号没有可探测的 active 模型")
             } else run {
-                val models = fetchUpstreamModels(
-                    channel, credential, app.oauthTokenService, app.httpClient,
-                    globalOverrides = globalOverrides,
-                    headerProfiles = headerProfiles,
-                )
+                val models = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                    fetchUpstreamModels(
+                        channel, credential, app.oauthTokenService, egressClient,
+                        globalOverrides = globalOverrides,
+                        headerProfiles = headerProfiles,
+                    )
+                }
                 models.firstOrNull { !channel.isProviderChannel || (it.id in channel.models && credential.supports(it.id)) }?.id ?: throw GatewayError(
                     HttpStatusCode.BadGateway,
                     "no_upstream_models",
@@ -673,11 +688,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (channel.isProviderChannel && (model !in channel.models || !credential.supports(model))) {
                 throw badRequest("model_not_authorized", "系统端点渠道或账号未授权该 active 模型")
             }
-            val results = probeUpstreamProtocols(
-                channel, credential, model, app.oauthTokenService, app.httpClient,
-                globalOverrides = globalOverrides,
-                headerProfiles = headerProfiles,
-            )
+            val results = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                probeUpstreamProtocols(
+                    channel, credential, model, app.oauthTokenService, egressClient,
+                    globalOverrides = globalOverrides,
+                    headerProfiles = headerProfiles,
+                )
+            }
             call.respond(
                 ProtocolProbeResponse(
                     model = model,
@@ -719,18 +736,20 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (prompt.length > MODEL_TEST_PROMPT_MAX) {
                 throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
             }
-            val result = testChannelModelConnectivity(
-                channel = channel,
-                credentialRef = credential,
-                model = model,
-                protocol = protocol,
-                prompt = prompt,
-                credentials = app.oauthTokenService,
-                httpClient = app.httpClient,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-                systemPrompt = app.systemPromptSettingsRepository.load().replacementFor(channel.id, protocol),
-            )
+            val result = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                testChannelModelConnectivity(
+                    channel = channel,
+                    credentialRef = credential,
+                    model = model,
+                    protocol = protocol,
+                    prompt = prompt,
+                    credentials = app.oauthTokenService,
+                    httpClient = egressClient,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                    systemPrompt = app.systemPromptSettingsRepository.load().replacementFor(channel.id, protocol),
+                )
+            }
             call.respond(result.toResponse(model, protocol, credential.id, credential.name, prompt))
         }
 
@@ -862,21 +881,23 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val results = coroutineScope {
                 challenges.map { challenge ->
                     async {
-                        testChannelModelConnectivity(
-                            channel = channel,
-                            credentialRef = credential,
-                            model = model,
-                            protocol = protocol,
-                            prompt = challenge.prompt,
-                            credentials = app.oauthTokenService,
-                            httpClient = app.httpClient,
-                            timeoutMs = FINGERPRINT_TIMEOUT_MS,
-                            maxOutputTokens = FINGERPRINT_MAX_OUTPUT_TOKENS,
-                            maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
-                            globalOverrides = overrides,
-                            headerProfiles = headerProfiles,
-                            isolatedIqRequest = true,
-                        )
+                        withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                            testChannelModelConnectivity(
+                                channel = channel,
+                                credentialRef = credential,
+                                model = model,
+                                protocol = protocol,
+                                prompt = challenge.prompt,
+                                credentials = app.oauthTokenService,
+                                httpClient = egressClient,
+                                timeoutMs = FINGERPRINT_TIMEOUT_MS,
+                                maxOutputTokens = FINGERPRINT_MAX_OUTPUT_TOKENS,
+                                maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
+                                globalOverrides = overrides,
+                                headerProfiles = headerProfiles,
+                                isolatedIqRequest = true,
+                            )
+                        }
                     }
                 }.awaitAll()
             }
@@ -1036,6 +1057,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
+            validateChannelProxyHosts(app, request)
             val protocols = parseProtocols(request.protocols ?: GatewayProtocol.default.map { it.value })
             if (app.channelRepository.findByName(request.name) != null) {
                 throw conflict("channel_name_exists", "渠道名称已存在")
@@ -1055,6 +1077,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 requestOverrides = request.requestOverrides ?: UpstreamRequestOverrides(),
                 quota = request.quota?.toSettings() ?: ChannelQuotaSettings(),
                 quotaCredential = request.quota?.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
+                egressProxies = normalizeChannelProxies(app, request.egressProxies.orEmpty()),
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -1064,6 +1087,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少渠道 id")
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
+            validateChannelProxyHosts(app, request)
             val protocols = request.protocols?.let(::parseProtocols)
             val updated = channelUpdateMutex.withLock {
                 val existing = app.channelRepository.find(id)
@@ -1099,6 +1123,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         quota = request.quota?.toSettings(),
                         quotaCredential = request.quota?.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
                         clearQuotaCredential = request.quota?.clearCredential == true,
+                        egressProxies = request.egressProxies?.let { normalizeChannelProxies(app, it, existing.egressProxies) },
                     ) ?: throw notFound("channel_not_found", "渠道不存在")
                     updated.keys.filter { key ->
                         existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
@@ -2538,6 +2563,7 @@ private fun normalizeNewKeys(
             priority = key.priority,
             models = key.models,
             rateLimit = key.rateLimit ?: ChannelKeyRateLimitPolicy(),
+            egressProxyId = key.egressProxyId,
         )
     }
 }
@@ -2575,6 +2601,8 @@ private fun normalizeUpdatedKeys(
                 models = key.models,
                 rateLimit = key.rateLimit,
                 stateVersion = key.stateVersion,
+                egressProxyId = key.egressProxyId,
+                clearEgressProxy = key.clearEgressProxy,
             )
         }
     }
@@ -2618,6 +2646,8 @@ private data class NormalizedKey(
     val models: List<String>,
     val rateLimit: ChannelKeyRateLimitPolicy?,
     val stateVersion: Long?,
+    val egressProxyId: String?,
+    val clearEgressProxy: Boolean,
 )
 
 private fun normalizeKeys(
@@ -2629,6 +2659,9 @@ private fun normalizeKeys(
     val names = mutableSetOf<String>()
     val ids = mutableSetOf<String>()
     return keys.map { key ->
+        if (key.clearEgressProxy && key.egressProxyId != null) {
+            throw badRequest("invalid_channel_proxy", "不能同时绑定和清除密钥出口代理")
+        }
         val name = key.name.trim()
         if (name.isEmpty() || name.length > 100) {
             throw badRequest("invalid_channel", "密钥名称长度必须在 1..100 之间")
@@ -2665,6 +2698,8 @@ private fun normalizeKeys(
             models = models,
             rateLimit = rateLimit,
             stateVersion = key.stateVersion,
+            egressProxyId = key.egressProxyId,
+            clearEgressProxy = key.clearEgressProxy,
         )
     }
 }
@@ -3202,21 +3237,23 @@ private fun persistedIqTestJob(jobId: String, spec: IqTestJobSpec) = NewIqTestJo
 )
 
 private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqTestRunResponse {
-    val result = testChannelModelConnectivity(
-        channel = spec.channel,
-        credentialRef = spec.credential,
-        model = spec.model,
-        protocol = spec.protocol,
-        prompt = spec.prompt,
-        credentials = app.oauthTokenService,
-        httpClient = app.httpClient,
-        timeoutMs = spec.timeoutMs,
-        maxOutputTokens = spec.benchmark.maxOutputTokens,
-        maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
-        globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-        headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-        isolatedIqRequest = spec.benchmark == IqBenchmark.CANDY,
-    )
+    val result = withUpstreamClient(app, channelEgressProxy(app, spec.channel, spec.credential)) { egressClient ->
+        testChannelModelConnectivity(
+            channel = spec.channel,
+            credentialRef = spec.credential,
+            model = spec.model,
+            protocol = spec.protocol,
+            prompt = spec.prompt,
+            credentials = app.oauthTokenService,
+            httpClient = egressClient,
+            timeoutMs = spec.timeoutMs,
+            maxOutputTokens = spec.benchmark.maxOutputTokens,
+            maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
+            globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+            headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+            isolatedIqRequest = spec.benchmark == IqBenchmark.CANDY,
+        )
+    }
     val html = if (spec.benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
     val structure = if (spec.benchmark == IqBenchmark.PELICAN) {
         analyzePelicanStructure(result.responseText)

@@ -155,6 +155,7 @@ export interface ChannelKeyRateLimit {
 export interface ChannelKey {
   id: string
   name: string
+  egressProxyId?: string | null
   quota?: ChannelQuotaSettings | null
   state: ChannelKeyState
   priority: number
@@ -192,6 +193,20 @@ export interface UpstreamRequestOverrides extends UpstreamProtocolOverrides {
   protocols: Partial<Record<ProtocolId, UpstreamProtocolOverrides>>
 }
 
+export interface ChannelEgressProxy {
+  id: string
+  name: string
+  url: string
+  username?: string | null
+  passwordSet?: boolean
+}
+
+export interface ChannelEgressProxyRequest extends Pick<ChannelEgressProxy, 'id' | 'name' | 'url'> {
+  username?: string | null
+  password?: string | null
+  clearAuthentication?: boolean
+}
+
 export interface Channel {
   id: string
   name: string
@@ -207,6 +222,7 @@ export interface Channel {
   modelMappings: ChannelModelMapping[]
   priority: number
   keys: ChannelKey[]
+  egressProxies?: ChannelEgressProxy[]
   /** 渠道下订阅账号摘要，仅展示字段；访问范围树用它渲染 OAuth 行。 */
   oauthAccounts?: ChannelOAuthAccount[]
   requestOverrides: UpstreamRequestOverrides
@@ -287,6 +303,8 @@ export interface ChannelKeyRequest {
   models?: string[]
   rateLimit?: ChannelKeyRateLimitRequest | null
   stateVersion?: number
+  egressProxyId?: string | null
+  clearEgressProxy?: boolean
 }
 
 export interface ChannelModelMappingRequest {
@@ -309,6 +327,7 @@ export interface ChannelRequest {
   keys?: ChannelKeyRequest[]
   requestOverrides?: UpstreamRequestOverrides
   quota?: ChannelQuotaSettingsRequest
+  egressProxies?: ChannelEgressProxyRequest[]
 }
 
 export interface KeyDisableRule {
@@ -744,6 +763,8 @@ export interface ModelDiscoveryRequest {
   protocolAuthTypes?: Record<string, string> | null
   protocols?: string[]
   requestOverrides?: UpstreamRequestOverrides
+  egressProxy?: ChannelEgressProxyRequest | null
+  clearEgressProxy?: boolean
 }
 
 export interface ModelSuggestion {
