@@ -390,6 +390,29 @@ export interface UpstreamRequestSettings {
   headerCatalog: UpstreamHeaderCatalog
 }
 
+export type SystemPromptScope = 'global' | 'protocols' | 'channels' | 'channel_protocols'
+export type SystemPromptAction = 'replace' | 'preserve'
+
+export interface SystemPromptRule {
+  id: string
+  name: string
+  enabled: boolean
+  scope: SystemPromptScope
+  protocols: ProtocolId[]
+  channelIds: string[]
+  priority: number
+  action: SystemPromptAction
+  prompt: string
+}
+
+export interface SystemPromptSettings {
+  enabled: boolean
+  rules: SystemPromptRule[]
+  updatedAt: number
+}
+
+export type SystemPromptSettingsRequest = Omit<SystemPromptSettings, 'updatedAt'>
+
 export interface ClientKeyQuotaUsage {
   dailyTokens: number
   dailyUsdCost: string
