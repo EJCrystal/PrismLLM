@@ -54,6 +54,8 @@ import type {
   ModelRoutePage,
   ModelRouteUpdateRequest,
   ModelTestSettings,
+  SystemPromptSettings,
+  SystemPromptSettingsRequest,
   ModelTestTarget,
   NotificationDeliveryPage,
   NotificationDeliveryPageOptions,
@@ -296,6 +298,9 @@ export const api = {
   runFingerprintTest: (payload: FingerprintRunRequest) =>
     request<FingerprintRun>('/model-tests/fingerprint', { method: 'POST', body: JSON.stringify(payload) }),
   getModelTestSettings: () => request<ModelTestSettings>('/model-test-settings'),
+  getSystemPromptSettings: () => request<SystemPromptSettings>('/system-prompt-settings'),
+  updateSystemPromptSettings: (payload: SystemPromptSettingsRequest) =>
+    request<SystemPromptSettings>('/system-prompt-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getUpstreamRequestSettings: () => request<UpstreamRequestSettings>('/upstream-request-settings'),
   updateUpstreamRequestSettings: (payload: { overrides: UpstreamRequestOverrides }) =>
     request<UpstreamRequestSettings>('/upstream-request-settings', { method: 'PUT', body: JSON.stringify(payload) }),

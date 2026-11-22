@@ -4,6 +4,7 @@ import { api } from '../api'
 import type {
   KeyAutoDisableSettingsResponse,
   ModelTestSettings,
+  SystemPromptSettings,
   NotificationSettings,
   RetentionPolicy,
   UpstreamRequestSettings,
@@ -19,6 +20,7 @@ import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
 import NotificationSettingsModal from './NotificationSettingsModal.vue'
 import RetentionSettingsModal from './RetentionSettingsModal.vue'
 import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
+import SystemPromptSettingsModal from './SystemPromptSettingsModal.vue'
 import WebSearchSettingsModal from './WebSearchSettingsModal.vue'
 
 const refreshing = ref(false)
@@ -26,6 +28,7 @@ const refreshing = ref(false)
 const cards = reactive({
   modelTest: { loading: true, error: '', data: null as ModelTestSettings | null },
   upstream: { loading: true, error: '', data: null as UpstreamRequestSettings | null },
+  systemPrompt: { loading: true, error: '', data: null as SystemPromptSettings | null },
   webSearch: { loading: true, error: '', data: null as WebSearchSettings | null },
   autoDisable: { loading: true, error: '', data: null as KeyAutoDisableSettingsResponse | null },
   notification: { loading: true, error: '', data: null as NotificationSettings | null },
@@ -34,6 +37,7 @@ const cards = reactive({
 
 const showModelTest = ref(false)
 const showUpstream = ref(false)
+const showSystemPrompt = ref(false)
 const showWebSearch = ref(false)
 const showAutoDisable = ref(false)
 const showNotification = ref(false)
@@ -94,6 +98,18 @@ async function loadWebSearch() {
   }
 }
 
+async function loadSystemPrompt() {
+  cards.systemPrompt.loading = true
+  cards.systemPrompt.error = ''
+  try {
+    cards.systemPrompt.data = await api.getSystemPromptSettings()
+  } catch (cause) {
+    cards.systemPrompt.error = errorMessage(cause)
+  } finally {
+    cards.systemPrompt.loading = false
+  }
+}
+
 async function loadAutoDisable() {
   cards.autoDisable.loading = true
   cards.autoDisable.error = ''
@@ -135,6 +151,7 @@ async function loadAll(refresh = false) {
   await Promise.allSettled([
     loadModelTest(),
     loadUpstream(),
+    loadSystemPrompt(),
     loadWebSearch(),
     loadAutoDisable(),
     loadNotification(),
@@ -162,6 +179,7 @@ function apiKeySourceLabel(source: WebSearchApiKeySource): string {
 const settingRows = computed<SettingRow[]>(() => {
   const modelTest = cards.modelTest
   const upstream = cards.upstream
+  const systemPrompt = cards.systemPrompt
   const webSearch = cards.webSearch
   const autoDisable = cards.autoDisable
   const notification = cards.notification
@@ -180,6 +198,22 @@ const settingRows = computed<SettingRow[]>(() => {
       alert: '',
       onAction: () => { showModelTest.value = true },
       onRetry: loadModelTest,
+    },
+    {
+      id: 'system-prompt',
+      title: '系统提示词',
+      description: '按出口协议或渠道覆盖系统提示词',
+      icon: 'edit',
+      loading: systemPrompt.loading,
+      error: systemPrompt.error,
+      value: systemPrompt.data
+        ? (systemPrompt.data.enabled ? '已启用' : '已关闭') + ' · ' + systemPrompt.data.rules.length + ' 条规则'
+        : '',
+      valueTitle: '',
+      meta: systemPrompt.data ? updatedLabel(systemPrompt.data.updatedAt) : '',
+      alert: '',
+      onAction: () => { showSystemPrompt.value = true },
+      onRetry: loadSystemPrompt,
     },
     {
       id: 'upstream',
@@ -338,6 +372,7 @@ onMounted(() => { void loadAll() })
 
     <ModelTestSettingsModal v-if="showModelTest" @close="showModelTest = false" @saved="loadModelTest" />
     <UpstreamRequestSettingsModal v-if="showUpstream" @close="showUpstream = false" @saved="onUpstreamSaved" />
+    <SystemPromptSettingsModal v-if="showSystemPrompt" @close="showSystemPrompt = false" @saved="loadSystemPrompt" />
     <WebSearchSettingsModal v-if="showWebSearch" @close="showWebSearch = false" @saved="loadWebSearch" />
     <KeyAutoDisableSettingsModal v-if="showAutoDisable" @close="showAutoDisable = false" @saved="loadAutoDisable" />
     <NotificationSettingsModal
