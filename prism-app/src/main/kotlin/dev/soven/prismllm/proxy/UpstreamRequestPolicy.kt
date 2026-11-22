@@ -84,6 +84,7 @@ class UpstreamRequestPolicy(
     private val profiles: List<UpstreamHeaderProfile> = UpstreamHeaderProfiles.defaults,
     /** 目标渠道地址，仅用于判断上游是否需要回传 reasoning_content（看 host）。 */
     private val baseUrl: String = "",
+    private val conversation: UpstreamConversation = UpstreamConversation.own(),
 ) {
     private val layers: List<UpstreamProtocolOverrides> = buildList {
         if (channel.inheritGlobal) {
@@ -123,13 +124,31 @@ class UpstreamRequestPolicy(
                 if ("version" !in explicit) result["version"] = identity.groupValues[2]
             }
         }
-        return result
+        return result.mapValues { (_, value) ->
+            value?.let { conversation.expand(it, header = true) }?.also {
+                if (!validHeaderValue(it)) throw badRequest("invalid_request_overrides", "展开后的请求头包含非法字符或超过 8192 字符")
+            }
+        }
     }
 
     fun body(original: JsonObject, upstreamModel: String, limitBytes: Long = Long.MAX_VALUE): JsonObject {
         val routed = if (protocol == GatewayProtocol.GEMINI) JsonObject(original - "model" - "stream")
             else JsonObject(original + ("model" to JsonPrimitive(upstreamModel)))
-        val merged = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
+        val patched = layers.fold(routed) { current, layer -> mergePatch(current, layer.body) }
+        // Resolve configuration precedence first; defaults must still defer to the caller's own fields.
+        val extras = linkedMapOf<String, Pair<Boolean, JsonElement>>()
+        layers.forEach { layer ->
+            layer.extraBody.forEach { (key, value) ->
+                val (name, forced) = extraBodyName(key)
+                if (name.isNotEmpty() && name !in EXTRA_BODY_RESERVED) extras[name] = forced to value
+            }
+        }
+        val supplemented = patched.toMutableMap()
+        extras.forEach { (name, rule) ->
+            val (forced, value) = rule
+            if (forced || name !in supplemented) supplemented[name] = conversation.expand(value)
+        }
+        val merged = JsonObject(supplemented)
         val compatible = if (protocol == GatewayProtocol.CHAT_COMPLETIONS && "max_completion_tokens" in merged) {
             JsonObject(merged - "max_tokens")
         } else {
@@ -190,6 +209,14 @@ fun validateUpstreamRequestOverrides(overrides: UpstreamRequestOverrides) {
             invalid("请求体覆盖不能修改 model 或 stream；模型映射和流式模式由网关管理")
         }
         if (jsonDepth(layer.body) > 32) invalid("请求体覆盖嵌套不能超过 32 层")
+        val extraNames = mutableSetOf<String>()
+        layer.extraBody.keys.forEach { key ->
+            val (name, _) = extraBodyName(key)
+            if (name.isEmpty()) invalid("请求体补充字段名称不能为空")
+            if (name in EXTRA_BODY_RESERVED) invalid("请求体补充不能修改 $name；模型、流式模式和对话内容由网关管理")
+            if (!extraNames.add(name)) invalid("请求体补充不能重复设置字段 $name（包括 ! 强制覆盖形式）")
+        }
+        if (jsonDepth(layer.extraBody) > 32) invalid("请求体补充嵌套不能超过 32 层")
     }
     if (Json.encodeToString(overrides).toByteArray(Charsets.UTF_8).size > 65_536) invalid("请求覆盖配置不能超过 64KB")
 }
@@ -203,6 +230,15 @@ private fun jsonDepth(value: JsonElement, depth: Int = 0): Int = when {
     value is JsonArray -> value.maxOfOrNull { jsonDepth(it, depth + 1) } ?: depth + 1
     else -> depth
 }
+
+private fun extraBodyName(key: String): Pair<String, Boolean> {
+    val trimmed = key.trim()
+    return trimmed.removePrefix("!").trim() to trimmed.startsWith("!")
+}
+
+private val EXTRA_BODY_RESERVED = setOf(
+    "model", "stream", "messages", "input", "contents", "system", "systemInstruction", "system_instruction", "instructions", "tools",
+)
 
 private val HEADER_NAME = Regex("[!#$%&'*+.^_`|~0-9A-Za-z-]+")
 private val CODEX_USER_AGENT = Regex("^(codex_cli_rs|codex_vscode|codex-tui)/([0-9]+(?:\\.[0-9]+){1,3}(?:-[0-9A-Za-z.]+)?)(?:\\s|$)")

@@ -5,7 +5,8 @@ function countProtocolOverrides(overrides: UpstreamProtocolOverrides): number {
     (overrides.headerProfile ? 1 : 0) +
     (overrides.userAgent ? 1 : 0) +
     Object.keys(overrides.headers ?? {}).length +
-    Object.keys(overrides.body ?? {}).length
+    Object.keys(overrides.body ?? {}).length +
+    Object.keys(overrides.extraBody ?? {}).length
   )
 }
 
@@ -18,6 +19,7 @@ export function countUpstreamOverrides(overrides: UpstreamRequestOverrides): num
     (overrides.userAgent ? 1 : 0) +
     Object.keys(overrides.headers ?? {}).length +
     Object.keys(overrides.body ?? {}).length +
+    Object.keys(overrides.extraBody ?? {}).length +
     protocols.reduce((total, protocol) => total + countProtocolOverrides(protocol), 0)
   )
 }

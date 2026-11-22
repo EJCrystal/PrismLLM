@@ -36,6 +36,8 @@ import dev.soven.prismllm.oauth.infra.proxyAddress
 import java.net.InetSocketAddress
 import java.net.ProxySelector
 import dev.soven.prismllm.proxy.UpstreamRequestPolicy
+import dev.soven.prismllm.proxy.UpstreamConversation
+import io.ktor.util.AttributeKey
 import dev.soven.prismllm.proxy.upstreamRequestUrl
 import dev.soven.prismllm.quota.infra.RequestLimitLease
 import dev.soven.prismllm.protocol.ReasoningEffort
@@ -133,6 +135,7 @@ import org.slf4j.LoggerFactory
 
 private val proxyLogger = LoggerFactory.getLogger("dev.soven.prismllm.api.ProxyRoutes")
 private val USER_AGENT_WHITESPACE = Regex("[\\r\\n\\t]+")
+private val UPSTREAM_CONVERSATION = AttributeKey<UpstreamConversation>("UpstreamConversation")
 
 /**
  * 原生协议数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
@@ -275,6 +278,9 @@ private suspend fun handleProxyRequest(
         clientKey = authenticate(call, app, protocol)
         requestLimitLease = app.requestLimitService.acquire(clientKey)
         val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
+        call.attributes.put(UPSTREAM_CONVERSATION, UpstreamConversation.fromRequest(
+            { name -> call.request.headers[name] }, requestJson, clientKey.id,
+        ))
         reasoningEffort = ReasoningEffort.fromRequest(requestJson, protocol)
         val modelElement = requestJson["model"] as? JsonPrimitive
         alias = nativeModel ?: modelElement
@@ -1339,7 +1345,7 @@ private suspend fun searchChatCaller(
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
-        candidate.channel.baseUrl,
+        candidate.channel.baseUrl, conversation = call.attributes[UPSTREAM_CONVERSATION],
     )
     return ChatCaller { messages ->
         val body = buildJsonObject {
@@ -1426,7 +1432,7 @@ private suspend fun proxyStream(
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
-        headerProfiles, candidate.channel.baseUrl,
+        headerProfiles, candidate.channel.baseUrl, conversation = call.attributes[UPSTREAM_CONVERSATION],
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson
@@ -1737,7 +1743,7 @@ private suspend fun proxyJson(
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType,
-        headerProfiles, candidate.channel.baseUrl,
+        headerProfiles, candidate.channel.baseUrl, conversation = call.attributes[UPSTREAM_CONVERSATION],
     )
     val convertedRequest = if (protocol == upstreamProtocol) {
         requestJson

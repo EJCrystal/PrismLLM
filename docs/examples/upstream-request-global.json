@@ -16,6 +16,9 @@
             "effort": "high",
             "summary": "auto"
           }
+        },
+        "extraBody": {
+          "prompt_cache_key": "${sessionId}"
         }
       }
     }

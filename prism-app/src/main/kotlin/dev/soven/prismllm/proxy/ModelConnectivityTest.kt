@@ -161,6 +161,7 @@ private suspend fun runModelConnectivityTest(
             val authType = channel.authTypeFor(protocol)
             val policy = UpstreamRequestPolicy(
                 globalOverrides, channel.requestOverrides, protocol, authType, headerProfiles, channel.baseUrl,
+                conversation = UpstreamConversation.own("prismllm-test-"),
             )
             val original = Json.parseToJsonElement(buildModelTestBody(protocol, model, prompt, maxOutputTokens)) as JsonObject
             val overridden = policy.body(original, model)
@@ -253,7 +254,7 @@ private suspend fun runModelConnectivityTest(
 internal fun isolateIqRequestBody(original: JsonObject, overridden: JsonObject, protocol: GatewayProtocol): JsonObject {
     val scalarSettings = when (protocol) {
         GatewayProtocol.CHAT_COMPLETIONS -> setOf("temperature", "top_p", "seed", "presence_penalty", "frequency_penalty", "reasoning_effort", "max_tokens", "max_completion_tokens")
-        GatewayProtocol.RESPONSES -> setOf("temperature", "top_p", "max_output_tokens")
+        GatewayProtocol.RESPONSES -> setOf("temperature", "top_p", "max_output_tokens", "prompt_cache_key")
         GatewayProtocol.MESSAGES -> setOf("temperature", "top_p", "top_k", "max_tokens")
         GatewayProtocol.GEMINI -> emptySet()
     }
