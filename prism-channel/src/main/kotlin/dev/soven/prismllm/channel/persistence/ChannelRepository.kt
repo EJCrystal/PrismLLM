@@ -80,7 +80,12 @@ class ChannelRepository(
     private val database: Database,
     private val credentialCipher: CredentialCipher,
     private val keyStateObserver: KeyStateObserver = KeyStateObserver {},
+    private val includeEgressConfiguration: Boolean = true,
 ) {
+    private val channelReadColumns = if (includeEgressConfiguration) Channels.columns else Channels.columns.filterNot { it == Channels.egressProxies }
+
+    private fun channelRows() = Channels.select(channelReadColumns)
+
     /** Health overview needs only channel identities and enabled state, never credentials or relations. */
     suspend fun listHealthChannels(): Map<String, Boolean> = suspendTransaction(database) {
         Channels.select(Channels.id, Channels.enabled).toList()
@@ -98,10 +103,10 @@ class ChannelRepository(
     /** 跨上下文配置快照读取；沿用调用方事务，不开启嵌套事务。 */
     fun listInTransaction(): List<ChannelRecord> {
         requireTransaction()
-        val rows = Channels.selectAll().orderBy(Channels.name).toList()
+        val rows = channelRows().orderBy(Channels.name).toList()
         val ids = rows.map { it[Channels.id] }
         val modelsByChannel = loadChannelModelMappingsInTransaction(ids)
-        val keysByChannel = loadChannelKeysInTransaction(ids)
+        val keysByChannel = loadChannelKeysInTransaction(ids, includeEgressConfiguration)
         return rows.map { row ->
             toRecord(row).copy(
                 modelMappings = modelsByChannel[row[Channels.id]].orEmpty(),
@@ -111,7 +116,7 @@ class ChannelRepository(
     }
 
     suspend fun find(id: String): ChannelRecord? = suspendTransaction(database) {
-        Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
+        channelRows().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
     /** 应用层跨仓储协调的唯一事务边界；InTransaction 方法不再开启嵌套事务。 */
@@ -123,12 +128,12 @@ class ChannelRepository(
 
     fun findInTransaction(id: String): ChannelRecord? {
         requireTransaction()
-        return Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
+        return channelRows().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
     fun findProviderChannelInTransaction(provider: OAuthProvider, lock: Boolean = false): ChannelRecord? {
         requireTransaction()
-        val query = Channels.selectAll()
+        val query = channelRows()
             .where { (Channels.kind eq ChannelKind.PROVIDER.value) and (Channels.provider eq provider.value) }
         if (lock) query.forUpdate()
         return query.singleOrNull()?.let(::toRecordWithRelations)
@@ -168,7 +173,7 @@ class ChannelRepository(
         automaticDefaultsChanged: Boolean = false,
     ): ChannelRecord {
         requireTransaction()
-        check(Channels.selectAll().where { Channels.id eq channelId }.forUpdate().singleOrNull() != null)
+        check(Channels.select(Channels.id).where { Channels.id eq channelId }.forUpdate().singleOrNull() != null)
         saveModels(channelId, mappings, System.currentTimeMillis(), automaticDefaultsChanged)
         return requireNotNull(findInTransaction(channelId))
     }
@@ -179,7 +184,7 @@ class ChannelRepository(
     }
 
     suspend fun findByName(name: String): ChannelRecord? = suspendTransaction(database) {
-        Channels.selectAll().where { Channels.name eq name }.singleOrNull()?.let(::toRecordWithRelations)
+        channelRows().where { Channels.name eq name }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
     suspend fun create(
@@ -400,7 +405,7 @@ class ChannelRepository(
                 }
             }
         }
-        val revision = Channels.selectAll().where { Channels.id eq channelId }.single()[Channels.modelMappingRevision]
+        val revision = Channels.select(Channels.modelMappingRevision).where { Channels.id eq channelId }.single()[Channels.modelMappingRevision]
         Channels.update({ Channels.id eq channelId }) {
             it[modelMappingRevision] = revision + 1
             it[updatedAt] = now
@@ -410,7 +415,7 @@ class ChannelRepository(
 
     /** 渠道目录收缩时同步清理密钥上已不存在的模型引用。 */
     private fun pruneKeyModels(channelId: String, allowedModels: Set<String>) {
-        val keyIds = ChannelKeys.selectAll()
+        val keyIds = ChannelKeys.select(ChannelKeys.id)
             .where { ChannelKeys.channelId eq channelId }
             .map { it[ChannelKeys.id] }
         keyIds.forEach { keyId ->
@@ -546,7 +551,7 @@ class ChannelRepository(
         loadChannelModelMappingsInTransaction(listOf(channelId))[channelId].orEmpty()
 
     private fun keysForInTransaction(channelId: String): List<ChannelKeyRecord> =
-        loadChannelKeysInTransaction(listOf(channelId))[channelId].orEmpty()
+        loadChannelKeysInTransaction(listOf(channelId), includeEgressConfiguration)[channelId].orEmpty()
 
     private fun toRecord(row: ResultRow) = ChannelRecord(
         id = row[Channels.id],
@@ -562,7 +567,7 @@ class ChannelRepository(
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
         requestOverrides = requestOverridesJson.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
-        egressProxies = requestOverridesJson.decodeFromString<List<ChannelEgressProxy>>(row[Channels.egressProxies]),
+        egressProxies = row.getOrNull(Channels.egressProxies)?.let { requestOverridesJson.decodeFromString<List<ChannelEgressProxy>>(it) }.orEmpty(),
         quota = Json.decodeFromString<ChannelQuotaSettings>(row[Channels.quotaSettings]),
         quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
@@ -604,9 +609,11 @@ internal fun loadChannelModelMappingsInTransaction(
 /** Batch-loads channel keys and their model sets inside the caller's transaction. */
 internal fun loadChannelKeysInTransaction(
     channelIds: Collection<String>,
+    includeEgressConfiguration: Boolean = true,
 ): Map<String, List<ChannelKeyRecord>> {
     if (channelIds.isEmpty()) return emptyMap()
-    val keyRows = ChannelKeys.selectAll()
+    val columns = if (includeEgressConfiguration) ChannelKeys.columns else ChannelKeys.columns.filterNot { it == ChannelKeys.egressProxyId }
+    val keyRows = ChannelKeys.select(columns)
         .where { ChannelKeys.channelId inList channelIds }
         .orderBy(ChannelKeys.priority to SortOrder.ASC, ChannelKeys.name to SortOrder.ASC)
         .toList()
@@ -642,7 +649,7 @@ internal fun loadChannelKeysInTransaction(
                 priority = row[ChannelKeys.priority],
                 models = modelsByKey[row[ChannelKeys.id]].orEmpty(),
                 rateLimit = rateLimitsByKey[row[ChannelKeys.id]] ?: ChannelKeyRateLimitPolicy(),
-                egressProxyId = row[ChannelKeys.egressProxyId],
+                egressProxyId = row.getOrNull(ChannelKeys.egressProxyId),
                 createdAt = row[ChannelKeys.createdAt],
                 updatedAt = row[ChannelKeys.updatedAt],
                 stateVersion = row[ChannelKeys.stateVersion],
