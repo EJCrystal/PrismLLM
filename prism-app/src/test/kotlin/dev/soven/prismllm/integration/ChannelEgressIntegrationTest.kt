@@ -3,7 +3,7 @@ package dev.soven.prismllm.integration
 import com.sun.net.httpserver.HttpServer
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
 import dev.soven.prismllm.api.parseChannelProxy
-import dev.soven.prismllm.api.upstreamClient
+import dev.soven.prismllm.api.withUpstreamClient
 import dev.soven.prismllm.api.normalizeChannelProxies
 import dev.soven.prismllm.api.ChannelEgressProxyRequest
 import dev.soven.prismllm.api.ChannelRequest
@@ -27,7 +27,11 @@ import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.job
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonArray
@@ -43,7 +47,6 @@ import org.jetbrains.exposed.v1.jdbc.select
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotSame
-import kotlin.test.assertSame
 import kotlin.test.assertTrue
 import kotlin.test.assertFalse
 import kotlin.test.assertFailsWith
@@ -123,6 +126,14 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
                 }
                 assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
                 assertFalse(response.bodyAsText().contains(password))
+                val changed = client.post("/admin/api/channels/model-discovery") {
+                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"baseUrl":"${channel.baseUrl}","channelId":"${channel.id}","keyId":"${channel.keys.single().id}","egressProxy":{"id":"auth","name":"认证代理","url":"socks5://127.0.0.1:1","username":"proxy-user"}}""")
+                }
+                assertEquals(HttpStatusCode.BadRequest, changed.status, changed.bodyAsText())
+                assertTrue(changed.bodyAsText().contains("代理地址已变更"))
             }
             assertTrue(proxy.authenticatedUsers.isNotEmpty())
             assertTrue(fake.modelRequests.isNotEmpty())
@@ -181,8 +192,8 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
         }
     }
 
-    private suspend fun assertProxyAuthenticationFailure(url: String) {
-        val endpoint = normalizeChannelProxies(app, listOf(ChannelEgressProxyRequest("auth", "认证代理", url, "proxy-user", "incorrect-password"))).single()
+    private suspend fun assertProxyAuthenticationFailure(url: String, password: String? = "incorrect-password") {
+        val endpoint = normalizeChannelProxies(app, listOf(ChannelEgressProxyRequest("auth", "认证代理", url, password?.let { "proxy-user" }, password))).single()
         val channel = channel(listOf(endpoint), listOf("auth"))
         configureModelRoute("m1", channel to channel.keys.single())
         val key = createClientKey()
@@ -208,15 +219,28 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
     fun `socks5 authentication failure never falls back to direct`() = runBlocking {
         RecordingSocks5Proxy(username = "proxy-user", password = "correct-password").use {
             assertProxyAuthenticationFailure(it.url)
+            assertTrue(it.offeredMethods.isNotEmpty())
+            assertTrue(it.offeredMethods.all { methods -> methods == listOf(2) })
             assertTrue(it.authenticatedUsers.isEmpty())
             assertTrue(it.targets.isEmpty())
         }
     }
 
     @Test
+    fun `unauthenticated socks5 refuses proxies that require authentication`() = runBlocking {
+        RecordingSocks5Proxy(username = "proxy-user", password = "test-password").use { proxy ->
+            assertProxyAuthenticationFailure(proxy.url, password = null)
+            assertTrue(proxy.offeredMethods.isNotEmpty())
+            assertTrue(proxy.offeredMethods.all { it == listOf(0) })
+            assertTrue(proxy.authenticatedUsers.isEmpty())
+            assertTrue(proxy.targets.isEmpty())
+        }
+    }
+
+    @Test
     fun `proxy passwords are encrypted never returned retained when omitted and explicitly clearable`() = runBlocking {
         val password = "proxy-password-not-for-output-489"
-        val proxy = ChannelEgressProxyRequest("auth", "认证代理", "socks5://127.0.0.1:1080", "proxy-user", password)
+        val proxy = ChannelEgressProxyRequest("auth", "认证代理", "socks5://localhost:1080", "proxy-user", password)
         val request = ChannelRequest(
             name = "auth-storage", baseUrl = "${fake.baseUrl}/ok/v1",
             keys = listOf(ChannelKeyRequest(name = "key", credential = "upstream-secret", models = listOf("m1"))),
@@ -248,7 +272,7 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
             assertFalse(raw.contains(password))
             assertFalse(stored.toString().contains(password))
             val baseUpdate = request.copy(keys = null, modelMappings = null)
-            for (updated in listOf(baseUpdate.copy(egressProxies = null), baseUpdate.copy(egressProxies = listOf(proxy.copy(password = ""))))) {
+            for (updated in listOf(baseUpdate.copy(egressProxies = null), baseUpdate.copy(egressProxies = listOf(proxy.copy(url = "socks5://LOCALHOST/", password = ""))))) {
                 val response = client.put("/admin/api/channels/$id") {
                     header(HttpHeaders.Cookie, "gw_session=${session.token}")
                     header("X-CSRF-Token", session.session.csrf)
@@ -259,12 +283,25 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
                 assertFalse(response.bodyAsText().contains(password))
                 assertEquals(stored.authentication, app.channelRepository.find(id)!!.egressProxies.single().authentication)
             }
+            val saved = app.channelRepository.find(id)!!.egressProxies.single()
+            for (url in listOf("http://localhost:1080", "socks5://127.0.0.1:1080", "socks5://localhost:1081")) {
+                val update = baseUpdate.copy(egressProxies = listOf(proxy.copy(url = url, username = null, password = null)))
+                val response = client.put("/admin/api/channels/$id") {
+                    header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                    header("X-CSRF-Token", session.session.csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody(Json.encodeToString(update))
+                }
+                assertEquals(HttpStatusCode.BadRequest, response.status, response.bodyAsText())
+                assertTrue(response.bodyAsText().contains("代理地址已变更"))
+                assertEquals(saved, app.channelRepository.find(id)!!.egressProxies.single())
+            }
             assertFalse(app.adminAuditRepository.list(100).toString().contains(password))
             val cleared = client.put("/admin/api/channels/$id") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody(Json.encodeToString(baseUpdate.copy(egressProxies = listOf(proxy.copy(username = null, password = null, clearAuthentication = true)))))
+                setBody(Json.encodeToString(baseUpdate.copy(egressProxies = listOf(proxy.copy(url = "socks5://localhost:1081", username = null, password = null, clearAuthentication = true)))))
             }
             assertEquals(HttpStatusCode.OK, cleared.status, cleared.bodyAsText())
             assertEquals(null, app.channelRepository.find(id)!!.egressProxies.single().authentication)
@@ -272,15 +309,36 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `authentication is scoped per client and rotated passwords create a separate connection pool`() {
+    fun `channel proxy clients close on success and failure without retaining credentials in the account cache`() = runBlocking {
         val request = ChannelEgressProxyRequest("auth", "认证代理", "socks5://127.0.0.1:1080", "proxy-user", "first-secret")
         val original = normalizeChannelProxies(app, listOf(request)).single()
-        val changed = normalizeChannelProxies(app, listOf(request.copy(password = "second-secret")), listOf(original)).single()
-        val first = parseChannelProxy(app, original)
-        val second = parseChannelProxy(app, changed)
-        assertNotSame(upstreamClient(app, first), upstreamClient(app, second))
-        assertSame(upstreamClient(app, second), upstreamClient(app, parseChannelProxy(app, changed)))
-        assertTrue(app.accountEgressClients.keys.none { it.contains("first-secret") || it.contains("second-secret") || it.contains("proxy-user") })
+        val changed = normalizeChannelProxies(app, listOf(request.copy(url = "socks5://127.0.0.1:1081", password = "second-secret")), listOf(original)).single()
+        val first = withUpstreamClient(app, parseChannelProxy(app, original)) { it.coroutineContext.job to it.engine.coroutineContext.job }
+        val second = withUpstreamClient(app, parseChannelProxy(app, changed)) { it.coroutineContext.job to it.engine.coroutineContext.job }
+        assertNotSame(first.first, second.first)
+        assertNotSame(first.second, second.second)
+        lateinit var failed: Job
+        lateinit var failedEngine: Job
+        assertFailsWith<IllegalStateException> {
+            withUpstreamClient(app, parseChannelProxy(app, changed)) { client ->
+                failed = client.coroutineContext.job
+                failedEngine = client.engine.coroutineContext.job
+                error("test failure")
+            }
+        }
+        lateinit var cancelled: Job
+        lateinit var cancelledEngine: Job
+        assertFailsWith<CancellationException> {
+            withUpstreamClient(app, parseChannelProxy(app, original)) { client ->
+                cancelled = client.coroutineContext.job
+                cancelledEngine = client.engine.coroutineContext.job
+                throw CancellationException("test cancellation")
+            }
+        }
+        withTimeout(2_000) {
+            listOf(first.first, first.second, second.first, second.second, failed, failedEngine, cancelled, cancelledEngine).forEach { it.join() }
+        }
+        assertTrue(app.accountEgressClients.isEmpty())
         assertFailsWith<ChannelEgressConfigurationException> { parseChannelProxy(app, original.copy(id = "different-id")) }
         assertFalse(request.toString().contains("first-secret"))
     }
@@ -375,14 +433,13 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `http and socks5 use separate cached clients even at the same proxy address`() {
+    fun `proxy endpoints preserve scheme and default ports without resolving hosts`() {
         val http = parseChannelProxy(app, "http://127.0.0.1:1080")
         val socks = parseChannelProxy(app, "socks5://127.0.0.1:1080")
         assertEquals(Proxy.Type.HTTP, http.type())
         assertEquals(Proxy.Type.SOCKS, socks.type())
         assertEquals(http.address(), socks.address())
-        assertNotSame(upstreamClient(app, http), upstreamClient(app, socks))
-        assertSame(upstreamClient(app, socks), upstreamClient(app, parseChannelProxy(app, "socks5://127.0.0.1:1080")))
+        assertTrue((socks.address() as InetSocketAddress).isUnresolved)
         assertEquals(1080, (parseChannelProxy(app, "socks5://localhost").address() as InetSocketAddress).port)
         assertEquals(80, (parseChannelProxy(app, "http://localhost").address() as InetSocketAddress).port)
     }

@@ -43,7 +43,7 @@ function addProxy(): void {
         <label class="field">
           <span>代理密码</span>
           <SecretInput v-model="proxy.password" :placeholder="proxy.passwordSet ? '留空保持已保存密码' : '输入代理密码'" autocomplete="new-password" />
-          <small v-if="proxy.passwordSet">密码已加密保存，不回显；关闭认证后保存可清除。</small>
+          <small v-if="proxy.passwordSet">密码已加密保存，不回显；地址不变时留空保留，变更地址需重填密码或关闭认证。</small>
         </label>
       </template>
       <div class="channel-egress-actions">

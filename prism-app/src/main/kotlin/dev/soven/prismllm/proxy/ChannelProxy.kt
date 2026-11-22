@@ -4,37 +4,25 @@ import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.HttpTimeoutConfig
+import okhttp3.ConnectionPool
 import okhttp3.Credentials
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Proxy
-import java.io.IOException
 import java.security.MessageDigest
-import java.util.HexFormat
 
 internal class ProxyCredentials(val username: String, val password: String) {
     override fun toString(): String = "ProxyCredentials([REDACTED])"
 }
 
-internal class AuthenticatedChannelProxy(type: Type, address: InetSocketAddress, val credentials: ProxyCredentials) : Proxy(type, address)
+internal class ChannelProxy(type: Type, address: InetSocketAddress, val credentials: ProxyCredentials?) : Proxy(type, address)
 
-internal fun channelProxyPoolKey(proxy: Proxy): String {
-    val address = proxy.address() as InetSocketAddress
-    val endpoint = proxy.type().name + ":" + address.hostString + ":" + address.port
-    if (proxy !is AuthenticatedChannelProxy) return endpoint
-    val digest = MessageDigest.getInstance("SHA-256")
-    digest.update(proxy.credentials.username.toByteArray(Charsets.UTF_8))
-    digest.update(0.toByte())
-    digest.update(proxy.credentials.password.toByteArray(Charsets.UTF_8))
-    return endpoint + ":auth:" + HexFormat.of().formatHex(digest.digest())
-}
-
-internal fun authenticatedChannelProxyClient(proxy: AuthenticatedChannelProxy, connectTimeoutMs: Long): HttpClient = HttpClient(OkHttp) {
+internal fun channelProxyClient(proxy: ChannelProxy, connectTimeoutMs: Long): HttpClient = HttpClient(OkHttp) {
     engine {
-        this.proxy = if (proxy.type() == Proxy.Type.SOCKS) Proxy.NO_PROXY else proxy
-        config { configureChannelProxyAuthentication(proxy, connectTimeoutMs) }
+        config { configureChannelProxy(proxy, connectTimeoutMs) }
     }
     install(HttpTimeout) {
         connectTimeoutMillis = connectTimeoutMs
@@ -43,11 +31,13 @@ internal fun authenticatedChannelProxyClient(proxy: AuthenticatedChannelProxy, c
     }
 }
 
-internal fun OkHttpClient.Builder.configureChannelProxyAuthentication(endpoint: AuthenticatedChannelProxy, connectTimeoutMs: Long) {
+internal fun OkHttpClient.Builder.configureChannelProxy(endpoint: ChannelProxy, connectTimeoutMs: Long) {
     proxy(if (endpoint.type() == Proxy.Type.SOCKS) Proxy.NO_PROXY else endpoint)
+    connectionPool(ConnectionPool())
     retryOnConnectionFailure(false)
+    val credentials = endpoint.credentials
     if (endpoint.type() == Proxy.Type.SOCKS) {
-        socketFactory(AuthenticatedSocks5SocketFactory(endpoint.address() as InetSocketAddress, endpoint.credentials, connectTimeoutMs.coerceIn(1, Int.MAX_VALUE.toLong()).toInt()))
+        socketFactory(ChannelSocks5SocketFactory(endpoint.address() as InetSocketAddress, credentials, connectTimeoutMs.coerceIn(1, Int.MAX_VALUE.toLong()).toInt()))
         dns(object : Dns {
             override fun lookup(hostname: String): List<InetAddress> {
                 val routeAddress = MessageDigest.getInstance("SHA-256").digest(hostname.toByteArray(Charsets.UTF_8)).copyOf(16)
@@ -55,13 +45,13 @@ internal fun OkHttpClient.Builder.configureChannelProxyAuthentication(endpoint: 
                 return listOf(InetAddress.getByAddress(hostname, routeAddress))
             }
         })
-    } else {
+    } else if (credentials != null) {
         proxyAuthenticator { _, response ->
             val request = response.request
             if (response.handshake != null || (request.url.isHttps && request.method != "CONNECT")) return@proxyAuthenticator null
             if (request.header("Proxy-Authorization") != null) throw IOException("HTTP 代理认证失败")
             request.newBuilder()
-                .header("Proxy-Authorization", Credentials.basic(endpoint.credentials.username, endpoint.credentials.password, Charsets.UTF_8))
+                .header("Proxy-Authorization", Credentials.basic(credentials.username, credentials.password, Charsets.UTF_8))
                 .build()
         }
     }

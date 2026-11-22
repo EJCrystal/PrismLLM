@@ -17,6 +17,7 @@ internal class RecordingSocks5Proxy(
     data class Target(val host: String, val port: Int, val addressType: Int)
 
     val targets = ConcurrentLinkedQueue<Target>()
+    val offeredMethods = ConcurrentLinkedQueue<List<Int>>()
     val authenticatedUsers = ConcurrentLinkedQueue<String>()
     private val sockets = ConcurrentLinkedQueue<Socket>()
     private val executor = Executors.newVirtualThreadPerTaskExecutor()
@@ -39,6 +40,7 @@ internal class RecordingSocks5Proxy(
         val output = client.getOutputStream()
         require(input.readUnsignedByte() == 5)
         val methods = ByteArray(input.readUnsignedByte()).also(input::readFully)
+        offeredMethods.add(methods.map { it.toInt() and 255 })
         val method = if (username == null) 0 else 2
         if (methods.none { it.toInt() == method }) {
             output.write(byteArrayOf(5, -1))

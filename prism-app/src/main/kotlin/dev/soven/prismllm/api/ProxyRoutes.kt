@@ -77,10 +77,8 @@ import dev.soven.prismllm.channel.domain.key.KeyAttemptSignal
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
-import io.ktor.client.engine.okhttp.OkHttp
-import dev.soven.prismllm.proxy.AuthenticatedChannelProxy
-import dev.soven.prismllm.proxy.authenticatedChannelProxyClient
-import dev.soven.prismllm.proxy.channelProxyPoolKey
+import dev.soven.prismllm.proxy.ChannelProxy
+import dev.soven.prismllm.proxy.channelProxyClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.HttpTimeoutConfig
 import io.ktor.client.request.header
@@ -1345,7 +1343,7 @@ private suspend fun searchChatCaller(
     val upstreamProtocol = GatewayProtocol.CHAT_COMPLETIONS
     val upstreamUrl = upstreamRequestUrl(candidate.channel.baseUrl, upstreamProtocol, candidate.upstreamModel)
     val credential = decryptCredential(app, candidate)
-    val egressClient = upstreamClient(app, accountEgressProxy(app, candidate))
+    val egressProxy = accountEgressProxy(app, candidate)
     val authType = candidate.channel.authTypeFor(upstreamProtocol)
     val policy = UpstreamRequestPolicy(
         globalOverrides, candidate.channel.requestOverrides, upstreamProtocol, authType, headerProfiles,
@@ -1353,56 +1351,58 @@ private suspend fun searchChatCaller(
         systemPrompt = state.systemPromptSettings.replacementFor(candidate.channel.id, upstreamProtocol),
     )
     return ChatCaller { messages ->
-        val body = buildJsonObject {
-            baseRequest.forEach { (key, value) ->
-                if (key !in setOf("messages", "stream", "stream_options")) put(key, value)
+        withUpstreamClient(app, egressProxy) { egressClient ->
+            val body = buildJsonObject {
+                baseRequest.forEach { (key, value) ->
+                    if (key !in setOf("messages", "stream", "stream_options")) put(key, value)
+                }
+                put("messages", JsonArray(messages))
+                put("stream", false)
             }
-            put("messages", JsonArray(messages))
-            put("stream", false)
+            val requestBody = policy.body(body, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
+            state.upstreamCallStarted = true
+            val response = egressClient.post(upstreamUrl) {
+                applyUpstreamAuthentication(
+                    credential = credential,
+                    authType = authType,
+                    protocol = upstreamProtocol,
+                    anthropicVersion = call.request.headers["anthropic-version"],
+                    anthropicBeta = call.request.headers["anthropic-beta"],
+                )
+                header("traceparent", traceparent)
+                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                policy.applyHeaders(this)
+                setBody(TextContent(requestBody, ContentType.Application.Json))
+            }
+            state.upstreamStatus = response.status.value
+            if (state.attemptFirstTokenMs == null) {
+                state.attemptFirstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
+                state.firstTokenMs = state.attemptFirstTokenMs
+            }
+            candidate.oauthAccount?.let { account ->
+                app.oauthAccountScheduler.noteQuotaHeaders(
+                    account,
+                    parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+                )
+            }
+            val text = readSearchResponseBody(response)
+            if (!response.status.isSuccess()) {
+                throw upstreamException(
+                    response.status,
+                    text,
+                    retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                    upstreamProtocol,
+                    allowNativeMessagesError = false,
+                )
+            }
+            val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+                ?: throw GatewayError(
+                    HttpStatusCode.BadGateway, "upstream_invalid_response", "上游返回了无效 JSON", "api_error",
+                    retryable = true,
+                )
+            state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
+            json
         }
-        val requestBody = policy.body(body, candidate.upstreamModel, app.config.requestBodyLimitBytes).toString()
-        state.upstreamCallStarted = true
-        val response = egressClient.post(upstreamUrl) {
-            applyUpstreamAuthentication(
-                credential = credential,
-                authType = authType,
-                protocol = upstreamProtocol,
-                anthropicVersion = call.request.headers["anthropic-version"],
-                anthropicBeta = call.request.headers["anthropic-beta"],
-            )
-            header("traceparent", traceparent)
-            header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-            policy.applyHeaders(this)
-            setBody(TextContent(requestBody, ContentType.Application.Json))
-        }
-        state.upstreamStatus = response.status.value
-        if (state.attemptFirstTokenMs == null) {
-            state.attemptFirstTokenMs = (System.nanoTime() - startedAt) / 1_000_000
-            state.firstTokenMs = state.attemptFirstTokenMs
-        }
-        candidate.oauthAccount?.let { account ->
-            app.oauthAccountScheduler.noteQuotaHeaders(
-                account,
-                parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
-            )
-        }
-        val text = readSearchResponseBody(response)
-        if (!response.status.isSuccess()) {
-            throw upstreamException(
-                response.status,
-                text,
-                retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
-                upstreamProtocol,
-                allowNativeMessagesError = false,
-            )
-        }
-        val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
-            ?: throw GatewayError(
-                HttpStatusCode.BadGateway, "upstream_invalid_response", "上游返回了无效 JSON", "api_error",
-                retryable = true,
-            )
-        state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
-        json
     }
 }
 
@@ -1513,138 +1513,103 @@ private suspend fun proxyStream(
 
     try {
         withTimeout(remainingMs(callDeadlineNanos)) {
-            state.upstreamCallStarted = true
-            upstreamClient(app, egressProxy).preparePost(upstreamUrl) {
-                applyUpstreamAuthentication(
-                    credential = credential,
-                    authType = authType,
-                    protocol = upstreamProtocol,
-                    anthropicVersion = call.request.headers["anthropic-version"],
-                    anthropicBeta = call.request.headers["anthropic-beta"],
-                )
-                header("traceparent", traceparent)
-                if (envelope != UpstreamEnvelope.CODE_ASSIST) {
-                    header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
-                }
-                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                policy.applyHeaders(this)
-                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
-                    applyCodeAssistIdentity(app.currentAntigravityUserAgent())
-                }
-                setBody(TextContent(body, ContentType.Application.Json))
-            }.execute { response ->
-                state.upstreamStatus = response.status.value
-                candidate.oauthAccount?.let { account ->
-                    app.oauthAccountScheduler.noteQuotaHeaders(
-                        account,
-                        parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+            withUpstreamClient(app, egressProxy) { egressClient ->
+                state.upstreamCallStarted = true
+                egressClient.preparePost(upstreamUrl) {
+                    applyUpstreamAuthentication(
+                        credential = credential,
+                        authType = authType,
+                        protocol = upstreamProtocol,
+                        anthropicVersion = call.request.headers["anthropic-version"],
+                        anthropicBeta = call.request.headers["anthropic-beta"],
                     )
-                }
-                if (!response.status.isSuccess()) {
-                    val errorText = response.bodyAsText()
-                    throw upstreamException(
-                        response.status,
-                        // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
-                        if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(errorText) else errorText,
-                        retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
-                        upstreamProtocol,
-                        allowNativeMessagesError = protocol == upstreamProtocol,
-                    )
-                }
-                val upstream = response.bodyAsChannel()
-                val maxLineBytes = if (converter != null) MAX_PROTOCOL_EVENT_BYTES + 6 else Int.MAX_VALUE
-                val prefixLines = mutableListOf<String>()
-                val firstDataLine = try {
-                    withTimeout(app.config.firstTokenTimeoutMs) {
-                        var found: String? = null
-                        while (found == null) {
-                            val next = readProtocolLine(upstream, maxLineBytes, envelope) ?: break
-                            prefixLines.add(next)
-                            recordReportedModel(next, state, upstreamProtocol)
-                            if (
-                                allowUpstreamErrorFailover &&
-                                ((upstreamProtocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
-                                    (upstreamProtocol == GatewayProtocol.GEMINI && isGeminiStreamError(next)))
-                            ) {
-                                val error = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
-                                    else anthropicStreamException(next)
-                                state.streamError = error
-                                if (error.retryable) {
-                                    upstream.cancel(error)
-                                    throw error
+                    header("traceparent", traceparent)
+                    if (envelope != UpstreamEnvelope.CODE_ASSIST) {
+                        header(HttpHeaders.Accept, ContentType.Text.EventStream.toString())
+                    }
+                    header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                    policy.applyHeaders(this)
+                    if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                        // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
+                        applyCodeAssistIdentity(app.currentAntigravityUserAgent())
+                    }
+                    setBody(TextContent(body, ContentType.Application.Json))
+                }.execute { response ->
+                    state.upstreamStatus = response.status.value
+                    candidate.oauthAccount?.let { account ->
+                        app.oauthAccountScheduler.noteQuotaHeaders(
+                            account,
+                            parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+                        )
+                    }
+                    if (!response.status.isSuccess()) {
+                        val errorText = response.bodyAsText()
+                        throw upstreamException(
+                            response.status,
+                            // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
+                            if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(errorText) else errorText,
+                            retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                            upstreamProtocol,
+                            allowNativeMessagesError = protocol == upstreamProtocol,
+                        )
+                    }
+                    val upstream = response.bodyAsChannel()
+                    val maxLineBytes = if (converter != null) MAX_PROTOCOL_EVENT_BYTES + 6 else Int.MAX_VALUE
+                    val prefixLines = mutableListOf<String>()
+                    val firstDataLine = try {
+                        withTimeout(app.config.firstTokenTimeoutMs) {
+                            var found: String? = null
+                            while (found == null) {
+                                val next = readProtocolLine(upstream, maxLineBytes, envelope) ?: break
+                                prefixLines.add(next)
+                                recordReportedModel(next, state, upstreamProtocol)
+                                if (
+                                    allowUpstreamErrorFailover &&
+                                    ((upstreamProtocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
+                                        (upstreamProtocol == GatewayProtocol.GEMINI && isGeminiStreamError(next)))
+                                ) {
+                                    val error = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
+                                        else anthropicStreamException(next)
+                                    state.streamError = error
+                                    if (error.retryable) {
+                                        upstream.cancel(error)
+                                        throw error
+                                    }
+                                }
+                                if (next.trim().startsWith("data:") && isFirstStreamData(next, upstreamProtocol)) {
+                                    found = next
                                 }
                             }
-                            if (next.trim().startsWith("data:") && isFirstStreamData(next, upstreamProtocol)) {
-                                found = next
-                            }
+                            found
                         }
-                        found
-                    }
-                } catch (e: TimeoutCancellationException) {
-                    response.call.cancel(e)
-                    upstream.cancel(e)
-                    throw GatewayError(
-                        HttpStatusCode.GatewayTimeout,
-                        "upstream_timeout",
-                        "上游首 token 超时",
-                        "timeout_error",
+                    } catch (e: TimeoutCancellationException) {
+                        response.call.cancel(e)
+                        upstream.cancel(e)
+                        throw GatewayError(
+                            HttpStatusCode.GatewayTimeout,
+                            "upstream_timeout",
+                            "上游首 token 超时",
+                            "timeout_error",
+                            retryable = true,
+                        )
+                    } ?: throw GatewayError(
+                        HttpStatusCode.BadGateway,
+                        "upstream_empty_stream",
+                        "上游没有返回流式数据",
                         retryable = true,
                     )
-                } ?: throw GatewayError(
-                    HttpStatusCode.BadGateway,
-                    "upstream_empty_stream",
-                    "上游没有返回流式数据",
-                    retryable = true,
-                )
 
-                state.committed = true
-                state.statusCode = HttpStatusCode.OK.value
+                    state.committed = true
+                    state.statusCode = HttpStatusCode.OK.value
 
-                val completion = CompletableDeferred<Unit>()
-                try {
-                    call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
-                        try {
-                            var sawDone = false
-                            var streamFailure: GatewayError? = null
-                            var lastDataLine: String? = null
-                            for (line in prefixLines) {
-                                if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
-                                converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
-                                if (converter?.failed == true) {
-                                    lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
-                                    if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
-                                    break
-                                }
-                                markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
-                                recordUsage(line, state, upstreamProtocol)
-                                if (isStreamDone(line, upstreamProtocol)) {
-                                    markTerminalStreamFailure(line, upstreamProtocol, state)
-                                    writeSseLine("")
-                                    sawDone = true
-                                    if (upstreamProtocol != GatewayProtocol.GEMINI) break
-                                }
-                            }
-                            if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
-                                while (true) {
-                                    val line = try {
-                                        withTimeout(app.config.idleTimeoutMs) {
-                                            readProtocolLine(upstream, maxLineBytes, envelope)
-                                        }
-                                    } catch (e: TimeoutCancellationException) {
-                                        throw GatewayError(
-                                            HttpStatusCode.GatewayTimeout,
-                                            "upstream_timeout",
-                                            "上游流式响应空闲超时",
-                                            "timeout_error",
-                                        )
-                                    } catch (e: GatewayError) {
-                                        if (e.code != "upstream_event_too_large") throw e
-                                        streamFailure = e
-                                        converter?.fail(e.message)?.forEach { writeSseLine(it) }
-                                        break
-                                    } ?: break
-                                    recordReportedModel(line, state, upstreamProtocol)
+                    val completion = CompletableDeferred<Unit>()
+                    try {
+                        call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
+                            try {
+                                var sawDone = false
+                                var streamFailure: GatewayError? = null
+                                var lastDataLine: String? = null
+                                for (line in prefixLines) {
                                     if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
                                     converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
                                     if (converter?.failed == true) {
@@ -1661,27 +1626,64 @@ private suspend fun proxyStream(
                                         if (upstreamProtocol != GatewayProtocol.GEMINI) break
                                     }
                                 }
+                                if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
+                                    while (true) {
+                                        val line = try {
+                                            withTimeout(app.config.idleTimeoutMs) {
+                                                readProtocolLine(upstream, maxLineBytes, envelope)
+                                            }
+                                        } catch (e: TimeoutCancellationException) {
+                                            throw GatewayError(
+                                                HttpStatusCode.GatewayTimeout,
+                                                "upstream_timeout",
+                                                "上游流式响应空闲超时",
+                                                "timeout_error",
+                                            )
+                                        } catch (e: GatewayError) {
+                                            if (e.code != "upstream_event_too_large") throw e
+                                            streamFailure = e
+                                            converter?.fail(e.message)?.forEach { writeSseLine(it) }
+                                            break
+                                        } ?: break
+                                        recordReportedModel(line, state, upstreamProtocol)
+                                        if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
+                                        converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
+                                        if (converter?.failed == true) {
+                                            lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                            if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                                            break
+                                        }
+                                        markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
+                                        recordUsage(line, state, upstreamProtocol)
+                                        if (isStreamDone(line, upstreamProtocol)) {
+                                            markTerminalStreamFailure(line, upstreamProtocol, state)
+                                            writeSseLine("")
+                                            sawDone = true
+                                            if (upstreamProtocol != GatewayProtocol.GEMINI) break
+                                        }
+                                    }
+                                }
+                                converter?.finish()?.forEach { writeSseLine(it) }
+                                if (converter?.failed == true && state.errorCode == null) {
+                                    lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                    if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                                }
+                                if (streamFailure != null) {
+                                    completion.completeExceptionally(streamFailure)
+                                } else {
+                                    if (!sawDone && state.errorCode == null) state.errorCode = "stream_interrupted"
+                                    completion.complete(Unit)
+                                }
+                            } catch (e: Throwable) {
+                                completion.completeExceptionally(e)
+                                throw e
                             }
-                            converter?.finish()?.forEach { writeSseLine(it) }
-                            if (converter?.failed == true && state.errorCode == null) {
-                                lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
-                                if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
-                            }
-                            if (streamFailure != null) {
-                                completion.completeExceptionally(streamFailure)
-                            } else {
-                                if (!sawDone && state.errorCode == null) state.errorCode = "stream_interrupted"
-                                completion.complete(Unit)
-                            }
-                        } catch (e: Throwable) {
-                            completion.completeExceptionally(e)
-                            throw e
                         }
+                        completion.await()
+                    } catch (e: Throwable) {
+                        upstream.cancel(e)
+                        throw e
                     }
-                    completion.await()
-                } catch (e: Throwable) {
-                    upstream.cancel(e)
-                    throw e
                 }
             }
         }
@@ -1814,77 +1816,79 @@ private suspend fun proxyJson(
     }
     try {
         withTimeout(remainingMs(callDeadlineNanos)) {
-            state.upstreamCallStarted = true
-            val response = upstreamClient(app, egressProxy).post(upstreamUrl) {
-                applyUpstreamAuthentication(
-                    credential = credential,
-                    authType = authType,
-                    protocol = upstreamProtocol,
-                    anthropicVersion = call.request.headers["anthropic-version"],
-                    anthropicBeta = call.request.headers["anthropic-beta"],
-                )
-                header("traceparent", traceparent)
-                header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
-                policy.applyHeaders(this)
-                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
-                    applyCodeAssistIdentity(app.currentAntigravityUserAgent())
+            withUpstreamClient(app, egressProxy) { egressClient ->
+                state.upstreamCallStarted = true
+                val response = egressClient.post(upstreamUrl) {
+                    applyUpstreamAuthentication(
+                        credential = credential,
+                        authType = authType,
+                        protocol = upstreamProtocol,
+                        anthropicVersion = call.request.headers["anthropic-version"],
+                        anthropicBeta = call.request.headers["anthropic-beta"],
+                    )
+                    header("traceparent", traceparent)
+                    header(HttpHeaders.ContentType, ContentType.Application.Json.toString())
+                    policy.applyHeaders(this)
+                    if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                        // 客户端身份由全局请求头目录维护，避免把版本号写死在数据面。
+                        applyCodeAssistIdentity(app.currentAntigravityUserAgent())
+                    }
+                    setBody(TextContent(body, ContentType.Application.Json))
                 }
-                setBody(TextContent(body, ContentType.Application.Json))
-            }
-            state.upstreamStatus = response.status.value
-            candidate.oauthAccount?.let { account ->
-                app.oauthAccountScheduler.noteQuotaHeaders(
-                    account,
-                    parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
-                )
-            }
-            val text = response.bodyAsText()
-            if (!response.status.isSuccess()) {
-                throw upstreamException(
-                    response.status,
-                    // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
-                    if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(text) else text,
-                    retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
-                    upstreamProtocol,
-                    allowNativeMessagesError = protocol == upstreamProtocol,
-                )
-            }
-            val rawJson = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
-            val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && rawJson != null) {
-                CodeAssistEnvelope.unwrap(rawJson)
-            } else {
-                rawJson
-            }
-            state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
-            state.usage = runCatching {
-                json ?: return@runCatching null
-                when (upstreamProtocol) {
-                    GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
-                    GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
-                    GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
-                    GatewayProtocol.GEMINI -> UsageParser.fromGeminiJson(json)
+                state.upstreamStatus = response.status.value
+                candidate.oauthAccount?.let { account ->
+                    app.oauthAccountScheduler.noteQuotaHeaders(
+                        account,
+                        parseCodexQuotaHeaders({ name -> response.headers[name] }, System.currentTimeMillis()),
+                    )
                 }
-            }.getOrNull()
-            val clientBody = if (protocol == upstreamProtocol) {
-                if (envelope == UpstreamEnvelope.CODE_ASSIST) {
-                    (json ?: throw transportFailure(false)).toString()
+                val text = response.bodyAsText()
+                if (!response.status.isSuccess()) {
+                    throw upstreamException(
+                        response.status,
+                        // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
+                        if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(text) else text,
+                        retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
+                        upstreamProtocol,
+                        allowNativeMessagesError = protocol == upstreamProtocol,
+                    )
+                }
+                val rawJson = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
+                val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && rawJson != null) {
+                    CodeAssistEnvelope.unwrap(rawJson)
                 } else {
-                    text
+                    rawJson
                 }
-            } else {
-                val parsed = json ?: throw transportFailure(false)
-                ProtocolConversion.convertResponse(
-                    protocol,
-                    upstreamProtocol,
-                    parsed,
-                    model = alias,
-                    carry = app.reasoningCarryCache.scoped(candidate.channel.id),
-                ).toString()
+                state.upstreamReportedModel = extractReportedModel(upstreamProtocol, json)
+                state.usage = runCatching {
+                    json ?: return@runCatching null
+                    when (upstreamProtocol) {
+                        GatewayProtocol.CHAT_COMPLETIONS -> UsageParser.fromJson(json)
+                        GatewayProtocol.RESPONSES -> UsageParser.fromResponsesJson(json)
+                        GatewayProtocol.MESSAGES -> UsageParser.fromAnthropicJson(json)
+                        GatewayProtocol.GEMINI -> UsageParser.fromGeminiJson(json)
+                    }
+                }.getOrNull()
+                val clientBody = if (protocol == upstreamProtocol) {
+                    if (envelope == UpstreamEnvelope.CODE_ASSIST) {
+                        (json ?: throw transportFailure(false)).toString()
+                    } else {
+                        text
+                    }
+                } else {
+                    val parsed = json ?: throw transportFailure(false)
+                    ProtocolConversion.convertResponse(
+                        protocol,
+                        upstreamProtocol,
+                        parsed,
+                        model = alias,
+                        carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+                    ).toString()
+                }
+                state.committed = true
+                state.statusCode = response.status.value
+                call.respondText(clientBody, ContentType.Application.Json, response.status)
             }
-            state.committed = true
-            state.statusCode = response.status.value
-            call.respondText(clientBody, ContentType.Application.Json, response.status)
         }
     } catch (e: ChannelWriteException) {
         throw clientDisconnected()
@@ -1924,24 +1928,9 @@ private fun protocolNotSupported(alias: String, protocol: GatewayProtocol): Gate
  * 配置了 proxy_url 时改用按该代理创建的客户端，没有解析结果时沿用应用共享客户端。
  */
 internal fun upstreamClient(app: GatewayApplication, proxy: InetSocketAddress?): HttpClient =
-    upstreamClient(app, proxy?.let { Proxy(Proxy.Type.HTTP, it) })
-
-internal fun upstreamClient(app: GatewayApplication, proxy: Proxy?): HttpClient =
-    proxy?.let { endpoint ->
-        val address = endpoint.address() as InetSocketAddress
-        app.accountEgressClients.computeIfAbsent(channelProxyPoolKey(endpoint)) { _ ->
-            if (endpoint is AuthenticatedChannelProxy) authenticatedChannelProxyClient(endpoint, app.config.connectTimeoutMs)
-            else if (endpoint.type() == Proxy.Type.SOCKS) HttpClient(OkHttp) {
-                engine {
-                    this.proxy = endpoint
-                    config { retryOnConnectionFailure(false) }
-                }
-                install(HttpTimeout) {
-                    connectTimeoutMillis = app.config.connectTimeoutMs
-                    requestTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
-                    socketTimeoutMillis = HttpTimeoutConfig.INFINITE_TIMEOUT_MS
-                }
-            } else HttpClient(Java) {
+    proxy?.let { address ->
+        app.accountEgressClients.computeIfAbsent(address.hostString + ":" + address.port) { _ ->
+            HttpClient(Java) {
                 engine {
                     config { proxy(ProxySelector.of(address)) }
                 }
@@ -1954,6 +1943,13 @@ internal fun upstreamClient(app: GatewayApplication, proxy: Proxy?): HttpClient 
             }
         }
     } ?: app.httpClient
+
+internal suspend fun <Result> withUpstreamClient(app: GatewayApplication, proxy: Proxy?, block: suspend (HttpClient) -> Result): Result =
+    if (proxy is ChannelProxy) {
+        channelProxyClient(proxy, app.config.connectTimeoutMs).use { block(it) }
+    } else {
+        block(upstreamClient(app, proxy?.address() as InetSocketAddress?))
+    }
 
 /**
  * 调用方显式声明的会话标识。不能用 x-request-id / traceparent 这类每次请求都变的
