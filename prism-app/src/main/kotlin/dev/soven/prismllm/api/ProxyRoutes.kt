@@ -631,24 +631,25 @@ private suspend fun handleProxyRequest(
                     recordAttempt(state.upstreamStatus ?: state.statusCode.takeIf { state.committed }, null, state.committed, "client_cancelled")
                     throw cancelled
                 }
-                app.metrics.upstreamError(candidate.channel.name, e.code)
+                val resolvedError = applyRequestRuleAction(app, candidate, e, state)
+                app.metrics.upstreamError(candidate.channel.name, resolvedError.code)
                 val oauthAccount = candidate.oauthAccount
-                if (e.upstreamStatus == 429 && oauthAccount != null) {
+                if (resolvedError.upstreamStatus == 429 && oauthAccount != null) {
                     // 账号级 429 冷却：优先使用 Retry-After，其次解析响应体里的重置时间。
                     app.oauthAccountScheduler.recordRateLimited(
                         oauthAccount,
-                        e.retryAfterMs ?: parseRateLimitResetMs(e.upstreamErrorBody),
+                        resolvedError.retryAfterMs ?: parseRateLimitResetMs(resolvedError.upstreamErrorBody),
                     )
                 }
-                if (e.upstreamStatus == 403 && oauthAccount != null &&
-                    CodeAssistSuspension.isSuspended(e.upstreamErrorBody)
+                if (resolvedError.upstreamStatus == 403 && oauthAccount != null &&
+                    CodeAssistSuspension.isSuspended(resolvedError.upstreamErrorBody)
                 ) {
                     // Antigravity 封禁账号：不是鉴权故障，按两小时账号级冷却处理并继续换候选。
                     app.oauthAccountScheduler.recordRateLimited(oauthAccount, CodeAssistSuspension.REST_MS)
                 }
-                val kind = classifyFailure(e)
+                val kind = classifyFailure(resolvedError)
                 if (kind != null) {
-                    resources.recordCooldown { app.candidateCooldown.recordFailure(it, kind, e.retryAfterMs) }
+                    resources.recordCooldown { app.candidateCooldown.recordFailure(it, kind, resolvedError.retryAfterMs) }
                         ?.let { trigger ->
                             app.metrics.upstreamCooldownStarted(candidate.channel.name, trigger.reason)
                             if (trigger.reason == CandidateCooldown.REASON_AUTH) {
@@ -662,18 +663,18 @@ private suspend fun handleProxyRequest(
                             }
                         }
                 }
-                val failureCommitted = state.committed || e.code == "stream_interrupted" || e.code == "stream_timeout"
+                val failureCommitted = state.committed || resolvedError.code == "stream_interrupted" || resolvedError.code == "stream_timeout"
                 recordAttempt(
                     // 优先记录实际收到的 HTTP 状态码；流内错误事件里的状态码只是事件语义。
-                    state.upstreamStatus ?: e.upstreamStatus ?: state.statusCode.takeIf { failureCommitted },
-                    e,
+                    state.upstreamStatus ?: resolvedError.upstreamStatus ?: state.statusCode.takeIf { failureCommitted },
+                    resolvedError,
                     failureCommitted,
                 )
-                val signal = e.toKeyAttemptSignal(state.upstreamStatus)
+                val signal = resolvedError.toKeyAttemptSignal(state.upstreamStatus)
                 if (signal != null) {
                     recordKeyOutcome(app, candidate, signal, requestId, resources.probeLease)
                 }
-                e
+                resolvedError
             } catch (e: ProtocolConversionException) {
                 if (state.upstreamCallStarted) {
                     recordAttempt(
@@ -1025,22 +1026,30 @@ private suspend fun applyRequestRuleAction(
     candidate: RouteCandidate,
     error: GatewayError,
     state: ProxyState,
-): GatewayError {
-    if (state.committed) return error
-    val signal = error.toKeyAttemptSignal(state.upstreamStatus) ?: return error
+): GatewayError = resolveRequestRuleAction(app, candidate, error, state).first
+
+private suspend fun resolveRequestRuleAction(
+    app: GatewayApplication,
+    candidate: RouteCandidate,
+    error: GatewayError,
+    state: ProxyState,
+): Pair<GatewayError, KeyRuleRequestAction> {
+    if (state.committed) return error to KeyRuleRequestAction.DEFAULT
+    val signal = error.toKeyAttemptSignal(state.upstreamStatus) ?: return error to KeyRuleRequestAction.DEFAULT
     val policy = try {
         app.keyAutoDisableRepository.loadEffectivePolicy(candidate.channel.id)
     } catch (cause: CancellationException) {
         throw cause
     } catch (_: Exception) {
-        return error
+        return error to KeyRuleRequestAction.DEFAULT
     }
-    val matched = policy.matchFirst(signal)?.first ?: return error
-    return when (matched.requestAction) {
+    val matched = policy.matchFirst(signal)?.first ?: return error to KeyRuleRequestAction.DEFAULT
+    val adjusted = when (matched.requestAction) {
         KeyRuleRequestAction.DEFAULT -> error
         KeyRuleRequestAction.FAILOVER -> error.withRetryable(true)
         KeyRuleRequestAction.FAIL_FAST -> error.withRetryable(false)
     }
+    return adjusted to matched.requestAction
 }
 
 private fun GatewayError.withRetryable(retryable: Boolean): GatewayError {
@@ -1637,12 +1646,16 @@ private suspend fun proxyStream(
                                         next,
                                         retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                                     )?.let { error ->
-                                        val resolvedError = applyRequestRuleAction(app, candidate, error, state)
+                                        val (resolvedError, matchedAction) = resolveRequestRuleAction(app, candidate, error, state)
                                         state.streamError = resolvedError
-                                        val shouldAbortAndThrow = if (allowUpstreamErrorFailover) {
-                                            resolvedError.retryable || resolvedError.upstreamStatus == 429
-                                        } else {
-                                            resolvedError.upstreamStatus == 429 && resolvedError.retryable
+                                        val shouldAbortAndThrow = when (matchedAction) {
+                                            KeyRuleRequestAction.FAILOVER -> true
+                                            KeyRuleRequestAction.FAIL_FAST -> resolvedError.upstreamStatus == 429
+                                            KeyRuleRequestAction.DEFAULT -> if (allowUpstreamErrorFailover) {
+                                                resolvedError.retryable || resolvedError.upstreamStatus == 429
+                                            } else {
+                                                resolvedError.upstreamStatus == 429 && resolvedError.retryable
+                                            }
                                         }
                                         if (shouldAbortAndThrow) {
                                             recordUsage(next, state, upstreamProtocol)
@@ -1657,9 +1670,14 @@ private suspend fun proxyStream(
                                 ) {
                                     val rawError = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
                                         else anthropicStreamException(next)
-                                    val error = applyRequestRuleAction(app, candidate, rawError, state)
+                                    val (error, matchedAction) = resolveRequestRuleAction(app, candidate, rawError, state)
                                     state.streamError = error
-                                    if (allowUpstreamErrorFailover && error.retryable) {
+                                    val shouldAbort = when (matchedAction) {
+                                        KeyRuleRequestAction.FAILOVER -> error.retryable
+                                        KeyRuleRequestAction.FAIL_FAST -> false
+                                        KeyRuleRequestAction.DEFAULT -> allowUpstreamErrorFailover && error.retryable
+                                    }
+                                    if (shouldAbort) {
                                         upstream.cancel(error)
                                         throw error
                                     }

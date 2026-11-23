@@ -446,6 +446,54 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `transport failure FAIL_FAST blocks fallback and custom FAILOVER works when default failover disabled`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "transport_fail_fast",
+                        name = "空流直接失败",
+                        statusCodes = emptyList(),
+                        includeTransportFailures = true,
+                        requestAction = KeyRuleRequestAction.FAIL_FAST,
+                        action = KeyDisableAction.NONE,
+                    ),
+                    KeyDisableRule(
+                        id = "responses_custom_failover",
+                        name = "自定义非限流200错误切换",
+                        statusCodes = listOf(200),
+                        bodyPatterns = listOf("channel_overloaded_custom"),
+                        requestAction = KeyRuleRequestAction.FAILOVER,
+                        action = KeyDisableAction.NONE,
+                    ),
+                ),
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            // 1. 传输故障命中 FAIL_FAST 后不应尝试备用候选。
+            val fastModel = "transport-fail-fast"
+            createChannel(fastModel, "${fake.baseUrl}/responses-empty-stream/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(fastModel, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val beforeCount = fake.requests.size
+            val fastReqId = UUID.randomUUID().toString()
+            val fastResp = client.sendProtocolStreamRequest(fastModel, GatewayProtocol.RESPONSES, fastReqId)
+            assertEquals(HttpStatusCode.BadGateway, fastResp.status)
+            assertEquals(beforeCount + 1, fake.requests.size)
+
+            // 2. 单候选（allowUpstreamErrorFailover = false）时，显式 FAILOVER 仍应中止错误事件并返回错误而非透传 200 SSE。
+            val singleModel = "single-custom-sse-failover"
+            createChannel(singleModel, "${fake.baseUrl}/responses-custom-failed/v1", protocol = GatewayProtocol.RESPONSES)
+            val singleReqId = UUID.randomUUID().toString()
+            val singleResp = client.sendProtocolStreamRequest(singleModel, GatewayProtocol.RESPONSES, singleReqId)
+            assertEquals(HttpStatusCode.BadGateway, singleResp.status)
+            val singleLog = awaitRequestLog(singleReqId)
+            assertFalse(singleLog.attempts.single().committed)
+            assertTrue(singleLog.attempts.single().retryable)
+        }
+    }
+
+    @Test
     fun `stream errors retain HTTP and error status when retrying successfully`() = runBlocking {
         testApplication {
             application { app.install(this) }
