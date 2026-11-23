@@ -125,8 +125,10 @@ internal data class StreamEvent(
     val id: String,
     val role: String? = null,
     val content: String? = null,
-    /** 思考增量；Responses reasoning 转 Messages 时写入 thinking 块。 */
+    /** 思考增量；Responses reasoning 或 Gemini thought 转 Messages/Chat 时写入思考块。 */
     val thinking: String? = null,
+    /** 思考块的签名增量（如 Gemini 的 thoughtSignature），在 thinking 块关闭前发出 signature_delta。 */
+    val thinkingSignature: String? = null,
     /** 新的 reasoning 项开始，用于把上一个 thinking 块收口（对齐 magpie 的 KThinkStart）。 */
     val thinkingStart: Boolean = false,
     /** Responses 密封推理项的原始 JSON（含 encrypted_content），挂到下一个工具调用 ID 上跨轮携带。 */
@@ -143,6 +145,8 @@ internal data class ToolCallDelta(
     val id: String? = null,
     val name: String? = null,
     val arguments: String? = null,
+    /** Gemini functionCall 附带的 thoughtSignature，供协议转换器按 tool call ID 跨轮携带。 */
+    val thoughtSignature: String? = null,
 )
 
 internal interface StreamDecoder {

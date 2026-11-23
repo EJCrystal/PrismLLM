@@ -1329,19 +1329,22 @@ class ProtocolConversionTest {
     }
 
     @Test
-    fun `gemini response with thought part does not emit thinking block for messages`() {
+    fun `gemini response with thought part emits thinking block with signature for messages`() {
         val gemini = json("""{
             "responseId":"resp_thought",
             "candidates":[{"content":{"role":"model","parts":[
-                {"text":"private thinking","thought":true},
+                {"text":"private thinking","thought":true,"thoughtSignature":"sig_gemini_1"},
                 {"text":"visible answer"}
             ]}}]
         }""")
-        val messages = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, gemini, "claude-model")
+        val messages = ProtocolConversion.convertResponse(GatewayProtocol.MESSAGES, GatewayProtocol.GEMINI, gemini, "gemini-4-hydrogen")
         val content = messages.array("content")
-        assertEquals(1, content.size)
-        assertEquals("text", content.single().jsonObject.string("type"))
-        assertEquals("visible answer", content.single().jsonObject.string("text"))
+        assertEquals(2, content.size)
+        assertEquals("thinking", content[0].jsonObject.string("type"))
+        assertEquals("private thinking", content[0].jsonObject.string("thinking"))
+        assertEquals("sig_gemini_1", content[0].jsonObject.string("signature"))
+        assertEquals("text", content[1].jsonObject.string("type"))
+        assertEquals("visible answer", content[1].jsonObject.string("text"))
     }
 
     @Test

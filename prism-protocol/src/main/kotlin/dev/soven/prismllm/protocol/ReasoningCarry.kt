@@ -36,6 +36,7 @@ public interface ReasoningCarryStore {
  */
 internal object ReasoningCarry {
     private const val MARK = "__rk16__"
+    private const val SIG_MARK = "__gs16__"
     private const val KEY_LENGTH = 16
 
     /** 给调用 ID 挂上密封推理；没有可回传的推理或无法保存时返回原 ID。 */
@@ -57,6 +58,22 @@ internal object ReasoningCarry {
         val items = runCatching { Json.parseToJsonElement(payload) }.getOrNull() as? JsonArray
             ?: return own to emptyList()
         return own to items.filterIsInstance<JsonObject>().filter(::replayable)
+    }
+
+    /** 给 Gemini functionCall 的工具调用 ID 挂上 thoughtSignature；无 store 或空签名时原样返回。 */
+    fun attachThoughtSignature(id: String, signature: String?, store: ReasoningCarryStore?): String {
+        if (store == null || id.isEmpty() || signature.isNullOrEmpty()) return id
+        val key = store.keep(signature)?.takeIf { it.length == KEY_LENGTH } ?: return id
+        return id + SIG_MARK + key
+    }
+
+    /** 拆出工具调用自身 ID 与其携带的 Gemini thoughtSignature；缓存失效时只还原 ID。 */
+    fun splitThoughtSignature(id: String, store: ReasoningCarryStore?): Pair<String, String?> {
+        val at = id.length - KEY_LENGTH - SIG_MARK.length
+        if (at < 1 || !id.startsWith(SIG_MARK, at)) return id to null
+        val own = id.substring(0, at)
+        val signature = store?.recall(id.substring(at + SIG_MARK.length))?.takeIf { it.isNotEmpty() }
+        return own to signature
     }
 
     /** 能原样回传给 Responses 的推理项：上游给了 encrypted_content（对齐 magpie 的密封项判定）。 */

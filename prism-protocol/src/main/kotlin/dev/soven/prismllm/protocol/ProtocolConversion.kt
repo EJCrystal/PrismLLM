@@ -27,6 +27,10 @@ object ProtocolConversion {
             messagesToResponsesRequest(request, upstreamModel, carry)
         carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.RESPONSES ->
             chatToResponsesRequest(request, upstreamModel, carry)
+        carry != null && inbound == GatewayProtocol.MESSAGES && outbound == GatewayProtocol.GEMINI ->
+            messagesToGeminiRequest(request, upstreamModel, carry)
+        carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.GEMINI ->
+            chatToGeminiRequest(request, upstreamModel, carry)
         else -> ProtocolConverterRegistry.get(inbound, outbound).convertRequest(request, upstreamModel)
     }
 
@@ -42,6 +46,10 @@ object ProtocolConversion {
             responsesToMessagesResponse(response, model, carry)
         carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.RESPONSES ->
             responsesToChatResponse(response, model, carry)
+        carry != null && inbound == GatewayProtocol.MESSAGES && outbound == GatewayProtocol.GEMINI ->
+            geminiToMessagesResponse(response, model, carry)
+        carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.GEMINI ->
+            geminiToChatResponse(response, model, carry)
         else -> ProtocolConverterRegistry.get(inbound, outbound).convertResponse(response, model)
     }
 
@@ -56,6 +64,10 @@ object ProtocolConversion {
             EventStreamConverter(ResponsesStreamDecoder(), MessagesStreamEncoder(model), carry)
         carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.RESPONSES ->
             EventStreamConverter(ResponsesStreamDecoder(), ChatStreamEncoder(model), carry)
+        carry != null && inbound == GatewayProtocol.MESSAGES && outbound == GatewayProtocol.GEMINI ->
+            EventStreamConverter(GeminiStreamDecoder(), MessagesStreamEncoder(model), carry)
+        carry != null && inbound == GatewayProtocol.CHAT_COMPLETIONS && outbound == GatewayProtocol.GEMINI ->
+            EventStreamConverter(GeminiStreamDecoder(), ChatStreamEncoder(model), carry)
         else -> ProtocolConverterRegistry.get(inbound, outbound).streamConverter(model)
     }
 }

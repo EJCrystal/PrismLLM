@@ -132,5 +132,274 @@ class ReasoningCarryTest {
         assertEquals(1, chatToResponsesRequest(chat, "m")["include"]!!.jsonArray.size)
     }
 
+    @Test
+    fun `gemini stream emits thinking_delta signature_delta and carries functionCall thoughtSignature across rounds`() {
+        val store = MemoryStore()
+        val converter = ProtocolConversion.streamConverter(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            "gemini-4-hydrogen",
+            carry = store,
+        )!!
+        val frames = listOf(
+            """{"responseId":"resp_g1","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"step 1 "}]}}]}""",
+            """{"responseId":"resp_g1","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"step 2","thoughtSignature":"sig_think_1"}]}}]}""",
+            """{"responseId":"resp_g1","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_g1","name":"lookup","args":{"q":"weather"}},"thoughtSignature":"sig_tool_1"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":5,"thoughtsTokenCount":20,"totalTokenCount":35}}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+
+        val starts = events.filter { it.string("type") == "content_block_start" }
+        assertEquals(listOf("thinking", "tool_use"), starts.map { it["content_block"]!!.jsonObject.string("type") })
+
+        val deltas = events.filter { it.string("type") == "content_block_delta" }.map { it["delta"]!!.jsonObject }
+        val thinkingText = deltas.filter { it.string("type") == "thinking_delta" }.joinToString("") { it.string("thinking").orEmpty() }
+        assertEquals("step 1 step 2", thinkingText)
+        val sigDeltas = deltas.filter { it.string("type") == "signature_delta" }.map { it.string("signature") }
+        assertEquals(listOf("sig_think_1"), sigDeltas)
+
+        // signature_delta 必须出现在 thinking 块的 content_block_stop 之前。
+        val sigIdx = events.indexOfFirst { (it["delta"] as? JsonObject)?.string("type") == "signature_delta" }
+        val thinkStopIdx = events.indexOfFirst { it.string("type") == "content_block_stop" && it.long("index") == 0L }
+        assertTrue(sigIdx in 0 until thinkStopIdx, "sigIdx=$sigIdx thinkStopIdx=$thinkStopIdx")
+
+        val carriedToolId = starts[1]["content_block"]!!.jsonObject.string("id")!!
+        assertTrue(carriedToolId.startsWith("call_g1__gs16__"), carriedToolId)
+
+        // 下一轮 Anthropic Messages 请求带回 thinking + tool_use(carriedToolId) + tool_result：
+        // 应还原真实 thoughtSignature，且不退回 skip_thought_signature_validator。
+        val nextReq = ProtocolConversion.convertRequest(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{
+                "model":"gemini-4-hydrogen",
+                "max_tokens":1024,
+                "messages":[
+                    {"role":"user","content":"weather?"},
+                    {"role":"assistant","content":[
+                        {"type":"thinking","thinking":"step 1 step 2","signature":"sig_think_1"},
+                        {"type":"tool_use","id":"$carriedToolId","name":"lookup","input":{"q":"weather"}}
+                    ]},
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"$carriedToolId","content":"sunny"}]}
+                ]
+            }"""),
+            "gemini-4-hydrogen-high",
+            carry = store,
+        )
+        val modelParts = nextReq["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray
+        assertEquals(2, modelParts.size)
+        assertEquals(true, modelParts[0].jsonObject.boolean("thought"))
+        assertEquals("sig_think_1", modelParts[0].jsonObject.string("thoughtSignature"))
+        assertEquals("sig_tool_1", modelParts[1].jsonObject.string("thoughtSignature"))
+        val funcResp = nextReq["contents"]!!.jsonArray[2].jsonObject["parts"]!!.jsonArray.single().jsonObject["functionResponse"]!!.jsonObject
+        assertEquals("lookup", funcResp.string("name"))
+    }
+
+    @Test
+    fun `gemini trailing thoughtSignature on text part is preserved as a signed thinking block`() {
+        val converter = ProtocolConversion.streamConverter(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            "gemini-4-hydrogen",
+        )!!
+        val frames = listOf(
+            """{"responseId":"resp_g2","candidates":[{"content":{"role":"model","parts":[{"text":"hello","thoughtSignature":"sig_trailing"}]},"finishReason":"STOP"}]}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+
+        val starts = events.filter { it.string("type") == "content_block_start" }
+        assertEquals(listOf("text", "thinking"), starts.map { it["content_block"]!!.jsonObject.string("type") })
+        val sigDeltas = events.mapNotNull { (it["delta"] as? JsonObject)?.takeIf { d -> d.string("type") == "signature_delta" }?.string("signature") }
+        assertEquals(listOf("sig_trailing"), sigDeltas)
+    }
+
+    @Test
+    fun `gemini stream emits reasoning_content for chat completions and carries functionCall thoughtSignature`() {
+        val store = MemoryStore()
+        val converter = ProtocolConversion.streamConverter(
+            GatewayProtocol.CHAT_COMPLETIONS,
+            GatewayProtocol.GEMINI,
+            "gemini-4-hydrogen",
+            carry = store,
+        )!!
+        val frames = listOf(
+            """{"responseId":"resp_c1","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"plan"}]}}]}""",
+            """{"responseId":"resp_c1","candidates":[{"content":{"role":"model","parts":[{"functionCall":{"id":"call_c1","name":"search","args":{"q":"hi"}},"thoughtSignature":"sig_chat_1"}]},"finishReason":"STOP"}]}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val chunks = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+        val deltas = chunks.mapNotNull { it["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("delta") as? JsonObject }
+        assertEquals("plan", deltas.mapNotNull { it.string("reasoning_content") }.joinToString(""))
+        val carriedId = deltas.firstNotNullOf { it["tool_calls"]?.jsonArray?.firstOrNull()?.jsonObject?.string("id") }
+        assertTrue(carriedId.startsWith("call_c1__gs16__"), carriedId)
+
+        val nextReq = ProtocolConversion.convertRequest(
+            GatewayProtocol.CHAT_COMPLETIONS,
+            GatewayProtocol.GEMINI,
+            json("""{
+                "model":"gemini-4-hydrogen",
+                "messages":[
+                    {"role":"user","content":"hi"},
+                    {"role":"assistant","content":null,"tool_calls":[{"id":"$carriedId","type":"function","function":{"name":"search","arguments":"{\"q\":\"hi\"}"}}]},
+                    {"role":"tool","tool_call_id":"$carriedId","content":"ok"}
+                ]
+            }"""),
+            "gemini-4-hydrogen-high",
+            carry = store,
+        )
+        val fnPart = nextReq["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray.single().jsonObject
+        assertEquals("sig_chat_1", fnPart.string("thoughtSignature"))
+    }
+
+    @Test
+    fun `antigravity claude model on gemini protocol degrades unsigned thinking and refuses dummy signature`() {
+        val store = MemoryStore()
+        val request = json("""{
+            "model":"claude-sonnet-5-5",
+            "max_tokens":4096,
+            "thinking":{"type":"enabled","budget_tokens":2048},
+            "messages":[
+                {"role":"user","content":"hi"},
+                {"role":"assistant","content":[
+                    {"type":"thinking","thinking":"unsigned thought","signature":""},
+                    {"type":"tool_use","id":"toolu_1","name":"lookup","input":{}}
+                ]},
+                {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+            ]
+        }""")
+        val converted = ProtocolConversion.convertRequest(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            request,
+            "claude-sonnet-5-5-high",
+            carry = store,
+        )
+        val modelParts = converted["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray
+        // 无签名 thinking 被降级为普通 text，不带 thought=true；tool_use 不注入 skip_thought_signature_validator。
+        assertEquals("unsigned thought", modelParts[0].jsonObject.string("text"))
+        assertFalse(modelParts[0].jsonObject.containsKey("thought"))
+        assertFalse(modelParts[1].jsonObject.containsKey("thoughtSignature"))
+        // 因历史 thinking 被降级，本轮 thinkingConfig 被禁用避免上游 400。
+        val genConfig = converted["generationConfig"]?.jsonObject
+        assertFalse(genConfig?.containsKey("thinkingConfig") == true)
+    }
+
+    @Test
+    fun `antigravity claude model preserves real thinking signature and tool signature`() {
+        val store = MemoryStore()
+        val resp = ProtocolConversion.convertResponse(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{"responseId":"r1","candidates":[{"content":{"role":"model","parts":[
+                {"thought":true,"text":"real thought","thoughtSignature":"real_sig_t"},
+                {"functionCall":{"id":"call_1","name":"lookup","args":{}},"thoughtSignature":"real_sig_f"}
+            ]},"finishReason":"STOP"}]}"""),
+            "claude-sonnet-5-5",
+            carry = store,
+        )
+        val carriedId = resp["content"]!!.jsonArray[1].jsonObject.string("id")!!
+        val nextReq = ProtocolConversion.convertRequest(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{
+                "model":"claude-sonnet-5-5",
+                "max_tokens":4096,
+                "thinking":{"type":"enabled","budget_tokens":2048},
+                "messages":[
+                    {"role":"user","content":"hi"},
+                    {"role":"assistant","content":[
+                        {"type":"thinking","thinking":"real thought","signature":"real_sig_t"},
+                        {"type":"tool_use","id":"$carriedId","name":"lookup","input":{}}
+                    ]},
+                    {"role":"user","content":[{"type":"tool_result","tool_use_id":"$carriedId","content":"ok"}]}
+                ]
+            }"""),
+            "claude-sonnet-5-5-high",
+            carry = store,
+        )
+        val modelParts = nextReq["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray
+        assertEquals(true, modelParts[0].jsonObject.boolean("thought"))
+        assertEquals("real_sig_t", modelParts[0].jsonObject.string("thoughtSignature"))
+        assertEquals("real_sig_f", modelParts[1].jsonObject.string("thoughtSignature"))
+        assertTrue(nextReq["generationConfig"]!!.jsonObject.containsKey("thinkingConfig"))
+    }
+
+    @Test
+    fun `gemini stream splits consecutive independently signed thought parts without overwriting first signature`() {
+        val converter = ProtocolConversion.streamConverter(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            "gemini-4-hydrogen",
+        )!!
+        val frames = listOf(
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"part 1a "}]}}]}""",
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"part 1b","thoughtSignature":"sig_1"}]}}]}""",
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"part 2","thoughtSignature":"sig_2"}]}}]}""",
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"text":"answer"}]},"finishReason":"STOP"}]}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+
+        val starts = events.filter { it.string("type") == "content_block_start" }
+        assertEquals(listOf("thinking", "thinking", "text"), starts.map { it["content_block"]!!.jsonObject.string("type") })
+
+        fun thinkingOf(blockIndex: Long): String = events
+            .filter { it.string("type") == "content_block_delta" && it.long("index") == blockIndex }
+            .mapNotNull { (it["delta"] as? JsonObject)?.takeIf { d -> d.string("type") == "thinking_delta" }?.string("thinking") }
+            .joinToString("")
+        fun signaturesOf(blockIndex: Long): List<String> = events
+            .filter { it.string("type") == "content_block_delta" && it.long("index") == blockIndex }
+            .mapNotNull { (it["delta"] as? JsonObject)?.takeIf { d -> d.string("type") == "signature_delta" }?.string("signature") }
+
+        assertEquals("part 1a part 1b", thinkingOf(0L))
+        assertEquals(listOf("sig_1"), signaturesOf(0L))
+        assertEquals("part 2", thinkingOf(1L))
+        assertEquals(listOf("sig_2"), signaturesOf(1L))
+    }
+
+    @Test
+    fun `gemini non-stream merges trailing signature into preceding thought block and round-trips to claude`() {
+        val store = MemoryStore()
+        val resp = ProtocolConversion.convertResponse(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{"responseId":"r_trail","candidates":[{"content":{"role":"model","parts":[
+                {"thought":true,"text":"step A "},
+                {"thought":true,"text":"step B"},
+                {"thought":true,"text":"","thoughtSignature":"sig_trailing_thought"},
+                {"text":"done"}
+            ]},"finishReason":"STOP"}]}"""),
+            "claude-sonnet-5-5",
+            carry = store,
+        )
+        val content = resp["content"]!!.jsonArray
+        assertEquals(listOf("thinking", "text"), content.map { it.jsonObject.string("type") })
+        assertEquals("step A step B", content[0].jsonObject.string("thinking"))
+        assertEquals("sig_trailing_thought", content[0].jsonObject.string("signature"))
+        assertEquals("done", content[1].jsonObject.string("text"))
+
+        // 将非流式转换结果回传给 Antigravity Claude，应完整保留 thought 与 thinkingConfig，不被误降级。
+        val nextReq = ProtocolConversion.convertRequest(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{
+                "model":"claude-sonnet-5-5",
+                "max_tokens":4096,
+                "thinking":{"type":"enabled","budget_tokens":2048},
+                "messages":[
+                    {"role":"user","content":"hi"},
+                    {"role":"assistant","content":$content},
+                    {"role":"user","content":"continue"}
+                ]
+            }"""),
+            "claude-sonnet-5-5-high",
+            carry = store,
+        )
+        val modelParts = nextReq["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray
+        assertEquals(2, modelParts.size)
+        assertEquals(true, modelParts[0].jsonObject.boolean("thought"))
+        assertEquals("step A step B", modelParts[0].jsonObject.string("text"))
+        assertEquals("sig_trailing_thought", modelParts[0].jsonObject.string("thoughtSignature"))
+        assertEquals("done", modelParts[1].jsonObject.string("text"))
+        assertTrue(nextReq["generationConfig"]!!.jsonObject.containsKey("thinkingConfig"))
+    }
+
     private fun json(value: String): JsonObject = Json.parseToJsonElement(value).jsonObject
 }

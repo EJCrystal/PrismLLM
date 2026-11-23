@@ -79,6 +79,7 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
     private var nextBlockIndex = 0
     private var openTextBlock: Int? = null
     private var openThinkingBlock: Int? = null
+    private var pendingThinkingSignature: String? = null
     private val openToolBlocks = linkedMapOf<Int, Int>()
 
     override fun emit(chunk: StreamEvent, usage: TokenUsage?): List<String> {
@@ -109,16 +110,24 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
         // （对齐 magpie：`signature` 字段始终存在，没有签名时为空）。
         if (chunk.thinkingStart) closeThinkingBlock(lines)
         chunk.thinking?.takeIf { it.isNotEmpty() }?.let { thinking ->
-            val index = openThinkingBlock ?: nextBlockIndex++.also { block ->
-                closeTextBlock(lines)
-                openThinkingBlock = block
-                lines += "event: content_block_start"
-                lines += "data: ${buildJsonObject { put("type", "content_block_start"); put("index", block); putJsonObject("content_block") { put("type", "thinking"); put("thinking", ""); put("signature", "") } }}"
-                lines += ""
-            }
+            // 前一个 thinking 块已经收到签名时先收口，避免把下一个独立签名块合并进同一个块并覆盖旧签名。
+            if (pendingThinkingSignature != null) closeThinkingBlock(lines)
+            val index = openThinkingBlock ?: openThinking(lines)
             lines += "event: content_block_delta"
             lines += "data: ${buildJsonObject { put("type", "content_block_delta"); put("index", index); putJsonObject("delta") { put("type", "thinking_delta"); put("thinking", thinking) } }}"
             lines += ""
+        }
+        // 携带 thoughtSignature 时：若当前已在未签名的 thinking 块内则暂存到关块前发 signature_delta；
+        // 若已有待发签名则先收口旧块再开新块；若不在 thinking 块内（如尾签名），单独开一个空 thinking 块承载签名。
+        chunk.thinkingSignature?.takeIf { it.isNotEmpty() }?.let { signature ->
+            if (pendingThinkingSignature != null) closeThinkingBlock(lines)
+            if (openThinkingBlock != null) {
+                pendingThinkingSignature = signature
+            } else {
+                openThinking(lines)
+                pendingThinkingSignature = signature
+                closeThinkingBlock(lines)
+            }
         }
         listOfNotNull(chunk.content, chunk.refusal).filter { it.isNotEmpty() }
             .joinToString("").takeIf { it.isNotEmpty() }?.let { text ->
@@ -168,6 +177,16 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
         return lines
     }
 
+    private fun openThinking(lines: MutableList<String>): Int {
+        closeTextBlock(lines)
+        val block = nextBlockIndex++
+        openThinkingBlock = block
+        lines += "event: content_block_start"
+        lines += "data: ${buildJsonObject { put("type", "content_block_start"); put("index", block); putJsonObject("content_block") { put("type", "thinking"); put("thinking", ""); put("signature", "") } }}"
+        lines += ""
+        return block
+    }
+
     private fun closeTextBlock(lines: MutableList<String>) {
         openTextBlock?.let { block ->
             lines += "event: content_block_stop"
@@ -179,6 +198,12 @@ internal class MessagesStreamEncoder(private val model: String) : StreamEncoder 
 
     private fun closeThinkingBlock(lines: MutableList<String>) {
         openThinkingBlock?.let { block ->
+            pendingThinkingSignature?.let { signature ->
+                lines += "event: content_block_delta"
+                lines += "data: ${buildJsonObject { put("type", "content_block_delta"); put("index", block); putJsonObject("delta") { put("type", "signature_delta"); put("signature", signature) } }}"
+                lines += ""
+                pendingThinkingSignature = null
+            }
             lines += "event: content_block_stop"
             lines += "data: ${buildJsonObject { put("type", "content_block_stop"); put("index", block) }}"
             lines += ""

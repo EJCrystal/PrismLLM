@@ -204,6 +204,7 @@ internal class GeminiStreamDecoder : StreamDecoder {
         parts.forEach { part ->
             val obj = part as? JsonObject ?: return@forEach
             val call = obj["functionCall"] as? JsonObject
+            val signature = obj.string("thoughtSignature")?.takeIf { it.isNotEmpty() }
             when {
                 call != null -> {
                     toolSeen = true
@@ -213,10 +214,26 @@ internal class GeminiStreamDecoder : StreamDecoder {
                         id = call.string("id") ?: "call_${id}_$index",
                         name = call.string("name"),
                         arguments = (call["args"] ?: JsonObject(emptyMap())).toString(),
+                        thoughtSignature = signature,
                     )))
                 }
-                obj.boolean("thought") == true -> Unit
-                else -> obj.string("text")?.let { events += StreamEvent(id, content = it) }
+                obj.boolean("thought") == true -> {
+                    val thought = obj.string("text")?.takeIf { it.isNotEmpty() }
+                    if (thought != null || signature != null) {
+                        events += StreamEvent(id, thinking = thought, thinkingSignature = signature)
+                    }
+                }
+                else -> {
+                    val text = obj.string("text")?.takeIf { it.isNotEmpty() }
+                    if (text != null) {
+                        events += StreamEvent(id, content = text)
+                    }
+                    // Gemini 有时会把 thoughtSignature 挂在正文 part 或空 text part 上（对齐 sub2api）：
+                    // 单独作为签名事件向下游传递，避免跨轮回放丢签名。
+                    if (signature != null) {
+                        events += StreamEvent(id, thinkingSignature = signature)
+                    }
+                }
             }
         }
         candidate?.string("finishReason")?.let { reason ->
