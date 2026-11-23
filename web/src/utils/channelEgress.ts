@@ -45,12 +45,26 @@ export function channelProxyHostAllowed(host: string, allowedHosts: string[]): b
   })
 }
 
+/**
+ * 按字面解析代理地址中的主机，和后端 Java `URI.host` 保持一致。
+ * 不能用 `new URL().hostname`：WHATWG 会把 `10.0.0.01` 规范化成 `10.0.0.1`，
+ * 甚至把 `010.0.0.1` 当成八进制；一键放行会保存成另一个主机，重试仍被拒绝。
+ */
 export function channelProxyHostFromUrl(url: string): string {
+  const value = url.trim()
   try {
-    return normalizeChannelProxyHost(new URL(url).hostname)
+    new URL(value) // 只验证地址格式，hostname 的结果不能用于白名单比较。
   } catch {
     return ''
   }
+  const schemeEnd = value.indexOf('://')
+  if (schemeEnd < 0) return ''
+  const authority = value.slice(schemeEnd + 3).split(/[/?#]/)[0]
+  if (authority.includes('@')) return ''
+  const host = authority.startsWith('[')
+    ? authority.slice(0, authority.indexOf(']') + 1)
+    : authority.split(':')[0]
+  return normalizeChannelProxyHost(host)
 }
 
 /** 从待保存的代理地址中找出尚未放行的非回环主机。 */

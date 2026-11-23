@@ -4,6 +4,7 @@ import { buildChannelPayload, buildChannelProxyPayload, channelProxyConfiguratio
 import {
   blockedChannelProxyHosts,
   channelProxyHostAllowed,
+  channelProxyHostFromUrl,
   isValidChannelProxyHostEntry,
   parseChannelProxyHostEntries,
 } from '../src/utils/channelEgress'
@@ -98,6 +99,15 @@ describe('渠道出口代理', () => {
     assert.equal(channelProxyHostAllowed('EXACT.example', allowed), true)
     assert.equal(channelProxyHostAllowed('127.0.0.1', []), true)
     assert.equal(channelProxyHostAllowed('[::1]', []), true)
+  })
+
+  it('按字面解析代理主机，不采用 WHATWG 对前导零 IPv4 的规范化', () => {
+    assert.equal(channelProxyHostFromUrl('http://10.0.0.01:8080'), '10.0.0.01')
+    assert.equal(channelProxyHostFromUrl('http://010.0.0.1:80'), '010.0.0.1')
+    assert.equal(channelProxyHostFromUrl('socks5://[::1]:1080'), '::1')
+    assert.deepEqual(blockedChannelProxyHosts(['http://10.0.0.01:8080'], []), ['10.0.0.01'])
+    assert.deepEqual(blockedChannelProxyHosts(['http://10.0.0.01:8080'], ['10.0.0.01']), [])
+    assert.deepEqual(blockedChannelProxyHosts(['http://10.0.0.01:8080'], ['10.0.0.1']), ['10.0.0.01'])
   })
 
   it('只列出尚未放行的代理主机并去重', () => {

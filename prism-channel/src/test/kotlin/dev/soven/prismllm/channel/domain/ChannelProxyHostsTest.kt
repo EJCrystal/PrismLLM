@@ -57,6 +57,12 @@ class ChannelProxyHostsTest {
     }
 
     @Test
+    fun `ipv4 hosts are compared literally without leading zero normalization`() {
+        assertTrue(ChannelProxyHosts.matches("10.0.0.01", listOf("10.0.0.01")))
+        assertFalse(ChannelProxyHosts.matches("10.0.0.01", listOf("10.0.0.1")))
+    }
+
+    @Test
     fun `loopback hosts and bracketed ipv6 are always allowed`() {
         assertTrue(ChannelProxyHosts.matches("127.0.0.1", emptyList()))
         assertTrue(ChannelProxyHosts.matches("localhost", emptyList()))
