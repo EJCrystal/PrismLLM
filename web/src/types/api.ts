@@ -207,6 +207,23 @@ export interface ChannelEgressProxyRequest extends Pick<ChannelEgressProxy, 'id'
   clearAuthentication?: boolean
 }
 
+export interface ChannelEgressSettings {
+  /** 管理台保存的主机，可在管理台增删。 */
+  hosts: string[]
+  /** CHANNEL_PROXY_ALLOWED_HOSTS 提供的部署默认值，只读。 */
+  deploymentHosts: string[]
+  /** 实际生效的并集。 */
+  effectiveHosts: string[]
+  /** 白名单版本；保存时回传用于乐观并发校验。 */
+  revision: number
+  updatedAt: number | null
+}
+
+export interface ChannelEgressSettingsRequest {
+  hosts: string[]
+  expectedRevision?: number | null
+}
+
 export interface Channel {
   id: string
   name: string

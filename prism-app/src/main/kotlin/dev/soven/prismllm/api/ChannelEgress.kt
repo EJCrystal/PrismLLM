@@ -4,10 +4,10 @@ import dev.soven.prismllm.channel.domain.ChannelEgressConfigurationException
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
 import dev.soven.prismllm.channel.domain.ChannelEgressProxy
 import dev.soven.prismllm.channel.domain.ChannelProxyAuthentication
+import dev.soven.prismllm.channel.domain.ChannelProxyHostNotAllowedException
 import dev.soven.prismllm.channel.domain.ChannelRecord
 import dev.soven.prismllm.channel.domain.channelProxyUri
 import dev.soven.prismllm.channel.domain.validateChannelEgress
-import dev.soven.prismllm.oauth.infra.isProxyHostAllowed
 import dev.soven.prismllm.proxy.ChannelProxy
 import dev.soven.prismllm.proxy.ProxyCredentials
 import dev.soven.prismllm.shared.domain.UpstreamCredential
@@ -75,8 +75,8 @@ internal fun parseChannelProxy(app: GatewayApplication, url: String): ChannelPro
 
 internal fun parseChannelProxy(app: GatewayApplication, proxy: ChannelEgressProxy): ChannelProxy {
     val uri = channelProxyUri(proxy.url)
-    if (!isProxyHostAllowed(uri.host, app.config.channelProxyAllowedHosts)) {
-        throw ChannelEgressConfigurationException("渠道代理主机不在允许列表内；非本机回环地址需要配置 CHANNEL_PROXY_ALLOWED_HOSTS")
+    if (!app.channelProxyHostAllowlist.allows(uri.host)) {
+        throw ChannelProxyHostNotAllowedException(uri.host?.removePrefix("[")?.removeSuffix("]") ?: proxy.url)
     }
     val address = InetSocketAddress.createUnresolved(uri.host.removePrefix("[").removeSuffix("]"), uri.channelProxyPort())
     val type = if (uri.scheme == "socks5") Proxy.Type.SOCKS else Proxy.Type.HTTP

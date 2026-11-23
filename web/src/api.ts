@@ -8,6 +8,8 @@ import type {
   AvatarRequest,
   ChangePasswordRequest,
   Channel,
+  ChannelEgressSettings,
+  ChannelEgressSettingsRequest,
   ChannelHealthReport,
   ChannelHealthDetail,
   HealthWindow,
@@ -348,6 +350,9 @@ export const api = {
   getWebSearchSettings: () => request<WebSearchSettings>('/web-search-settings'),
   updateWebSearchSettings: (payload: WebSearchSettingsRequest) =>
     request<WebSearchSettings>('/web-search-settings', { method: 'PUT', body: JSON.stringify(payload) }),
+  getChannelEgressSettings: () => request<ChannelEgressSettings>('/channel-egress-settings'),
+  updateChannelEgressSettings: (payload: ChannelEgressSettingsRequest) =>
+    request<ChannelEgressSettings>('/channel-egress-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   getKeyAutoDisableSettings: () => request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings'),
   updateKeyAutoDisableSettings: (payload: KeyAutoDisableSettingsRequest) =>
     request<KeyAutoDisableSettingsResponse>('/key-auto-disable-settings', { method: 'PUT', body: JSON.stringify(payload) }),

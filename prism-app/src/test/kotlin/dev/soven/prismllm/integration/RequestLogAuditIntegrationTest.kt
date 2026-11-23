@@ -561,7 +561,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("79", result.getString(1))
+                        assertEquals("80", result.getString(1))
                     }
                     statement.executeQuery("select count(*) from channels where egress_proxies <> '[]'").use { result ->
                         assertTrue(result.next())

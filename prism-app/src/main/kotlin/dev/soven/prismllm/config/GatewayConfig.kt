@@ -2,6 +2,7 @@ package dev.soven.prismllm.config
 
 import java.nio.file.Path
 import java.util.Base64
+import dev.soven.prismllm.channel.domain.ChannelProxyHosts
 import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.requestlog.domain.RetentionPolicy
 import dev.soven.prismllm.resilience.CooldownPolicy
@@ -223,7 +224,10 @@ data class GatewayConfig(
                 trustedProxyNetworks = runCatching { TrustedProxyNetwork.parseList(value("TRUSTED_PROXY_CIDRS", "")) }
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
                 oauth = OAuthConfig.fromEnv(env),
-                channelProxyAllowedHosts = OAuthConfig.parseProxyAllowedHosts(env["CHANNEL_PROXY_ALLOWED_HOSTS"], "CHANNEL_PROXY_ALLOWED_HOSTS"),
+                channelProxyAllowedHosts = ChannelProxyHosts.parse(
+                    env["CHANNEL_PROXY_ALLOWED_HOSTS"],
+                    "CHANNEL_PROXY_ALLOWED_HOSTS",
+                ).toSet(),
                 webSearch = WebSearchConfig(
                     enabled = webSearchEnabled,
                     provider = webSearchProvider,

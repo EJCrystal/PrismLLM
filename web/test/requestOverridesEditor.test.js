@@ -106,6 +106,21 @@ describe('请求覆盖编辑器 extraBody', () => {
     assert.deepEqual(editor.getValue().protocols, {})
   })
 
+  it('父组件回写等价配置只同步编辑器，不触发 changed', async () => {
+    const saved = { inheritGlobal: false, body: { store: null } }
+    await mount(saved)
+    const baseline = changes
+    const baselineSnapshot = editor.getSnapshot()
+    value.value = structuredClone(saved)
+    await nextTick()
+    assert.equal(editor.getSnapshot(), baselineSnapshot)
+    assert.equal(changes, baseline)
+
+    await scope('responses')
+    await input(field('请求体（JSON 合并补丁）'), '{"store":true}')
+    assert.ok(changes > baseline)
+  })
+
   it('保存期间禁用补充输入', async () => {
     await mount({}, { disabled: true })
     assert.equal(field('请求体补充（extraBody）').disabled, true)

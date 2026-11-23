@@ -2,6 +2,7 @@ package dev.soven.prismllm.integration
 
 import com.sun.net.httpserver.HttpServer
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
+import dev.soven.prismllm.api.ChannelProxyHostAllowlist
 import dev.soven.prismllm.api.parseChannelProxy
 import dev.soven.prismllm.api.withUpstreamClient
 import dev.soven.prismllm.api.normalizeChannelProxies
@@ -605,6 +606,86 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
                     assertEquals("us", app.channelRepository.find(id)!!.keys.single().egressProxyId)
                 }
             }
+        }
+    }
+
+    @Test
+    fun `admin managed allowlist admits wildcard proxy hosts immediately without restart`() = runBlocking {
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            // 模拟另一个实例：未刷新前持有旧快照，周期刷新后收敛。
+            val replica = ChannelProxyHostAllowlist(app.config.channelProxyAllowedHosts, app.channelEgressSettingsRepository)
+            replica.refresh()
+            assertFalse(replica.allows("egress.example.com"))
+            val body = """{"name":"allowlist-channel","baseUrl":"${fake.baseUrl}/ok/v1","modelMappings":[{"upstreamModel":"m1"}],"egressProxies":[{"id":"us","name":"美国","url":"http://egress.example.com:8080"}],"keys":[{"name":"key","credential":"secret","models":["m1"],"egressProxyId":"us"}]}"""
+
+            val rejected = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("channel_proxy_host_not_allowed"), rejected.bodyAsText())
+
+            val settings = client.put("/admin/api/channel-egress-settings") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"hosts":["*.example.com."]}""")
+            }
+            assertEquals(HttpStatusCode.OK, settings.status, settings.bodyAsText())
+            val settingsBody = Json.parseToJsonElement(settings.bodyAsText()).jsonObject
+            assertEquals(
+                listOf("*.example.com"),
+                settingsBody.getValue("hosts").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals(
+                listOf("*.example.com"),
+                settingsBody.getValue("effectiveHosts").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals(1, settingsBody.getValue("revision").jsonPrimitive.content.toLong())
+
+            // 另一个实例在刷新前仍使用旧快照，刷新后看到新放行结果。
+            assertFalse(replica.allows("egress.example.com"))
+            replica.refresh()
+            assertTrue(replica.allows("egress.example.com"))
+
+            val accepted = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            assertEquals(HttpStatusCode.Created, accepted.status, accepted.bodyAsText())
+            val id = Json.parseToJsonElement(accepted.bodyAsText()).jsonObject.getValue("id").jsonPrimitive.content
+            assertEquals("us", app.channelRepository.find(id)!!.keys.single().egressProxyId)
+
+            val updated = client.put("/admin/api/channel-egress-settings") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"hosts":["*.example.com","proxy.example"],"expectedRevision":1}""")
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            assertEquals(
+                2,
+                Json.parseToJsonElement(updated.bodyAsText()).jsonObject.getValue("revision").jsonPrimitive.content.toLong(),
+            )
+
+            val stale = client.put("/admin/api/channel-egress-settings") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"hosts":["stale.example"],"expectedRevision":1}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, stale.status, stale.bodyAsText())
+            assertTrue(stale.bodyAsText().contains("channel_egress_settings_conflict"), stale.bodyAsText())
+            assertEquals(
+                listOf("*.example.com", "proxy.example"),
+                app.channelEgressSettingsRepository.load()?.allowedHosts,
+            )
         }
     }
 }

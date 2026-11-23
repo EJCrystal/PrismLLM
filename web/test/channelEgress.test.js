@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildChannelPayload, buildChannelProxyPayload, channelProxyConfigurationSnapshot } from '../src/utils/channelForm'
+import {
+  blockedChannelProxyHosts,
+  channelProxyHostAllowed,
+  channelProxyHostFromUrl,
+  isValidChannelProxyHostEntry,
+  parseChannelProxyHostEntries,
+} from '../src/utils/channelEgress'
 
 const proxies = [
   { id: 'us', name: '美国', url: 'http://127.0.0.1:7897' },
@@ -66,6 +73,58 @@ describe('渠道出口代理', () => {
     assert.equal(Object.hasOwn(legacy, 'egressProxies'), false)
     assert.equal(Object.hasOwn(legacy.keys[0], 'egressProxyId'), false)
     assert.equal(Object.hasOwn(legacy.keys[0], 'clearEgressProxy'), false)
+  })
+
+  it('放行名单解析支持精确主机、IPv4 和通配，并拒绝协议端口和路径', () => {
+    assert.deepEqual(
+      parseChannelProxyHostEntries(' Proxy.Example\n*.onesproxy.vip, 10.0.0.8；proxy.example '),
+      ['proxy.example', '*.onesproxy.vip', '10.0.0.8'],
+    )
+    for (const entry of ['http://proxy.example:8080', 'proxy.example:8080', 'proxy.example/path', 'user@proxy.example', '**.example.com', '*.']) {
+      assert.equal(isValidChannelProxyHostEntry(entry), false, entry)
+      assert.throws(() => parseChannelProxyHostEntries(entry), /有效主机/)
+    }
+    assert.throws(() => parseChannelProxyHostEntries(Array.from({ length: 65 }, (_, index) => `host${index}.example`).join('\n')), /最多允许/)
+    assert.deepEqual(parseChannelProxyHostEntries('proxy.example., *.example.com.'), ['proxy.example', '*.example.com'])
+    assert.equal(channelProxyHostAllowed('proxy.example.', ['proxy.example']), true)
+    assert.equal(channelProxyHostAllowed('na.example.com', ['*.example.com.']), true)
+  })
+
+  it('通配只匹配子域名，回环地址始终放行', () => {
+    const allowed = ['*.onesproxy.vip', 'exact.example']
+    assert.equal(channelProxyHostAllowed('na-data.onesproxy.vip', allowed), true)
+    assert.equal(channelProxyHostAllowed('us.data.onesproxy.vip', allowed), true)
+    assert.equal(channelProxyHostAllowed('onesproxy.vip', allowed), false)
+    assert.equal(channelProxyHostAllowed('evilonesproxy.vip', allowed), false)
+    assert.equal(channelProxyHostAllowed('EXACT.example', allowed), true)
+    assert.equal(channelProxyHostAllowed('127.0.0.1', []), true)
+    assert.equal(channelProxyHostAllowed('[::1]', []), true)
+  })
+
+  it('按字面解析代理主机，不采用 WHATWG 对前导零 IPv4 的规范化', () => {
+    assert.equal(channelProxyHostFromUrl('http://10.0.0.01:8080'), '10.0.0.01')
+    assert.equal(channelProxyHostFromUrl('http://010.0.0.1:80'), '010.0.0.1')
+    assert.equal(channelProxyHostFromUrl('socks5://[::1]:1080'), '::1')
+    assert.deepEqual(blockedChannelProxyHosts(['http://10.0.0.01:8080'], []), ['10.0.0.01'])
+    assert.deepEqual(blockedChannelProxyHosts(['http://10.0.0.01:8080'], ['10.0.0.01']), [])
+    assert.deepEqual(blockedChannelProxyHosts(['http://10.0.0.01:8080'], ['10.0.0.1']), ['10.0.0.01'])
+  })
+
+  it('只列出尚未放行的代理主机并去重', () => {
+    assert.deepEqual(
+      blockedChannelProxyHosts(
+        ['http://127.0.0.1:7897', 'http://na-data.onesproxy.vip:1337', 'http://na-data.onesproxy.vip:1338', 'not-a-url'],
+        ['*.onesproxy.vip'],
+      ),
+      [],
+    )
+    assert.deepEqual(
+      blockedChannelProxyHosts(
+        ['http://na-data.onesproxy.vip:1337', 'socks5://other.example:1080', 'socks5://other.example:1081'],
+        ['*.onesproxy.vip'],
+      ),
+      ['other.example'],
+    )
   })
 
   it('拒绝重复代理、空名称、无效地址和其他渠道的代理绑定', () => {

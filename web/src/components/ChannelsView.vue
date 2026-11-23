@@ -28,6 +28,7 @@ import ChannelKeyEditor from './ChannelKeyEditor.vue'
 import ChannelEgressProxyEditor from './ChannelEgressProxyEditor.vue'
 import type { ChannelEgressProxyDraft } from '../utils/channelForm'
 import { buildChannelProxyPayload, channelProxyConfigurationSnapshot } from '../utils/channelForm'
+import { blockedChannelProxyHosts } from '../utils/channelEgress'
 import { cooldownSummaryText } from '../utils/cooldown'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -348,6 +349,8 @@ const channelToggleSavingIds = ref<string[]>([])
 const showForm = ref(false)
 const saving = ref(false)
 const editingId = ref<string | null>(null)
+/** 每次打开、切换或关闭渠道草稿时递增；异步放行重试只允许作用于原草稿。 */
+let channelDraftSession = 0
 const probing = ref(false)
 const probeResults = ref<ProtocolProbeResult[]>([])
 const channelKeys = ref<ChannelKeyEditorDraft[]>([])
@@ -1043,6 +1046,7 @@ async function onDefaultPricesSaved() {
 }
 
 function openCreate() {
+  channelDraftSession += 1
   editingId.value = null
   activeFormSection.value = 'basic'
   mappingSearch.value = ''
@@ -1077,6 +1081,7 @@ function openCreate() {
 }
 
 function openEdit(channel: Channel): void {
+  channelDraftSession += 1
   editingId.value = channel.id
   activeFormSection.value = 'basic'
   mappingSearch.value = ''
@@ -1127,6 +1132,7 @@ function openEdit(channel: Channel): void {
 function closeChannelForm() {
   if (rateLimitTarget.value) return
   if (isFormDirty.value && !window.confirm('当前渠道配置尚未保存，确定关闭吗？')) return
+  channelDraftSession += 1
   showForm.value = false
   formSnapshot.value = ''
 }
@@ -1215,8 +1221,46 @@ async function probeProtocols(): Promise<void> {
   }
 }
 
+/**
+ * 保存被主机白名单拒绝时，列出缺失主机并询问是否放行；放行成功后由调用方重试保存。
+ * 只使用发起保存时捕获的代理地址，异步返回后再确认草稿会话仍有效，避免为切换后的新草稿放行。
+ */
+async function allowBlockedProxyHosts(draftSession: number, proxyUrls: string[]): Promise<boolean> {
+  if (draftSession !== channelDraftSession) return false
+  let settings
+  try {
+    settings = await api.getChannelEgressSettings()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+    return false
+  }
+  if (draftSession !== channelDraftSession) return false
+  const blocked = blockedChannelProxyHosts(proxyUrls, settings.effectiveHosts)
+  if (!blocked.length) return false
+  if (!window.confirm(`以下出口代理主机不在白名单：\n${blocked.join('\n')}\n\n是否放行并重试保存？`)) return false
+  if (draftSession !== channelDraftSession) return false
+  try {
+    await api.updateChannelEgressSettings({
+      hosts: [...settings.hosts, ...blocked],
+      expectedRevision: settings.revision,
+    })
+    notify(`已放行 ${blocked.length} 个出口代理主机`)
+    return true
+  } catch (cause) {
+    if (cause instanceof ApiError && cause.code === 'channel_egress_settings_conflict') {
+      // 确认期间其他管理员改了名单：不要用旧快照覆盖，让用户重新保存后再确认。
+      notify('出口代理白名单已被其他管理员修改，请重新保存并确认放行', 'warning')
+    } else {
+      notify(errorMessage(cause), 'error')
+    }
+    return false
+  }
+}
+
 async function save(): Promise<void> {
   if (saving.value) return
+  const draftSession = channelDraftSession
+  const draftProxyUrls = form.egressProxies.map((proxy) => proxy.url)
   if (!form.name.trim() || !form.baseUrl.trim()) {
     focusFormSection('basic')
     notify('请填写渠道名称和基础地址', 'error')
@@ -1278,6 +1322,7 @@ async function save(): Promise<void> {
   }
 
   saving.value = true
+  let retryAfterAllow = false
   try {
     if (!overrideEditor.value) {
       notify('请求配置尚未加载完成，请稍后重试', 'error')
@@ -1312,10 +1357,22 @@ async function save(): Promise<void> {
       notify(wasEditing ? '渠道已更新' : '渠道已创建')
     }
   } catch (cause) {
-    notify(errorMessage(cause), 'error')
-    if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await refreshUntilCurrent(load, () => listDisposed)
+    if (cause instanceof ApiError && cause.code === 'channel_proxy_host_not_allowed' && await allowBlockedProxyHosts(draftSession, draftProxyUrls)) {
+      retryAfterAllow = true
+    } else {
+      notify(errorMessage(cause), 'error')
+      if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await refreshUntilCurrent(load, () => listDisposed)
+    }
   } finally {
     saving.value = false
+  }
+  // 放行主机后重试一次；如果仍被拒绝，allowBlockedProxyHosts 会发现没有新的缺失主机而停止。
+  if (retryAfterAllow) {
+    if (draftSession === channelDraftSession) {
+      await save()
+    } else {
+      notify('渠道编辑已切换，已取消自动重试保存', 'warning')
+    }
   }
 }
 
