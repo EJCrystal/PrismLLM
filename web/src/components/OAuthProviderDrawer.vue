@@ -38,13 +38,20 @@ const activeTab = ref<OAuthProviderDrawerTab>(props.initialTab)
 const mappingsPanel = ref<InstanceType<typeof OAuthProviderMappingsPanel> | null>(null)
 /** 映射面板一旦打开就保持挂载，仅用 v-show 切换，避免丢失未保存草稿。 */
 const mappingsMounted = ref(activeTab.value === 'mappings')
+/** 账号池发生变更时映射目录可能过期，等下次进入映射标签再刷新。 */
+const mappingsStale = ref(false)
 
 watch(() => props.initialTab, (tab) => {
   activeTab.value = tab
 })
 
 watch(activeTab, (tab) => {
-  if (tab === 'mappings') mappingsMounted.value = true
+  if (tab !== 'mappings') return
+  mappingsMounted.value = true
+  if (mappingsStale.value) {
+    mappingsStale.value = false
+    void mappingsPanel.value?.reload()
+  }
 })
 
 // 提供商身份而不是列表 key：渠道置备后 key 会变化，不应重置当前标签页。
@@ -61,7 +68,12 @@ function requestClose() {
 
 function onAccountsChanged() {
   emit('changed')
-  if (activeTab.value === 'mappings') void mappingsPanel.value?.reload()
+  if (!mappingsMounted.value) return
+  if (activeTab.value === 'mappings') {
+    void mappingsPanel.value?.reload()
+  } else {
+    mappingsStale.value = true
+  }
 }
 
 function onMappingsSaved() {
