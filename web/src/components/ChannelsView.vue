@@ -108,6 +108,14 @@ interface RateLimitTarget {
   rule: ChannelKeyRateLimitDraft & Record<string, unknown>
 }
 
+type Settled<T> = { ok: true; value: T } | { ok: false; cause: unknown }
+
+function settled<T>(promise: Promise<T>): Promise<Settled<T>> {
+  return promise
+    .then((value) => ({ ok: true as const, value }))
+    .catch((cause: unknown) => ({ ok: false as const, cause }))
+}
+
 const channels = ref<Channel[]>([])
 const oauthDrawer = ref<InstanceType<typeof OAuthProviderDrawer> | null>(null)
 const oauthProviders = ref<OAuthProviderInfo[]>([])
@@ -851,6 +859,32 @@ function consumeAutoCreate(): void {
   if (activeOAuthDrawer.value) activeOAuthDrawer.value.autoOpenCreate = false
 }
 
+/** 订阅数据读取失败时保留上次快照，并单独暴露错误，避免把失败伪装成空列表。 */
+function applyOAuthSnapshot(
+  providers: Settled<OAuthProviderInfo[]>,
+  accounts: Settled<OAuthAccount[]>,
+): void {
+  if (providers.ok) oauthProviders.value = providers.value ?? []
+  if (accounts.ok) oauthAccounts.value = accounts.value ?? []
+  const failures: Array<{ label: string; cause: unknown }> = []
+  if (!providers.ok) failures.push({ label: '订阅提供方', cause: providers.cause })
+  if (!accounts.ok) failures.push({ label: '订阅账号', cause: accounts.cause })
+  oauthLoadError.value = failures.length
+    ? `${failures.map((item) => item.label).join('、')}读取失败：${errorMessage(failures[0].cause)}`
+    : ''
+}
+
+/** 轻量轮询订阅运行态，保证冷却/额度截止时间不会长期停留在旧快照。 */
+async function refreshOAuthSnapshot(): Promise<void> {
+  const request = listRevision
+  const [providersResult, accountsResult] = await Promise.all([
+    settled(api.listOAuthProviders()),
+    settled(api.listOAuthAccounts()),
+  ])
+  if (listDisposed || request !== listRevision) return
+  applyOAuthSnapshot(providersResult, accountsResult)
+}
+
 async function toggleSubscriptionProviderEnabled(item: ProviderListItem): Promise<void> {
   if (!item.providerId) return
   const savingKey = item.channel?.id ?? item.key
@@ -912,24 +946,12 @@ async function load(): Promise<boolean> {
       api.listChannels(),
       api.listModelPrices(),
       api.listModelDefaultPrices(),
-      api.listOAuthProviders()
-        .then((value) => ({ ok: true as const, value }))
-        .catch((cause: unknown) => ({ ok: false as const, cause })),
-      api.listOAuthAccounts()
-        .then((value) => ({ ok: true as const, value }))
-        .catch((cause: unknown) => ({ ok: false as const, cause })),
+      settled(api.listOAuthProviders()),
+      settled(api.listOAuthAccounts()),
     ])
     if (request !== listRevision) return false
     channels.value = channelsData ?? []
-    // 订阅数据读取失败时保留上次快照，并单独暴露错误，避免把失败伪装成空列表。
-    if (oauthProvidersResult.ok) oauthProviders.value = oauthProvidersResult.value ?? []
-    if (oauthAccountsResult.ok) oauthAccounts.value = oauthAccountsResult.value ?? []
-    const oauthFailures: Array<{ label: string; cause: unknown }> = []
-    if (!oauthProvidersResult.ok) oauthFailures.push({ label: '订阅提供方', cause: oauthProvidersResult.cause })
-    if (!oauthAccountsResult.ok) oauthFailures.push({ label: '订阅账号', cause: oauthAccountsResult.cause })
-    oauthLoadError.value = oauthFailures.length
-      ? `${oauthFailures.map((item) => item.label).join('、')}读取失败：${errorMessage(oauthFailures[0].cause)}`
-      : ''
+    applyOAuthSnapshot(oauthProvidersResult, oauthAccountsResult)
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
     void loadHealth()
@@ -1444,6 +1466,7 @@ defineExpose({ canLeave })
 useAutoRefresh(healthRefreshMs, () => { void loadHealth() }, () => loading.value || healthLoading.value || document.hidden, { refreshOnVisible: true })
 useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => document.hidden, { refreshOnVisible: true })
 useAutoRefresh(relativeRefreshMs, () => { relativeNow.value = Date.now() }, () => document.hidden, { refreshOnVisible: true })
+useAutoRefresh(relativeRefreshMs, () => { void refreshOAuthSnapshot() }, () => loading.value || document.hidden, { refreshOnVisible: true })
 onMounted(() => {
   void load()
   void loadOccupancy()

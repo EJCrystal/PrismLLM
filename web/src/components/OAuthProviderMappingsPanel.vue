@@ -195,13 +195,14 @@ const newModelMode = ref<'manual' | 'upstream'>('manual')
 
 /** 新增一行手工映射草稿；保存时由后端创建共享行（先休眠，目录出现后自动激活）。 */
 function addDraft() {
+  if (busy.value) return
   const model = newModel.value.trim()
   if (!model) return
   if ([...model].length > 200) {
     notify('上游模型名不能超过 200 个字符', 'error')
     return
   }
-  if (drafts[model] !== undefined) {
+  if (baselineByModel.value.has(model) || dirtyModels.has(model)) {
     notify(`共享映射中已存在模型「${model}」`, 'warning')
     return
   }
@@ -302,6 +303,10 @@ async function load(): Promise<boolean> {
       }
     }
     baseline.value = mapping
+    // 清掉已不在共享目录且没有待保存修改的残留草稿，避免阻挡同名模型重新添加。
+    for (const model of Object.keys(drafts)) {
+      if (!nextRows.has(model) && !dirtyModels.has(model)) delete drafts[model]
+    }
     for (const row of mapping.mappings) {
       if (!dirtyModels.has(row.upstreamModel)) {
         drafts[row.upstreamModel] = oauthMappingDraft(row)
@@ -448,10 +453,11 @@ defineExpose({
             autocomplete="off"
             aria-label="新增上游模型映射"
             placeholder="新增上游模型 ID"
+            :disabled="busy"
             @keydown.enter.prevent="addDraft"
           />
         </label>
-        <select v-model="newModelMode" aria-label="新增映射模式">
+        <select v-model="newModelMode" aria-label="新增映射模式" :disabled="busy">
           <option value="manual">手工指定对外 ID</option>
           <option value="upstream">使用上游 ID</option>
         </select>
