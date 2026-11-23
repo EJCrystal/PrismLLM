@@ -2,6 +2,9 @@ package dev.soven.prismllm.channel.persistence
 
 import dev.soven.prismllm.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.prismllm.channel.domain.ChannelKeyRecord
+import dev.soven.prismllm.channel.domain.ChannelEgressProxy
+import dev.soven.prismllm.channel.domain.ChannelEgressConfigurationException
+import dev.soven.prismllm.channel.domain.validateChannelEgress
 import dev.soven.prismllm.channel.domain.ChannelKind
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.domain.ChannelQuotaSettings
@@ -47,6 +50,7 @@ data class NewChannelKey(
     val priority: Int = 1,
     val models: List<String> = emptyList(),
     val rateLimit: ChannelKeyRateLimitPolicy = ChannelKeyRateLimitPolicy(),
+    val egressProxyId: String? = null,
 )
 
 /** 更新渠道密钥的输入。credential 与 state 为空时分别保持原凭据和原状态。 */
@@ -60,6 +64,8 @@ data class ChannelKeyUpdate(
     /** `null` 表示保留该密钥已有的限流规则。 */
     val rateLimit: ChannelKeyRateLimitPolicy? = null,
     val stateVersion: Long? = null,
+    val egressProxyId: String? = null,
+    val clearEgressProxy: Boolean = false,
 )
 
 class ChannelKeyStateChangedException : RuntimeException("密钥状态已变化，请重新打开渠道编辑页面后再保存")
@@ -74,7 +80,12 @@ class ChannelRepository(
     private val database: Database,
     private val credentialCipher: CredentialCipher,
     private val keyStateObserver: KeyStateObserver = KeyStateObserver {},
+    private val includeEgressConfiguration: Boolean = true,
 ) {
+    private val channelReadColumns = if (includeEgressConfiguration) Channels.columns else Channels.columns.filterNot { it == Channels.egressProxies }
+
+    private fun channelRows() = Channels.select(channelReadColumns)
+
     /** Health overview needs only channel identities and enabled state, never credentials or relations. */
     suspend fun listHealthChannels(): Map<String, Boolean> = suspendTransaction(database) {
         Channels.select(Channels.id, Channels.enabled).toList()
@@ -92,10 +103,10 @@ class ChannelRepository(
     /** 跨上下文配置快照读取；沿用调用方事务，不开启嵌套事务。 */
     fun listInTransaction(): List<ChannelRecord> {
         requireTransaction()
-        val rows = Channels.selectAll().orderBy(Channels.name).toList()
+        val rows = channelRows().orderBy(Channels.name).toList()
         val ids = rows.map { it[Channels.id] }
         val modelsByChannel = loadChannelModelMappingsInTransaction(ids)
-        val keysByChannel = loadChannelKeysInTransaction(ids)
+        val keysByChannel = loadChannelKeysInTransaction(ids, includeEgressConfiguration)
         return rows.map { row ->
             toRecord(row).copy(
                 modelMappings = modelsByChannel[row[Channels.id]].orEmpty(),
@@ -105,7 +116,7 @@ class ChannelRepository(
     }
 
     suspend fun find(id: String): ChannelRecord? = suspendTransaction(database) {
-        Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
+        channelRows().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
     /** 应用层跨仓储协调的唯一事务边界；InTransaction 方法不再开启嵌套事务。 */
@@ -117,12 +128,12 @@ class ChannelRepository(
 
     fun findInTransaction(id: String): ChannelRecord? {
         requireTransaction()
-        return Channels.selectAll().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
+        return channelRows().where { Channels.id eq id }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
     fun findProviderChannelInTransaction(provider: OAuthProvider, lock: Boolean = false): ChannelRecord? {
         requireTransaction()
-        val query = Channels.selectAll()
+        val query = channelRows()
             .where { (Channels.kind eq ChannelKind.PROVIDER.value) and (Channels.provider eq provider.value) }
         if (lock) query.forUpdate()
         return query.singleOrNull()?.let(::toRecordWithRelations)
@@ -162,8 +173,19 @@ class ChannelRepository(
         automaticDefaultsChanged: Boolean = false,
     ): ChannelRecord {
         requireTransaction()
-        check(Channels.selectAll().where { Channels.id eq channelId }.forUpdate().singleOrNull() != null)
+        check(Channels.select(Channels.id).where { Channels.id eq channelId }.forUpdate().singleOrNull() != null)
         saveModels(channelId, mappings, System.currentTimeMillis(), automaticDefaultsChanged)
+        return requireNotNull(findInTransaction(channelId))
+    }
+
+    fun setEnabledInTransaction(channelId: String, enabled: Boolean): ChannelRecord? {
+        requireTransaction()
+        Channels.select(Channels.id).where { Channels.id eq channelId }.forUpdate().singleOrNull() ?: return null
+        val now = System.currentTimeMillis()
+        Channels.update({ Channels.id eq channelId }) {
+            it[Channels.enabled] = enabled
+            it[updatedAt] = now
+        }
         return requireNotNull(findInTransaction(channelId))
     }
 
@@ -173,7 +195,7 @@ class ChannelRepository(
     }
 
     suspend fun findByName(name: String): ChannelRecord? = suspendTransaction(database) {
-        Channels.selectAll().where { Channels.name eq name }.singleOrNull()?.let(::toRecordWithRelations)
+        channelRows().where { Channels.name eq name }.singleOrNull()?.let(::toRecordWithRelations)
     }
 
     suspend fun create(
@@ -191,7 +213,9 @@ class ChannelRepository(
         protocolAuthTypes: Map<String, String> = emptyMap(),
         kind: ChannelKind = ChannelKind.CUSTOM,
         provider: OAuthProvider? = null,
+        egressProxies: List<ChannelEgressProxy> = emptyList(),
     ): ChannelRecord = suspendTransaction(database) {
+        validateChannelEgress(egressProxies, keys.map { it.egressProxyId })
         val storedProtocols = protocols.distinct()
         require(storedProtocols.isNotEmpty()) { "channel requires at least one protocol" }
         val now = System.currentTimeMillis()
@@ -208,6 +232,7 @@ class ChannelRepository(
             it[Channels.kind] = kind.value
             it[Channels.provider] = provider?.value
             it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
+            it[Channels.egressProxies] = Json.encodeToString(egressProxies)
             it[Channels.quotaSettings] = Json.encodeToString(quota)
             it.setQuotaCredential(quotaCredential, clear = false)
             it[createdAt] = now
@@ -222,6 +247,7 @@ class ChannelRepository(
                 priority = key.priority,
                 models = key.models,
                 rateLimit = key.rateLimit,
+                egressProxyId = key.egressProxyId,
             )
         }, now)
         Channels.selectAll().where { Channels.id eq id }.single().let(::toRecordWithRelations)
@@ -242,12 +268,23 @@ class ChannelRepository(
         quotaCredential: EncryptedCredential? = null,
         clearQuotaCredential: Boolean = false,
         protocolAuthTypes: Map<String, String>? = null,
+        egressProxies: List<ChannelEgressProxy>? = null,
     ): ChannelRecord? = suspendTransaction(database) {
         val now = System.currentTimeMillis()
         val existingChannel = Channels.selectAll()
             .where { Channels.id eq id }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
+        val existingBindings = ChannelKeys.select(ChannelKeys.id, ChannelKeys.egressProxyId)
+            .where { ChannelKeys.channelId eq id }
+            .associate { it[ChannelKeys.id] to it[ChannelKeys.egressProxyId] }
+        val assignments = keys?.map { key ->
+            if (key.clearEgressProxy) null else key.egressProxyId ?: existingBindings[key.id]
+        } ?: existingBindings.values.toList()
+        validateChannelEgress(
+            egressProxies ?: requestOverridesJson.decodeFromString<List<ChannelEgressProxy>>(existingChannel[Channels.egressProxies]),
+            assignments,
+        )
         require(modelMappings == null || existingChannel[Channels.kind] != ChannelKind.PROVIDER.value) {
             "provider models require shared write boundary"
         }
@@ -264,6 +301,7 @@ class ChannelRepository(
             it[Channels.enabled] = enabled
             if (priority != null) it[Channels.priority] = priority
             if (requestOverrides != null) it[Channels.requestOverrides] = Json.encodeToString(requestOverrides)
+            if (egressProxies != null) it[Channels.egressProxies] = Json.encodeToString(egressProxies)
             if (quota != null) it[Channels.quotaSettings] = Json.encodeToString(quota)
             it.setQuotaCredential(quotaCredential, clearQuotaCredential)
             it[updatedAt] = now
@@ -378,7 +416,7 @@ class ChannelRepository(
                 }
             }
         }
-        val revision = Channels.selectAll().where { Channels.id eq channelId }.single()[Channels.modelMappingRevision]
+        val revision = Channels.select(Channels.modelMappingRevision).where { Channels.id eq channelId }.single()[Channels.modelMappingRevision]
         Channels.update({ Channels.id eq channelId }) {
             it[modelMappingRevision] = revision + 1
             it[updatedAt] = now
@@ -388,7 +426,7 @@ class ChannelRepository(
 
     /** 渠道目录收缩时同步清理密钥上已不存在的模型引用。 */
     private fun pruneKeyModels(channelId: String, allowedModels: Set<String>) {
-        val keyIds = ChannelKeys.selectAll()
+        val keyIds = ChannelKeys.select(ChannelKeys.id)
             .where { ChannelKeys.channelId eq channelId }
             .map { it[ChannelKeys.id] }
         keyIds.forEach { keyId ->
@@ -414,6 +452,9 @@ class ChannelRepository(
             .toSet()
         val keptIds = mutableSetOf<String>()
         keys.forEach { key ->
+            if (key.clearEgressProxy && key.egressProxyId != null) {
+                throw ChannelEgressConfigurationException("不能同时绑定和清除密钥出口代理")
+            }
             val keyId = when {
                 key.id == null -> UUID.randomUUID().toString()
                 key.id in existing -> key.id
@@ -437,6 +478,7 @@ class ChannelRepository(
                 val resetHealth = key.credential != null || stateChanged
                 ChannelKeys.update({ ChannelKeys.id eq keyId }) {
                     it[name] = key.name
+                    if (key.clearEgressProxy || key.egressProxyId != null) it[egressProxyId] = key.egressProxyId
                     key.credential?.let { credential ->
                         it[credentialCiphertext] = credential.ciphertext
                         it[credentialNonce] = credential.nonce
@@ -472,6 +514,7 @@ class ChannelRepository(
                     it[id] = keyId
                     it[ChannelKeys.channelId] = channelId
                     it[name] = key.name
+                    it[egressProxyId] = key.egressProxyId
                     it[credentialCiphertext] = credential.ciphertext
                     it[credentialNonce] = credential.nonce
                     it[credentialKeyVersion] = credential.keyVersion
@@ -519,7 +562,7 @@ class ChannelRepository(
         loadChannelModelMappingsInTransaction(listOf(channelId))[channelId].orEmpty()
 
     private fun keysForInTransaction(channelId: String): List<ChannelKeyRecord> =
-        loadChannelKeysInTransaction(listOf(channelId))[channelId].orEmpty()
+        loadChannelKeysInTransaction(listOf(channelId), includeEgressConfiguration)[channelId].orEmpty()
 
     private fun toRecord(row: ResultRow) = ChannelRecord(
         id = row[Channels.id],
@@ -535,6 +578,7 @@ class ChannelRepository(
         createdAt = row[Channels.createdAt],
         updatedAt = row[Channels.updatedAt],
         requestOverrides = requestOverridesJson.decodeFromString<UpstreamRequestOverrides>(row[Channels.requestOverrides]),
+        egressProxies = row.getOrNull(Channels.egressProxies)?.let { requestOverridesJson.decodeFromString<List<ChannelEgressProxy>>(it) }.orEmpty(),
         quota = Json.decodeFromString<ChannelQuotaSettings>(row[Channels.quotaSettings]),
         quotaCredential = row[Channels.quotaCredentialCiphertext].takeIf { it.isNotEmpty() }?.let {
             EncryptedCredential(it, row[Channels.quotaCredentialNonce], row[Channels.quotaCredentialKeyVersion])
@@ -576,9 +620,11 @@ internal fun loadChannelModelMappingsInTransaction(
 /** Batch-loads channel keys and their model sets inside the caller's transaction. */
 internal fun loadChannelKeysInTransaction(
     channelIds: Collection<String>,
+    includeEgressConfiguration: Boolean = true,
 ): Map<String, List<ChannelKeyRecord>> {
     if (channelIds.isEmpty()) return emptyMap()
-    val keyRows = ChannelKeys.selectAll()
+    val columns = if (includeEgressConfiguration) ChannelKeys.columns else ChannelKeys.columns.filterNot { it == ChannelKeys.egressProxyId }
+    val keyRows = ChannelKeys.select(columns)
         .where { ChannelKeys.channelId inList channelIds }
         .orderBy(ChannelKeys.priority to SortOrder.ASC, ChannelKeys.name to SortOrder.ASC)
         .toList()
@@ -614,6 +660,7 @@ internal fun loadChannelKeysInTransaction(
                 priority = row[ChannelKeys.priority],
                 models = modelsByKey[row[ChannelKeys.id]].orEmpty(),
                 rateLimit = rateLimitsByKey[row[ChannelKeys.id]] ?: ChannelKeyRateLimitPolicy(),
+                egressProxyId = row.getOrNull(ChannelKeys.egressProxyId),
                 createdAt = row[ChannelKeys.createdAt],
                 updatedAt = row[ChannelKeys.updatedAt],
                 stateVersion = row[ChannelKeys.stateVersion],

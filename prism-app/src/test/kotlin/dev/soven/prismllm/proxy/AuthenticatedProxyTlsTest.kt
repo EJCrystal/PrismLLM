@@ -1,0 +1,223 @@
+package dev.soven.prismllm.proxy
+
+import com.sun.net.httpserver.HttpsConfigurator
+import com.sun.net.httpserver.HttpsServer
+import dev.soven.prismllm.fake.RecordingSocks5Proxy
+import io.ktor.network.tls.extensions.HashAlgorithm
+import io.ktor.network.tls.certificates.buildKeyStore
+import okhttp3.CipherSuite
+import okhttp3.Credentials
+import okhttp3.Handshake
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.TlsVersion
+import org.junit.jupiter.api.Tag
+import java.io.InputStream
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.Proxy
+import java.net.ServerSocket
+import java.net.Socket
+import java.net.URI
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotEquals
+import kotlin.test.assertNull
+import kotlin.test.assertTrue
+
+@Tag("component")
+class AuthenticatedProxyTlsTest {
+    @Test
+    fun `remote dns keeps route addresses distinct to prevent cross host connection coalescing`() {
+        val endpoint = ChannelProxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved("127.0.0.1", 1080), null)
+        val client = OkHttpClient.Builder().apply { configureChannelProxy(endpoint, 2_000) }.build()
+        try {
+            val first = client.dns.lookup("first.invalid").single()
+            val second = client.dns.lookup("second.invalid").single()
+            assertEquals("first.invalid", first.hostName)
+            assertEquals("second.invalid", second.hostName)
+            assertNotEquals(first, second)
+            assertEquals(first, client.dns.lookup("first.invalid").single())
+        } finally {
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `https proxy authentication is limited to tunnel negotiation`() {
+        val endpoint = ChannelProxy(Proxy.Type.HTTP, InetSocketAddress.createUnresolved("127.0.0.1", 8080), ProxyCredentials("user", "password"))
+        val client = OkHttpClient.Builder().apply { configureChannelProxy(endpoint, 2_000) }.build()
+        val handshake = Handshake.get(TlsVersion.TLS_1_3, CipherSuite.TLS_AES_128_GCM_SHA256, emptyList(), emptyList())
+        for ((method, tlsHandshake) in listOf("GET" to null, "GET" to handshake, "CONNECT" to handshake)) {
+            val challenge = Response.Builder()
+                .request(Request.Builder().url("https://upstream.invalid/").method(method, null).build())
+                .protocol(Protocol.HTTP_1_1)
+                .code(407)
+                .message("Proxy Authentication Required")
+                .handshake(tlsHandshake)
+                .build()
+            assertNull(client.proxyAuthenticator.authenticate(null, challenge), "$method, TLS handshake: ${tlsHandshake != null}")
+        }
+    }
+
+    @Test
+    fun `socks5 resolves the proxy hostname when connecting instead of using a stale address`() {
+        ServerSocket(0, 50, InetAddress.getByName("127.0.0.1")).use { upstream ->
+            for (credentials in listOf(null, ProxyCredentials("proxy-user", "proxy-password"))) {
+                RecordingSocks5Proxy(username = credentials?.username, password = credentials?.password).use { proxy ->
+                    val staleAddress = InetSocketAddress(
+                        InetAddress.getByAddress("localhost", byteArrayOf(127, 0, 0, 2)), URI(proxy.url).port,
+                    )
+                    ChannelSocks5SocketFactory(staleAddress, credentials, 2_000).createSocket().use { socket ->
+                        socket.connect(InetSocketAddress.createUnresolved("socks-target.invalid", upstream.localPort), 2_000)
+                        assertTrue(socket.isConnected)
+                        assertEquals("socks-target.invalid", proxy.targets.single().host)
+                    }
+                }
+            }
+        }
+    }
+
+    private class ConnectProxy(private val targetPort: Int, private val authorization: String) : AutoCloseable {
+        private val listener = ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))
+        private val executor = Executors.newVirtualThreadPerTaskExecutor()
+        private val sockets = ConcurrentLinkedQueue<Socket>()
+        val authenticatedTargets = ConcurrentLinkedQueue<String>()
+        val address: InetSocketAddress get() = InetSocketAddress("127.0.0.1", listener.localPort)
+
+        init {
+            executor.submit {
+                while (!listener.isClosed) {
+                    val socket = runCatching { listener.accept() }.getOrNull() ?: break
+                    sockets.add(socket)
+                    executor.submit { runCatching { socket.use(::connect) } }
+                }
+            }
+        }
+
+        private fun line(input: InputStream): String {
+            val result = StringBuilder()
+            while (result.length <= 8192) {
+                val next = input.read()
+                if (next == -1 || next == 10) return result.toString()
+                if (next != 13) result.append(next.toChar())
+            }
+            error("proxy header line too long")
+        }
+
+        private fun connect(client: Socket) {
+            client.soTimeout = 5_000
+            val input = client.getInputStream()
+            val request = line(input)
+            require(request.startsWith("CONNECT "))
+            val headers = mutableMapOf<String, String>()
+            while (true) {
+                val header = line(input)
+                if (header.isEmpty()) break
+                headers[header.substringBefore(':').lowercase()] = header.substringAfter(':').trim()
+            }
+            val output = client.getOutputStream()
+            if (headers["proxy-authorization"] != authorization) {
+                output.write("HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"proxy\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                output.flush()
+                return
+            }
+            authenticatedTargets.add(request.substringAfter(' ').substringBefore(' '))
+            Socket("127.0.0.1", targetPort).use { upstream ->
+                sockets.add(upstream)
+                output.write("HTTP/1.1 200 Connection Established\r\n\r\n".toByteArray(Charsets.US_ASCII))
+                output.flush()
+                client.soTimeout = 0
+                val upload = executor.submit { runCatching { input.copyTo(upstream.getOutputStream()) } }
+                try {
+                    upstream.getInputStream().copyTo(output)
+                } finally {
+                    client.close()
+                    upload.cancel(true)
+                }
+            }
+        }
+
+        override fun close() {
+            listener.close()
+            sockets.forEach { runCatching { it.close() } }
+            executor.shutdownNow()
+            executor.awaitTermination(2, TimeUnit.SECONDS)
+        }
+    }
+
+    @Test
+    fun `http connect and authenticated or unauthenticated socks5 tunnel https without exposing credentials`() {
+        val store = buildKeyStore {
+            certificate("upstream") {
+                password = "test-certificate"
+                domains = listOf("socks-target.invalid")
+                keySizeInBits = 2048
+                hash = HashAlgorithm.SHA256
+            }
+        }
+        val keys = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(store, "test-certificate".toCharArray()) }
+        val trusts = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(store) }
+        val trust = trusts.trustManagers.filterIsInstance<X509TrustManager>().single()
+        val serverContext = SSLContext.getInstance("TLS").apply { init(keys.keyManagers, null, null) }
+        val clientContext = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
+        val headers = ConcurrentLinkedQueue<Set<String>>()
+        val server = HttpsServer.create(InetSocketAddress("127.0.0.1", 0), 0).apply {
+            httpsConfigurator = HttpsConfigurator(serverContext)
+            createContext("/") { exchange ->
+                headers.add(exchange.requestHeaders.keys.toSet())
+                val response = "tls-through-authenticated-proxy".toByteArray()
+                exchange.sendResponseHeaders(200, response.size.toLong())
+                exchange.responseBody.use { it.write(response) }
+            }
+            start()
+        }
+        val username = "proxy-user"
+        val password = "proxy-password"
+        val unauthenticated = RecordingSocks5Proxy()
+        try {
+            ConnectProxy(server.address.port, Credentials.basic(username, password, Charsets.UTF_8)).use { http ->
+                RecordingSocks5Proxy(username = username, password = password).use { socks ->
+                    val endpoints = listOf(
+                        ChannelProxy(Proxy.Type.HTTP, http.address, ProxyCredentials(username, password)),
+                        ChannelProxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved("127.0.0.1", URI(socks.url).port), ProxyCredentials(username, password)),
+                        ChannelProxy(Proxy.Type.SOCKS, InetSocketAddress.createUnresolved("127.0.0.1", URI(unauthenticated.url).port), null),
+                    )
+                    endpoints.forEach { endpoint ->
+                        val client = OkHttpClient.Builder().apply { configureChannelProxy(endpoint, 2_000) }
+                            .sslSocketFactory(clientContext.socketFactory, trust)
+                            .callTimeout(5, TimeUnit.SECONDS).build()
+                        try {
+                            client.newCall(Request.Builder().url("https://socks-target.invalid:${server.address.port}/").build()).execute().use { response ->
+                                assertEquals(200, response.code)
+                                assertEquals("tls-through-authenticated-proxy", response.body.string())
+                            }
+                        } finally {
+                            client.connectionPool.evictAll()
+                            client.dispatcher.executorService.shutdownNow()
+                        }
+                    }
+                    assertTrue(http.authenticatedTargets.isNotEmpty())
+                    assertTrue(socks.authenticatedUsers.isNotEmpty())
+                    assertTrue(socks.targets.all { it.host == "socks-target.invalid" && it.addressType == 3 })
+                    assertEquals(listOf(0), unauthenticated.offeredMethods.single())
+                    assertEquals(3, headers.size)
+                    assertTrue(headers.all { names -> names.none { it.equals("Proxy-Authorization", ignoreCase = true) } })
+                }
+            }
+        } finally {
+            unauthenticated.close()
+            server.stop(0)
+        }
+    }
+}

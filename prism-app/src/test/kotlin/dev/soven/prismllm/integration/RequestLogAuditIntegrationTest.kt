@@ -3,6 +3,8 @@ package dev.soven.prismllm.integration
 import dev.soven.prismllm.channel.domain.key.KeyDisableAction
 import dev.soven.prismllm.channel.domain.key.KeyDisablePolicy
 import dev.soven.prismllm.channel.domain.key.KeyDisableRule
+import dev.soven.prismllm.channel.domain.key.ChannelKeyState
+import dev.soven.prismllm.channel.persistence.ChannelRepository
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
@@ -559,7 +561,15 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("77", result.getString(1))
+                        assertEquals("79", result.getString(1))
+                    }
+                    statement.executeQuery("select count(*) from channels where egress_proxies <> '[]'").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1))
+                    }
+                    statement.executeQuery("select count(*) from channel_keys where egress_proxy_id is not null").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(0, result.getInt(1))
                     }
                     statement.executeQuery("select model_mapping_revision from channels where id = 'migration-channel'").use { result ->
                         assertTrue(result.next())
@@ -1445,6 +1455,42 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 val empty = repository.save("public/family", 0, emptyList())
                 assertEquals(1L, empty.revision, "migration revision zero is the first editable revision")
                 assertTrue(assertNotNull(repository.find("public/family")).entries.isEmpty())
+            }
+        } finally {
+            dropDatabaseQuietly(databaseName)
+        }
+    }
+
+    @Test
+    @Timeout(300)
+    fun `migration repository reads channels and keys before egress columns exist`() = runBlocking {
+        val databaseName = createMigrationDatabase("migration_v79_egress_reads")
+        val migrationUrl = migrationDatabaseUrl(databaseName)
+        try {
+            migrateTo(migrationUrl, "73")
+            DriverManager.getConnection(migrationUrl, postgres.username, postgres.password).use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("""insert into channels (id, name, base_url, protocols, enabled, created_at, updated_at)
+                        values ('legacy-egress', 'legacy-egress', 'https://example.invalid/v1', 'chat_completions', true, 1, 1)""")
+                    statement.execute("""insert into channel_keys
+                        (id, channel_id, name, credential_ciphertext, credential_nonce, credential_key_version, state, priority, created_at, updated_at)
+                        values ('legacy-key', 'legacy-egress', 'legacy-key', 'cipher', 'nonce', 1, '${ChannelKeyState.ACTIVE.value}', 1, 1, 1)""")
+                }
+            }
+            TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
+                val repository = ChannelRepository(database.database, app.credentialCipher, includeEgressConfiguration = false)
+                val channel = repository.list().single()
+                assertEquals(emptyList(), channel.egressProxies)
+                assertNull(channel.keys.single().egressProxyId)
+                assertEquals(channel, repository.find(channel.id))
+                assertEquals(channel, repository.findByName(channel.name))
+                assertEquals(channel, repository.inTransaction { repository.findInTransaction(channel.id) })
+            }
+            migrateTo(migrationUrl)
+            TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
+                val current = ChannelRepository(database.database, app.credentialCipher).list().single()
+                assertEquals(emptyList(), current.egressProxies)
+                assertNull(current.keys.single().egressProxyId)
             }
         } finally {
             dropDatabaseQuietly(databaseName)

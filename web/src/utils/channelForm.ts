@@ -1,4 +1,4 @@
-import type { Channel, ChannelKeyState, ChannelRequest } from '../types/api'
+import type { Channel, ChannelEgressProxy, ChannelEgressProxyRequest, ChannelKeyState, ChannelRequest } from '../types/api'
 import { buildChannelKeyRateLimitPayload } from './channelKeyRateLimit'
 
 /**
@@ -21,6 +21,52 @@ export interface ChannelFormDraft {
   enabled: boolean
   priority?: number | string | null
   requestOverrides?: ChannelRequest['requestOverrides'] | null
+  egressProxies?: ChannelEgressProxyDraft[]
+}
+
+export interface ChannelEgressProxyDraft extends ChannelEgressProxy {
+  authenticationEnabled?: boolean
+  password?: string
+}
+
+export function proxyAuthenticationEnabled(proxy: ChannelEgressProxyDraft): boolean {
+  return proxy.authenticationEnabled ?? Boolean(proxy.username || proxy.passwordSet || proxy.password)
+}
+
+export function channelProxyConfigurationSnapshot(proxies: ChannelEgressProxyDraft[]): string {
+  return JSON.stringify(proxies.map(proxy => ({
+    id: proxy.id, name: proxy.name, url: proxy.url,
+    username: proxyAuthenticationEnabled(proxy) ? proxy.username || null : null,
+    passwordSet: proxyAuthenticationEnabled(proxy) && Boolean(proxy.passwordSet),
+    password: proxyAuthenticationEnabled(proxy) ? proxy.password || '' : '',
+  })))
+}
+
+export function buildChannelProxyPayload(proxy: ChannelEgressProxyDraft): ChannelEgressProxyRequest {
+  const result: ChannelEgressProxyRequest = { id: proxy.id, name: proxy.name.trim(), url: proxy.url.trim() }
+  if (!result.name || result.name.length > 100) throw new Error('请填写 1..100 个字符的出口代理名称')
+  let address: URL
+  try { address = new URL(result.url) } catch { throw new Error('出口代理地址无效') }
+  if (result.url.length > 500 || !/^(http|socks5):\/\/[^/?#@\\\s]+\/?$/.test(result.url) || !address.hostname || address.username || address.password || (address.port && Number(address.port) < 1)) {
+    throw new Error('出口代理必须是 http://主机:端口 或 socks5://主机:端口；账号密码请单独填写')
+  }
+  if (!proxyAuthenticationEnabled(proxy)) {
+    if (proxy.authenticationEnabled === false || proxy.username || proxy.passwordSet) result.clearAuthentication = true
+    return result
+  }
+  const username = proxy.username?.trim() || ''
+  const password = proxy.password || ''
+  const bytes = (value: string) => new TextEncoder().encode(value).length
+  const controls = /[\u0000-\u001f\u007f-\u009f]/
+  if (!username || bytes(username) > 255 || controls.test(username) || (address.protocol === 'http:' && username.includes(':'))) {
+    throw new Error('代理账号必须为 1..255 字节，不能包含控制字符；HTTP 代理账号不能包含冒号')
+  }
+  if ((!password && !proxy.passwordSet) || bytes(password) > 255 || controls.test(password)) {
+    throw new Error('请填写 1..255 字节的代理密码；已保存密码可留空保留')
+  }
+  result.username = username
+  if (password) result.password = password
+  return result
 }
 
 export interface ChannelKeyDraft {
@@ -33,6 +79,7 @@ export interface ChannelKeyDraft {
   stateVersion?: number | null
   models?: string[] | null
   rateLimit?: unknown
+  egressProxyId?: string | null
 }
 
 export interface OriginalModelMapping {
@@ -63,6 +110,15 @@ export function buildChannelPayload(
   originalMappings: Record<string, OriginalModelMapping> = {},
   keys: ChannelKeyDraft[] = [],
 ): ChannelRequest {
+  const proxies = form.egressProxies?.map(buildChannelProxyPayload)
+  if (proxies) {
+    if (proxies.length > 100) throw new Error('每个渠道最多配置 100 个出口代理')
+    if (new Set(proxies.map(proxy => proxy.id)).size !== proxies.length) throw new Error('出口代理 ID 不能重复')
+    if (new Set(proxies.map(proxy => proxy.name)).size !== proxies.length) throw new Error('出口代理名称不能重复')
+    if (keys.some(key => key.egressProxyId && !proxies.some(proxy => proxy.id === key.egressProxyId))) {
+      throw new Error('密钥绑定的出口代理不存在，请重新选择')
+    }
+  }
   const payload: ChannelRequest = {
     name: form.name.trim(),
     baseUrl: form.baseUrl.trim(),
@@ -71,6 +127,7 @@ export function buildChannelPayload(
     protocolAuthTypes: { ...(form.protocolAuthTypes || {}) },
     protocols: [...form.protocols],
     enabled: form.enabled,
+    ...(proxies ? { egressProxies: proxies } : {}),
     modelMappings: authorizedModels.map((upstreamModel) => {
       const canonicalModelId = canonicalModels[upstreamModel]?.trim() || null
       const original = originalMappings[upstreamModel]
@@ -109,6 +166,7 @@ export function buildChannelPayload(
           : Number(key.priority) || 1,
         models: [...new Set((key.models || []).map((model) => String(model).trim()).filter(Boolean))],
         rateLimit: buildChannelKeyRateLimitPayload(key.rateLimit),
+        ...(key.egressProxyId !== undefined ? { egressProxyId: key.egressProxyId || null, clearEgressProxy: !key.egressProxyId } : {}),
       }
     })
   }

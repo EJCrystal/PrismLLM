@@ -600,6 +600,40 @@ class ProviderChannelProvisionerTest {
         assertEquals(after, shared(), "repeated sync must not advance the mapping revision")
     }
 
+    @Test
+    fun `provider level model mappings update and enabled toggle share channel lock`() = runBlocking<Unit> {
+        val acc = account()
+        sync(acc, "m" to "family-m")
+        val initial = shared()
+        assertTrue(providerChannel().enabled)
+
+        val disabled = provisioner.setProviderEnabled(OAuthProvider.CHATGPT, false)
+        assertNotNull(disabled)
+        assertFalse(disabled.enabled)
+        assertFalse(providerChannel().enabled)
+
+        val reenabled = provisioner.setProviderEnabled(OAuthProvider.CHATGPT, true)
+        assertNotNull(reenabled)
+        assertTrue(reenabled.enabled)
+
+        val updated = provisioner.updateModelMappings(
+            provider = OAuthProvider.CHATGPT,
+            changes = listOf(ProviderModelMappingChange("m", "manual", "custom-m")),
+            expectedRevision = initial.revision,
+        )
+        assertEquals(initial.revision + 1, updated.revision)
+        assertEquals("manual", updated.mappings.first { it.mapping.upstreamModel == "m" }.mode)
+        assertEquals("custom-m", updated.mappings.first { it.mapping.upstreamModel == "m" }.mapping.publicModelId)
+
+        assertFailsWith<ModelMappingRevisionChangedException> {
+            provisioner.updateModelMappings(
+                provider = OAuthProvider.CHATGPT,
+                changes = listOf(ProviderModelMappingChange("m", "upstream")),
+                expectedRevision = initial.revision,
+            )
+        }
+    }
+
     private suspend fun account(provider: OAuthProvider = OAuthProvider.CHATGPT, now: Long = System.currentTimeMillis()): OAuthAccountRecord = accounts.create(NewOAuthAccount(name = "account-" + UUID.randomUUID(), provider = provider, refreshToken = cipher.encrypt("refresh")), now)
     private suspend fun sync(account: OAuthAccountRecord, vararg entries: Pair<String, String?>) {
         assertTrue(provisioner.syncModelCatalog(account.id, entries.map { OAuthAccountModelCatalogEntry(it.first, it.second) }))

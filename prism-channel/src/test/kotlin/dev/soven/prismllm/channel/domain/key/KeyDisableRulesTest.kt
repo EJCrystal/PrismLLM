@@ -780,6 +780,25 @@ class KeyDisableRulesTest {
         )
         assertNotNull(transportOr.match(KeyAttemptSignal.TransportFailure("connection reset")))
         assertEquals("overloaded", transportOr.match(KeyAttemptSignal.TransportFailure("overloaded"))?.matchedPattern)
+
+        // 未勾选 includeTransportFailures，但 OR 逻辑或纯文本规则命中异常消息时同样生效。
+        val statusAndTextOr = rule(
+            id = "status_text_or",
+            statusCodes = listOf(503),
+            bodyPatterns = listOf("connection reset"),
+            matchLogic = KeyRuleMatchLogic.OR,
+            includeTransportFailures = false,
+            threshold = 1,
+        )
+        assertEquals(
+            "connection reset",
+            statusAndTextOr.match(KeyAttemptSignal.TransportFailure("connection reset"))?.matchedPattern,
+        )
+        assertNull(statusAndTextOr.match(KeyAttemptSignal.TransportFailure("read timeout")))
+        assertEquals(
+            "channel_busy",
+            textOnlyAnd.match(KeyAttemptSignal.TransportFailure("channel_busy"))?.matchedPattern,
+        )
     }
 
     @Test

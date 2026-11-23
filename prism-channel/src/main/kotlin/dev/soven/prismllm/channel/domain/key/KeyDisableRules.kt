@@ -170,12 +170,15 @@ data class KeyDisableRule(
     fun match(signal: KeyAttemptSignal): KeyRuleMatch? = when (signal) {
         KeyAttemptSignal.Success, KeyAttemptSignal.Ignored -> null
         is KeyAttemptSignal.TransportFailure -> {
-            if (!includeTransportFailures) {
-                null
-            } else if (matchLogic == KeyRuleMatchLogic.OR) {
-                matchText(signal.message) ?: KeyRuleMatch(null)
-            } else {
-                matchText(signal.message)
+            val hasTextCondition = compiledPatterns.isNotEmpty()
+            when {
+                !hasStatusOrTransportCondition -> if (hasTextCondition) matchText(signal.message) else null
+                matchLogic == KeyRuleMatchLogic.OR -> {
+                    val textHit = if (hasTextCondition) matchText(signal.message) else null
+                    textHit ?: if (includeTransportFailures) KeyRuleMatch(null) else null
+                }
+                !includeTransportFailures -> null
+                else -> matchText(signal.message)
             }
         }
         is KeyAttemptSignal.UpstreamResponse -> {

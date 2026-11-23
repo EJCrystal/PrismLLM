@@ -605,6 +605,18 @@ class FakeUpstream {
                     completed = true
                     return@respondBytesWriter
                 }
+                if (scenario == "responses-custom-failed-with-usage") {
+                    writeSseEvent(
+                        "response.failed",
+                        """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded","type":"tokens"},"usage":{"input_tokens":7,"output_tokens":2,"total_tokens":9}}}""",
+                    )
+                    completed = true
+                    return@respondBytesWriter
+                }
+                if (scenario == "responses-empty-stream") {
+                    completed = true
+                    return@respondBytesWriter
+                }
                 if (scenario == "responses-created-stall") {
                     delay(2_000)
                     completed = true

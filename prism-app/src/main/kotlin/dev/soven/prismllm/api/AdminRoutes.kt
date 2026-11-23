@@ -24,6 +24,8 @@ import dev.soven.prismllm.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.prismllm.shared.domain.effectiveAuthType
 import dev.soven.prismllm.shared.domain.UpstreamRequestOverrides
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
+import dev.soven.prismllm.admin.domain.SystemPromptSettingsRecord
+import dev.soven.prismllm.admin.domain.systemPromptSettingsError
 import dev.soven.prismllm.domain.effective
 import dev.soven.prismllm.proxy.validateUpstreamRequestOverrides
 import dev.soven.prismllm.pricing.domain.BILLING_CURRENCY
@@ -399,6 +401,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(updated.toResponse())
         }
 
+        get("/system-prompt-settings") {
+            call.requireAdmin(app)
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.systemPromptSettingsRepository.load())
+        }
+
+        put("/system-prompt-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<SystemPromptSettingsRecord>()
+            systemPromptSettingsError(request)?.let { throw badRequest("invalid_system_prompt_settings", it) }
+            val channelIds = app.channelRepository.listNames().keys
+            if (request.rules.any { rule -> rule.channelIds.any { it !in channelIds } }) {
+                throw badRequest("invalid_system_prompt_settings", "规则包含已删除或不存在的渠道，请重新选择")
+            }
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.systemPromptSettingsRepository.save(request))
+        }
+
         get("/upstream-request-settings") {
             call.requireAdmin(app)
             call.respond(
@@ -536,11 +556,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw notFound("channel_not_found", "渠道不存在")
             val credential = resolveChannelCredential(channel, call.request.queryParameters["keyId"])
             val mappingByUpstream = channel.modelMappings.associateBy { it.upstreamModel }
-            val models = fetchUpstreamModels(
-                channel, credential, app.oauthTokenService, app.httpClient, authorizedOnly = false,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-            )
+            val models = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                fetchUpstreamModels(
+                    channel, credential, app.oauthTokenService, egressClient, authorizedOnly = false,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                )
+            }
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -604,13 +626,24 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val protocolAuthTypes = request.protocolAuthTypes ?: saved?.protocolAuthTypes.orEmpty()
             val discoveryProtocol = modelListProtocol(discoveryProtocols, authType, protocolAuthTypes)
             val discoveryAuthType = effectiveAuthType(authType, protocolAuthTypes, discoveryProtocol)
-            val models = fetchUpstreamModels(
-                baseUrl, credential, app.httpClient, discoveryAuthType,
-                protocol = discoveryProtocol,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-            )
+            if (request.clearEgressProxy && request.egressProxy != null) {
+                throw badRequest("invalid_channel_proxy", "不能同时指定和清除出口代理")
+            }
+            val egressProxy = request.egressProxy?.let {
+                val proxy = normalizeChannelProxies(app, listOf(it), saved?.egressProxies.orEmpty()).single()
+                parseChannelProxy(app, proxy)
+            } ?: if (!request.clearEgressProxy && saved != null && savedCredential != null) {
+                channelEgressProxy(app, saved, savedCredential)
+            } else null
+            val models = withUpstreamClient(app, egressProxy) { egressClient ->
+                fetchUpstreamModels(
+                    baseUrl, credential, egressClient, discoveryAuthType,
+                    protocol = discoveryProtocol,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    channelOverrides = request.requestOverrides ?: saved?.requestOverrides ?: UpstreamRequestOverrides(),
+                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                )
+            }
                 .map {
                     val mapping = mappingByUpstream[it.id]
                     ChannelModelResponse(
@@ -638,11 +671,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 channel.models.firstOrNull { credential.supports(it) }
                     ?: throw badRequest("model_not_authorized", "系统端点渠道或账号没有可探测的 active 模型")
             } else run {
-                val models = fetchUpstreamModels(
-                    channel, credential, app.oauthTokenService, app.httpClient,
-                    globalOverrides = globalOverrides,
-                    headerProfiles = headerProfiles,
-                )
+                val models = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                    fetchUpstreamModels(
+                        channel, credential, app.oauthTokenService, egressClient,
+                        globalOverrides = globalOverrides,
+                        headerProfiles = headerProfiles,
+                    )
+                }
                 models.firstOrNull { !channel.isProviderChannel || (it.id in channel.models && credential.supports(it.id)) }?.id ?: throw GatewayError(
                     HttpStatusCode.BadGateway,
                     "no_upstream_models",
@@ -653,11 +688,13 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (channel.isProviderChannel && (model !in channel.models || !credential.supports(model))) {
                 throw badRequest("model_not_authorized", "系统端点渠道或账号未授权该 active 模型")
             }
-            val results = probeUpstreamProtocols(
-                channel, credential, model, app.oauthTokenService, app.httpClient,
-                globalOverrides = globalOverrides,
-                headerProfiles = headerProfiles,
-            )
+            val results = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                probeUpstreamProtocols(
+                    channel, credential, model, app.oauthTokenService, egressClient,
+                    globalOverrides = globalOverrides,
+                    headerProfiles = headerProfiles,
+                )
+            }
             call.respond(
                 ProtocolProbeResponse(
                     model = model,
@@ -699,17 +736,20 @@ fun Route.adminRoutes(app: GatewayApplication) {
             if (prompt.length > MODEL_TEST_PROMPT_MAX) {
                 throw badRequest("invalid_model_test_prompt", "测试提示词不能超过 $MODEL_TEST_PROMPT_MAX 个字符")
             }
-            val result = testChannelModelConnectivity(
-                channel = channel,
-                credentialRef = credential,
-                model = model,
-                protocol = protocol,
-                prompt = prompt,
-                credentials = app.oauthTokenService,
-                httpClient = app.httpClient,
-                globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-                headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-            )
+            val result = withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                testChannelModelConnectivity(
+                    channel = channel,
+                    credentialRef = credential,
+                    model = model,
+                    protocol = protocol,
+                    prompt = prompt,
+                    credentials = app.oauthTokenService,
+                    httpClient = egressClient,
+                    globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+                    headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                    systemPrompt = app.systemPromptSettingsRepository.load().replacementFor(channel.id, protocol),
+                )
+            }
             call.respond(result.toResponse(model, protocol, credential.id, credential.name, prompt))
         }
 
@@ -841,21 +881,23 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val results = coroutineScope {
                 challenges.map { challenge ->
                     async {
-                        testChannelModelConnectivity(
-                            channel = channel,
-                            credentialRef = credential,
-                            model = model,
-                            protocol = protocol,
-                            prompt = challenge.prompt,
-                            credentials = app.oauthTokenService,
-                            httpClient = app.httpClient,
-                            timeoutMs = FINGERPRINT_TIMEOUT_MS,
-                            maxOutputTokens = FINGERPRINT_MAX_OUTPUT_TOKENS,
-                            maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
-                            globalOverrides = overrides,
-                            headerProfiles = headerProfiles,
-                            isolatedIqRequest = true,
-                        )
+                        withUpstreamClient(app, channelEgressProxy(app, channel, credential)) { egressClient ->
+                            testChannelModelConnectivity(
+                                channel = channel,
+                                credentialRef = credential,
+                                model = model,
+                                protocol = protocol,
+                                prompt = challenge.prompt,
+                                credentials = app.oauthTokenService,
+                                httpClient = egressClient,
+                                timeoutMs = FINGERPRINT_TIMEOUT_MS,
+                                maxOutputTokens = FINGERPRINT_MAX_OUTPUT_TOKENS,
+                                maxResponseChars = FINGERPRINT_MAX_RESPONSE_CHARS,
+                                globalOverrides = overrides,
+                                headerProfiles = headerProfiles,
+                                isolatedIqRequest = true,
+                            )
+                        }
                     }
                 }.awaitAll()
             }
@@ -1015,6 +1057,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.requireAdmin(app)
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
+            validateChannelProxyHosts(app, request)
             val protocols = parseProtocols(request.protocols ?: GatewayProtocol.default.map { it.value })
             if (app.channelRepository.findByName(request.name) != null) {
                 throw conflict("channel_name_exists", "渠道名称已存在")
@@ -1034,6 +1077,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 requestOverrides = request.requestOverrides ?: UpstreamRequestOverrides(),
                 quota = request.quota?.toSettings() ?: ChannelQuotaSettings(),
                 quotaCredential = request.quota?.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
+                egressProxies = normalizeChannelProxies(app, request.egressProxies.orEmpty()),
             )
             call.respond(HttpStatusCode.Created, record.toResponse())
         }
@@ -1043,6 +1087,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val id = call.requiredParam("id", "缺少渠道 id")
             val request = call.receive<ChannelRequest>()
             validateChannel(request, credentialRequired = false)
+            validateChannelProxyHosts(app, request)
             val protocols = request.protocols?.let(::parseProtocols)
             val updated = channelUpdateMutex.withLock {
                 val existing = app.channelRepository.find(id)
@@ -1078,6 +1123,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                         quota = request.quota?.toSettings(),
                         quotaCredential = request.quota?.credential?.trim()?.takeIf { it.isNotEmpty() }?.let(app.credentialCipher::encrypt),
                         clearQuotaCredential = request.quota?.clearCredential == true,
+                        egressProxies = request.egressProxies?.let { normalizeChannelProxies(app, it, existing.egressProxies) },
                     ) ?: throw notFound("channel_not_found", "渠道不存在")
                     updated.keys.filter { key ->
                         existing.keys.firstOrNull { it.id == key.id }?.stateVersion != key.stateVersion
@@ -1159,16 +1205,39 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/oauth-providers") {
             call.requireAdmin(app)
             val configured = app.oauthTokenProviders.available()
+            val providerChannels = app.channelRepository.list()
+                .filter { it.isProviderChannel && it.provider != null }
+                .associateBy { it.provider!! }
             call.respond(
                 OAuthProvider.entries.map { provider ->
+                    val endpoint = ProviderEndpoints.of(provider)
                     OAuthProviderResponse(
                         id = provider.value,
                         label = OAUTH_PROVIDER_LABELS[provider] ?: provider.value,
                         configured = provider in configured,
-                        managedChannel = dev.soven.prismllm.channel.domain.ProviderEndpoints.of(provider).servable,
+                        managedChannel = endpoint.servable,
+                        channelId = providerChannels[provider]?.id,
+                        baseUrl = endpoint.baseUrl,
+                        protocols = endpoint.protocols.map { it.value },
                     )
                 },
             )
+        }
+
+        put("/oauth-providers/{provider}/enabled") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(call.requiredParam("provider", "缺少 provider").trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val request = call.receive<OAuthProviderEnabledRequest>()
+            val updated = app.providerChannelProvisioner.setProviderEnabled(provider, request.enabled)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+            val oauthByChannel = app.oauthAccountDirectory.listByChannel()
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("channelId", updated.id)
+                put("enabled", updated.enabled)
+            })
+            call.respond(updated.toResponse(oauthByChannel[updated.id].orEmpty()))
         }
 
         get("/oauth-providers/{provider}/model-mappings") {
@@ -1178,22 +1247,46 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val shared = app.providerChannelProvisioner.modelMappings(provider)
             call.response.headers.append("Cache-Control", "no-store")
             // 网关全局省略 null；共享资源的三个 nullable 字段却是合同中的必有键。
-            call.respond(kotlinx.serialization.json.Json { encodeDefaults = true; explicitNulls = true }.encodeToJsonElement(OAuthProviderModelMappingsResponse(
-                provider = provider.value,
-                revision = shared.revision,
-                affectedAccountCount = shared.affectedAccountCount,
-                mappings = shared.mappings.map { row ->
-                    OAuthProviderModelMappingResponse(
-                        upstreamModel = row.mapping.upstreamModel,
-                        canonicalModelId = row.mapping.canonicalModelId,
-                        publicModelId = row.mapping.publicModelId,
-                        automaticCanonicalModelId = row.automaticCanonicalModelId,
-                        mode = row.mode,
-                        mappingSource = row.mapping.mappingSource,
-                        catalogActive = row.mapping.catalogActive,
-                    )
-                },
-            )))
+            call.respond(encodeOAuthProviderModelMappings(shared))
+        }
+
+        put("/oauth-providers/{provider}/model-mappings") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(call.requiredParam("provider", "缺少 provider").trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val payload = call.receive<JsonObject>()
+            val request = try {
+                GatewayApplication.gatewayJson.decodeFromJsonElement<OAuthProviderModelMappingsUpdateRequest>(payload)
+            } catch (cause: kotlinx.serialization.SerializationException) {
+                throw badRequest("invalid_oauth_model_mapping", "共享模型映射请求格式无效")
+            }
+            payload["changes"]?.takeIf { it != JsonNull }?.jsonArray?.forEach { value ->
+                val change = value.jsonObject
+                val mode = change["mode"]?.jsonPrimitive?.content
+                if (mode in setOf("auto", "upstream") && "canonicalModelId" in change) {
+                    throw badRequest("invalid_oauth_model_mapping", "auto/upstream 模式不能指定 canonicalModelId")
+                }
+            }
+            val updated = try {
+                app.providerChannelProvisioner.updateModelMappings(
+                    provider = provider,
+                    changes = request.changes.map {
+                        ProviderModelMappingChange(it.upstreamModel, it.mode, it.canonicalModelId)
+                    },
+                    expectedRevision = request.expectedRevision,
+                )
+            } catch (cause: ModelMappingRevisionChangedException) {
+                throw conflict("model_mapping_revision_changed", cause.message ?: "共享模型映射已变化")
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_oauth_model_mapping", cause.message ?: "共享模型映射无效")
+            }
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("changeCount", request.changes.size)
+                put("revision", updated.revision)
+            })
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(encodeOAuthProviderModelMappings(updated))
         }
 
         put("/oauth-providers/{provider}/models") {
@@ -1556,6 +1649,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 codeAssistUserAgent = app.currentAntigravityUserAgent(),
                 globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
                 headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+                systemPrompt = app.systemPromptSettingsRepository.load().replacementFor(channel.id, protocol),
             )
             call.markAdminAuditDetails(buildJsonObject {
                 put("accountId", accountId)
@@ -2516,6 +2610,7 @@ private fun normalizeNewKeys(
             priority = key.priority,
             models = key.models,
             rateLimit = key.rateLimit ?: ChannelKeyRateLimitPolicy(),
+            egressProxyId = key.egressProxyId,
         )
     }
 }
@@ -2553,6 +2648,8 @@ private fun normalizeUpdatedKeys(
                 models = key.models,
                 rateLimit = key.rateLimit,
                 stateVersion = key.stateVersion,
+                egressProxyId = key.egressProxyId,
+                clearEgressProxy = key.clearEgressProxy,
             )
         }
     }
@@ -2596,6 +2693,8 @@ private data class NormalizedKey(
     val models: List<String>,
     val rateLimit: ChannelKeyRateLimitPolicy?,
     val stateVersion: Long?,
+    val egressProxyId: String?,
+    val clearEgressProxy: Boolean,
 )
 
 private fun normalizeKeys(
@@ -2607,6 +2706,9 @@ private fun normalizeKeys(
     val names = mutableSetOf<String>()
     val ids = mutableSetOf<String>()
     return keys.map { key ->
+        if (key.clearEgressProxy && key.egressProxyId != null) {
+            throw badRequest("invalid_channel_proxy", "不能同时绑定和清除密钥出口代理")
+        }
         val name = key.name.trim()
         if (name.isEmpty() || name.length > 100) {
             throw badRequest("invalid_channel", "密钥名称长度必须在 1..100 之间")
@@ -2643,6 +2745,8 @@ private fun normalizeKeys(
             models = models,
             rateLimit = rateLimit,
             stateVersion = key.stateVersion,
+            egressProxyId = key.egressProxyId,
+            clearEgressProxy = key.clearEgressProxy,
         )
     }
 }
@@ -3030,6 +3134,32 @@ private fun validateOAuthProxyUrl(app: GatewayApplication, proxyUrl: String?) {
     }
 }
 
+private val oauthProviderModelMappingsJson = kotlinx.serialization.json.Json {
+    encodeDefaults = true
+    explicitNulls = true
+}
+
+private fun encodeOAuthProviderModelMappings(
+    shared: dev.soven.prismllm.oauth.ProviderModelMappings,
+) = oauthProviderModelMappingsJson.encodeToJsonElement(
+    OAuthProviderModelMappingsResponse(
+        provider = shared.provider.value,
+        revision = shared.revision,
+        affectedAccountCount = shared.affectedAccountCount,
+        mappings = shared.mappings.map { row ->
+            OAuthProviderModelMappingResponse(
+                upstreamModel = row.mapping.upstreamModel,
+                canonicalModelId = row.mapping.canonicalModelId,
+                publicModelId = row.mapping.publicModelId,
+                automaticCanonicalModelId = row.automaticCanonicalModelId,
+                mode = row.mode,
+                mappingSource = row.mapping.mappingSource,
+                catalogActive = row.mapping.catalogActive,
+            )
+        },
+    ),
+)
+
 private val OAUTH_PROVIDER_LABELS = mapOf(
     OAuthProvider.CHATGPT to "ChatGPT",
     OAuthProvider.ANTIGRAVITY to "Antigravity",
@@ -3180,21 +3310,23 @@ private fun persistedIqTestJob(jobId: String, spec: IqTestJobSpec) = NewIqTestJo
 )
 
 private suspend fun runIqTest(app: GatewayApplication, spec: IqTestJobSpec): IqTestRunResponse {
-    val result = testChannelModelConnectivity(
-        channel = spec.channel,
-        credentialRef = spec.credential,
-        model = spec.model,
-        protocol = spec.protocol,
-        prompt = spec.prompt,
-        credentials = app.oauthTokenService,
-        httpClient = app.httpClient,
-        timeoutMs = spec.timeoutMs,
-        maxOutputTokens = spec.benchmark.maxOutputTokens,
-        maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
-        globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
-        headerProfiles = app.upstreamHeaderCatalogService.profiles(),
-        isolatedIqRequest = spec.benchmark == IqBenchmark.CANDY,
-    )
+    val result = withUpstreamClient(app, channelEgressProxy(app, spec.channel, spec.credential)) { egressClient ->
+        testChannelModelConnectivity(
+            channel = spec.channel,
+            credentialRef = spec.credential,
+            model = spec.model,
+            protocol = spec.protocol,
+            prompt = spec.prompt,
+            credentials = app.oauthTokenService,
+            httpClient = egressClient,
+            timeoutMs = spec.timeoutMs,
+            maxOutputTokens = spec.benchmark.maxOutputTokens,
+            maxResponseChars = IQ_TEST_MAX_RESPONSE_CHARS,
+            globalOverrides = app.upstreamRequestSettingsRepository.load().overrides,
+            headerProfiles = app.upstreamHeaderCatalogService.profiles(),
+            isolatedIqRequest = spec.benchmark == IqBenchmark.CANDY,
+        )
+    }
     val html = if (spec.benchmark == IqBenchmark.PELICAN) extractHtmlDocument(result.responseText) else null
     val structure = if (spec.benchmark == IqBenchmark.PELICAN) {
         analyzePelicanStructure(result.responseText)

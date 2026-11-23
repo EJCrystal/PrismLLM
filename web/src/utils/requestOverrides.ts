@@ -1,4 +1,4 @@
-import type { JsonObject, JsonValue, ProtocolId, UpstreamProtocolOverrides, UpstreamRequestOverrides } from '../types/api'
+import type { JsonObject, ProtocolId, UpstreamProtocolOverrides, UpstreamRequestOverrides } from '../types/api'
 
 export const REQUEST_OVERRIDE_SCOPES = [
   { id: 'common', label: '通用配置（所有协议）', errorLabel: '通用配置' },
@@ -9,6 +9,9 @@ export const REQUEST_OVERRIDE_SCOPES = [
 ]
 
 const PROFILES = new Set(['auto', 'none', 'claude', 'codex', 'google', 'antigravity'])
+const RESERVED_EXTRA_BODY_FIELDS = new Set([
+  'model', 'stream', 'messages', 'input', 'contents', 'system', 'systemInstruction', 'system_instruction', 'instructions', 'tools',
+])
 const MANAGED_HEADERS = new Set([
   'authorization', 'proxy-authorization', 'x-api-key', 'x-goog-api-key', 'cookie', 'set-cookie',
   'host', 'content-length', 'content-type', 'content-encoding', 'transfer-encoding', 'connection', 'te', 'trailer',
@@ -20,6 +23,7 @@ export interface RequestOverrideDraft {
   userAgent: string | null
   headers: Record<string, string | null>
   body: JsonObject
+  extraBody: JsonObject
 }
 
 export interface RequestOverrideEditorDraft {
@@ -27,6 +31,7 @@ export interface RequestOverrideEditorDraft {
   userAgent: string
   headersText: string
   bodyText: string
+  extraBodyText: string
   omitUserAgent: boolean
 }
 
@@ -50,12 +55,13 @@ function normalizeLayer(value: unknown = {}): RequestOverrideDraft {
     userAgent: (value as Partial<RequestOverrideDraft>).userAgent ?? null,
     headers: { ...((value as Partial<RequestOverrideDraft>).headers ?? {}) },
     body: { ...((value as Partial<RequestOverrideDraft>).body ?? {}) },
+    extraBody: { ...((value as Partial<RequestOverrideDraft>).extraBody ?? {}) },
   }
 }
 
 function hasOverrides(layer: RequestOverrideDraft): boolean {
   return layer.headerProfile != null || layer.userAgent != null ||
-    Object.keys(layer.headers).length > 0 || Object.keys(layer.body).length > 0
+    Object.keys(layer.headers).length > 0 || Object.keys(layer.body).length > 0 || Object.keys(layer.extraBody).length > 0
 }
 
 export function normalizeRequestOverrides(value: unknown = {}): UpstreamRequestOverrides {
@@ -80,6 +86,7 @@ export function createRequestOverrideDrafts(value: unknown = {}): RequestOverrid
       userAgent: layer.userAgent ?? '',
       headersText: JSON.stringify(layer.headers, null, 2),
       bodyText: JSON.stringify(layer.body, null, 2),
+      extraBodyText: JSON.stringify(layer.extraBody, null, 2),
       omitUserAgent: layer.userAgent === '',
     }]
   }))
@@ -126,6 +133,15 @@ function validateLayer(layer: RequestOverrideDraft, label: string): void {
     throw new Error(`${label}请求体覆盖不能修改 model 或 stream`)
   }
   if (jsonDepth(layer.body) > 32) throw new Error(`${label}请求体覆盖嵌套不能超过 32 层`)
+  const extraBodyFields = new Set<string>()
+  for (const name of Object.keys(layer.extraBody)) {
+    const target = name.trim().replace(/^!/, '').trim()
+    if (!target) throw new Error(`${label}请求体补充（extraBody）字段名不能为空`)
+    if (extraBodyFields.has(target)) throw new Error(`${label}请求体补充（extraBody）字段名规范化后不能重复：${target}`)
+    extraBodyFields.add(target)
+    if (RESERVED_EXTRA_BODY_FIELDS.has(target)) throw new Error(`${label}请求体补充（extraBody）不能修改保留字段 ${target}`)
+  }
+  if (jsonDepth(layer.extraBody) > 32) throw new Error(`${label}请求体补充（extraBody）嵌套不能超过 32 层`)
 }
 
 export function buildRequestOverrides(
@@ -141,6 +157,7 @@ export function buildRequestOverrides(
       userAgent: draft.omitUserAgent ? '' : (draft.userAgent.trim() || null),
       headers: parseObject(draft.headersText, `${validationLabel}请求头`) as Record<string, string | null>,
       body: parseObject(draft.bodyText, `${validationLabel}请求体`) as JsonObject,
+      extraBody: parseObject(draft.extraBodyText, `${validationLabel}请求体补充（extraBody）`) as JsonObject,
     }
     validateLayer(layer, validationLabel)
     layers[id] = layer

@@ -402,6 +402,50 @@ class ProxyAttemptLoggingIntegrationTest {
     }
 
     @Test
+    fun `http 200 empty stream still counts as transport failure and records rate-limit usage`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "transport_disable",
+                        name = "传输故障禁用",
+                        statusCodes = emptyList(),
+                        includeTransportFailures = true,
+                        threshold = 1,
+                        action = KeyDisableAction.TEMPORARY,
+                        disableMinutes = 10,
+                    ),
+                ),
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            val transportModel = "transport-after-200"
+            createChannel(transportModel, "${fake.baseUrl}/responses-empty-stream/v1", protocol = GatewayProtocol.RESPONSES)
+            val channel = app.channelRepository.list().single { it.name == "1-$transportModel" }
+            val reqId = UUID.randomUUID().toString()
+
+            val emptyResp = client.sendProtocolStreamRequest(transportModel, GatewayProtocol.RESPONSES, reqId)
+            assertEquals(HttpStatusCode.BadGateway, emptyResp.status)
+            assertEquals(
+                ChannelKeyState.AUTO_TEMPORARY,
+                app.channelRepository.find(channel.id)!!.keys.single().state,
+                "收到 200 响应头后发生空流仍应走 TransportFailure 分支触发传输规则",
+            )
+
+            // 限流失败事件携带 usage 时应在抛异常前计入请求日志。
+            val usageModel = "responses-rate-limit-usage"
+            createChannel(usageModel, "${fake.baseUrl}/responses-custom-failed-with-usage/v1", protocol = GatewayProtocol.RESPONSES)
+            val usageReqId = UUID.randomUUID().toString()
+            val usageResp = client.sendProtocolStreamRequest(usageModel, GatewayProtocol.RESPONSES, usageReqId)
+            assertEquals(HttpStatusCode.TooManyRequests, usageResp.status)
+            val usageLog = awaitRequestLog(usageReqId)
+            assertEquals(7L, usageLog.inputTokens)
+            assertEquals(2L, usageLog.outputTokens)
+        }
+    }
+
+    @Test
     fun `stream errors retain HTTP and error status when retrying successfully`() = runBlocking {
         testApplication {
             application { app.install(this) }

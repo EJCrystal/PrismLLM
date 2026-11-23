@@ -57,6 +57,7 @@ import dev.soven.prismllm.oauth.infra.OAuthWindowStateWriter
 import dev.soven.prismllm.oauth.buildOAuthTokenProviders
 import dev.soven.prismllm.channel.persistence.ModelTestSettingsRepository
 import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
+import dev.soven.prismllm.admin.persistence.SystemPromptSettingsRepository
 import dev.soven.prismllm.admin.persistence.NotificationRepository
 import dev.soven.prismllm.channel.persistence.KeyStateObserver
 import dev.soven.prismllm.notification.NotificationCredentials
@@ -71,6 +72,7 @@ import dev.soven.prismllm.channel.persistence.UpstreamHeaderCatalogRepository
 import dev.soven.prismllm.channel.persistence.KeyAutoDisableRepository
 import dev.soven.prismllm.channel.persistence.KeyStateAudit
 import dev.soven.prismllm.channel.persistence.ChannelKeyStateChangedException
+import dev.soven.prismllm.channel.domain.ChannelEgressConfigurationException
 import dev.soven.prismllm.requestlog.infra.LogRetentionService
 import dev.soven.prismllm.quota.infra.ClientKeyQuotaService
 import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimiter
@@ -355,6 +357,7 @@ class GatewayApplication(
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
+    val systemPromptSettingsRepository = SystemPromptSettingsRepository(databaseFactory.database)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
 
@@ -496,7 +499,9 @@ class GatewayApplication(
 
     init {
         databaseFactory.beforeMigration("74") {
-            runBlocking { providerChannelProvisioner.reconcileBeforeModelCredentialRouteMigration() }
+            val migrationChannels = ChannelRepository(databaseFactory.database, credentialCipher, includeEgressConfiguration = false)
+            val migrationProvisioner = ProviderChannelProvisioner(migrationChannels, oauthAccountRepository)
+            runBlocking { migrationProvisioner.reconcileBeforeModelCredentialRouteMigration() }
         }
     }
 
@@ -616,6 +621,10 @@ class GatewayApplication(
             json(gatewayJson)
         }
         app.install(StatusPages) {
+            exception<ChannelEgressConfigurationException> { call, cause ->
+                call.markAdminAuditError("invalid_channel_proxy")
+                call.respondGatewayError(HttpStatusCode.BadRequest, "invalid_channel_proxy", cause.message ?: "渠道出口代理配置无效", "invalid_request_error")
+            }
             exception<ChannelKeyStateChangedException> { call, cause ->
                 call.markAdminAuditError("channel_key_state_changed")
                 call.respondGatewayError(

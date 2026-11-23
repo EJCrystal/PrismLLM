@@ -155,6 +155,7 @@ export interface ChannelKeyRateLimit {
 export interface ChannelKey {
   id: string
   name: string
+  egressProxyId?: string | null
   quota?: ChannelQuotaSettings | null
   state: ChannelKeyState
   priority: number
@@ -184,11 +185,26 @@ export interface UpstreamProtocolOverrides {
   userAgent: string | null
   headers: Record<string, string | null>
   body: JsonObject
+  extraBody: JsonObject
 }
 
 export interface UpstreamRequestOverrides extends UpstreamProtocolOverrides {
   inheritGlobal: boolean
   protocols: Partial<Record<ProtocolId, UpstreamProtocolOverrides>>
+}
+
+export interface ChannelEgressProxy {
+  id: string
+  name: string
+  url: string
+  username?: string | null
+  passwordSet?: boolean
+}
+
+export interface ChannelEgressProxyRequest extends Pick<ChannelEgressProxy, 'id' | 'name' | 'url'> {
+  username?: string | null
+  password?: string | null
+  clearAuthentication?: boolean
 }
 
 export interface Channel {
@@ -206,6 +222,7 @@ export interface Channel {
   modelMappings: ChannelModelMapping[]
   priority: number
   keys: ChannelKey[]
+  egressProxies?: ChannelEgressProxy[]
   /** 渠道下订阅账号摘要，仅展示字段；访问范围树用它渲染 OAuth 行。 */
   oauthAccounts?: ChannelOAuthAccount[]
   requestOverrides: UpstreamRequestOverrides
@@ -286,6 +303,8 @@ export interface ChannelKeyRequest {
   models?: string[]
   rateLimit?: ChannelKeyRateLimitRequest | null
   stateVersion?: number
+  egressProxyId?: string | null
+  clearEgressProxy?: boolean
 }
 
 export interface ChannelModelMappingRequest {
@@ -308,6 +327,7 @@ export interface ChannelRequest {
   keys?: ChannelKeyRequest[]
   requestOverrides?: UpstreamRequestOverrides
   quota?: ChannelQuotaSettingsRequest
+  egressProxies?: ChannelEgressProxyRequest[]
 }
 
 export type KeyRuleMatchLogic = 'AND' | 'OR'
@@ -397,6 +417,29 @@ export interface UpstreamRequestSettings {
   updatedAt: number
   headerCatalog: UpstreamHeaderCatalog
 }
+
+export type SystemPromptScope = 'global' | 'protocols' | 'channels' | 'channel_protocols'
+export type SystemPromptAction = 'replace' | 'preserve'
+
+export interface SystemPromptRule {
+  id: string
+  name: string
+  enabled: boolean
+  scope: SystemPromptScope
+  protocols: ProtocolId[]
+  channelIds: string[]
+  priority: number
+  action: SystemPromptAction
+  prompt: string
+}
+
+export interface SystemPromptSettings {
+  enabled: boolean
+  rules: SystemPromptRule[]
+  updatedAt: number
+}
+
+export type SystemPromptSettingsRequest = Omit<SystemPromptSettings, 'updatedAt'>
 
 export interface ClientKeyQuotaUsage {
   dailyTokens: number
@@ -728,6 +771,8 @@ export interface ModelDiscoveryRequest {
   protocolAuthTypes?: Record<string, string> | null
   protocols?: string[]
   requestOverrides?: UpstreamRequestOverrides
+  egressProxy?: ChannelEgressProxyRequest | null
+  clearEgressProxy?: boolean
 }
 
 export interface ModelSuggestion {

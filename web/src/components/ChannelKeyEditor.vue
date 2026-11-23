@@ -7,10 +7,12 @@ import { channelKeyRateLimitSummary } from '../utils/channelKeyRateLimit'
 import { formatTime } from '../utils/format'
 import { keyStateBadge, keyStateTone } from '../utils/channelKey'
 import type { ChannelKeyEditorDraft, KeyModelOption } from '../types/channelEditor'
+import type { ChannelEgressProxy } from '../types/api'
 
 const props = defineProps<{
   channelKey: ChannelKeyEditorDraft
   concurrent: number
+  egressProxies?: ChannelEgressProxy[]
 }>()
 
 const emit = defineEmits<{
@@ -133,6 +135,15 @@ function addManualModels(): void {
         autocomplete="new-password"
       />
       <small v-if="channelKey.id">已保存的凭据不会回显；留空表示保持不变。</small>
+    </label>
+
+    <label class="field">
+      <span>出口代理</span>
+      <select v-model="channelKey.egressProxyId">
+        <option :value="null">不绑定（沿用网关原出口）</option>
+        <option v-for="proxy in egressProxies || []" :key="proxy.id" :value="proxy.id">{{ proxy.name || '未命名代理' }}</option>
+      </select>
+      <small>每个密钥最多绑定一个当前渠道的出口代理，同一代理可被多个密钥共用。</small>
     </label>
 
     <div class="channel-key-rate-limit-row">
