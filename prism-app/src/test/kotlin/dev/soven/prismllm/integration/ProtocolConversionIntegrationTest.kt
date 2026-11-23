@@ -1312,6 +1312,7 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
         // Gemini 上游先发 thought:true 分片（转换器静默跳过），1.6s 后才发正文；
         // 有了 : connected + 周期 : keepalive，即便 Netty 启用短写超时也不会断连。
         val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val answerSentAtNanos = java.util.concurrent.atomic.AtomicLong(0L)
         upstream.createContext("/") { exchange ->
             exchange.responseHeaders.add("Content-Type", "text/event-stream; charset=utf-8")
             exchange.sendResponseHeaders(200, 0)
@@ -1320,6 +1321,7 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
                 out.write((thought + "\n\n").toByteArray())
                 out.flush()
                 Thread.sleep(1_600)
+                answerSentAtNanos.set(System.nanoTime())
                 val answer = """data: {"responseId":"resp_think","candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":100,"totalTokenCount":112}}"""
                 out.write((answer + "\n\n").toByteArray())
                 out.flush()
@@ -1359,13 +1361,20 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             }.execute { response ->
                 assertEquals(HttpStatusCode.OK, response.status)
                 val body = response.bodyAsChannel()
-                val lines = mutableListOf<String>()
+                val timedLines = mutableListOf<Pair<String, Long>>()
                 while (true) {
                     val line = body.readUTF8Line() ?: break
-                    lines += line
+                    timedLines += line to System.nanoTime()
                 }
+                val lines = timedLines.map { it.first }
+                val answerSentAt = answerSentAtNanos.get()
+                assertTrue(answerSentAt > 0L, "upstream answer timestamp was not recorded")
                 assertEquals(": connected", lines.first(), "LINES=${lines.joinToString("\n")}")
-                assertTrue(lines.any { it == ": keepalive" }, "expected keepalive comment, LINES=${lines.joinToString("\n")}")
+                val connectedAt = timedLines.first().second
+                val firstKeepaliveAt = timedLines.firstOrNull { it.first == ": keepalive" }?.second
+                assertTrue(connectedAt < answerSentAt, "expected : connected before upstream answer")
+                assertNotNull(firstKeepaliveAt, "expected keepalive comment, LINES=${lines.joinToString("\n")}")
+                assertTrue(firstKeepaliveAt < answerSentAt, "expected : keepalive before upstream answer")
                 assertTrue(lines.any { it.contains(""""text":"OK"""") }, "expected final text delta, LINES=${lines.joinToString("\n")}")
                 assertTrue(lines.any { it == "event: message_stop" }, "expected message_stop, LINES=${lines.joinToString("\n")}")
             }

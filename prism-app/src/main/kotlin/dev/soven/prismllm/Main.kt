@@ -28,9 +28,9 @@ fun main() {
         // TLS/HTTP2 由入口反向代理处理；下游末帧跟踪覆盖此处的 HTTP/1 管道。
         enableHttp2 = false
         enableH2c = false
-        // SSE 长连接在上游慢思考或空闲期可能超过 10s 才写出下一批事件；
-        // 由流式保活和 idleTimeoutMs 兜底，避免 Netty 默认 10s 写超时误杀未 flush 的响应头。
-        responseWriteTimeoutSeconds = 0
+        // 保留独立的下游写停滞超时（30s），避免半开连接或停止读取的慢客户端无限占住 drain lease；
+        // SSE 首帧已由 proxyStream 立即写出 : connected 刷新响应头，静默期每 10s 发送 : keepalive。
+        responseWriteTimeoutSeconds = 30
     }) {
         app.install(this)
     }
