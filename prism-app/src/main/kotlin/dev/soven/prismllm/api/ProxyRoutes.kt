@@ -119,8 +119,14 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
@@ -141,6 +147,7 @@ import org.slf4j.LoggerFactory
 private val proxyLogger = LoggerFactory.getLogger("dev.soven.prismllm.api.ProxyRoutes")
 private val USER_AGENT_WHITESPACE = Regex("[\\r\\n\\t]+")
 private val UPSTREAM_CONVERSATION = AttributeKey<UpstreamConversation>("UpstreamConversation")
+internal var sseKeepaliveIntervalMs: Long = 10_000L
 
 /**
  * 原生协议数据面。负责调用方鉴权、别名路由、流式透传和请求日志。
@@ -1614,73 +1621,105 @@ private suspend fun proxyStream(
                     try {
                         call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
                             try {
-                                var sawDone = false
-                                var streamFailure: GatewayError? = null
-                                var lastDataLine: String? = null
-                                for (line in prefixLines) {
-                                    if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
-                                    converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
-                                    if (converter?.failed == true) {
-                                        lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
-                                        if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
-                                        break
-                                    }
-                                    markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
-                                    recordUsage(line, state, upstreamProtocol)
-                                    if (isStreamDone(line, upstreamProtocol)) {
-                                        markTerminalStreamFailure(line, upstreamProtocol, state)
-                                        writeSseLine("")
-                                        sawDone = true
-                                        if (upstreamProtocol != GatewayProtocol.GEMINI) break
+                                val writeLock = Mutex()
+                                var lastWriteNanos = System.nanoTime()
+                                suspend fun emitLine(line: String) {
+                                    writeLock.withLock {
+                                        writeSseLine(line)
+                                        lastWriteNanos = System.nanoTime()
                                     }
                                 }
-                                if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
-                                    while (true) {
-                                        val line = try {
-                                            withTimeout(app.config.idleTimeoutMs) {
-                                                readProtocolLine(upstream, maxLineBytes, envelope)
+                                coroutineScope {
+                                    // 流提交后立刻写出一条 SSE 注释强制 flush 响应头，避免转换器过滤思考块期间
+                                    // 长时间零字节输出触发 Netty 写超时或中间代理首包超时。
+                                    emitLine(": connected")
+                                    val keepaliveIntervalMs = sseKeepaliveIntervalMs
+                                    val keepaliveJob = launch {
+                                        while (isActive) {
+                                            delay(keepaliveIntervalMs)
+                                            val idleNs = System.nanoTime() - lastWriteNanos
+                                            if (idleNs >= keepaliveIntervalMs * 1_000_000L) {
+                                                writeLock.withLock {
+                                                    if (System.nanoTime() - lastWriteNanos >= keepaliveIntervalMs * 1_000_000L) {
+                                                        writeSseLine(": keepalive")
+                                                        lastWriteNanos = System.nanoTime()
+                                                    }
+                                                }
                                             }
-                                        } catch (e: TimeoutCancellationException) {
-                                            throw GatewayError(
-                                                HttpStatusCode.GatewayTimeout,
-                                                "upstream_timeout",
-                                                "上游流式响应空闲超时",
-                                                "timeout_error",
-                                            )
-                                        } catch (e: GatewayError) {
-                                            if (e.code != "upstream_event_too_large") throw e
-                                            streamFailure = e
-                                            converter?.fail(e.message)?.forEach { writeSseLine(it) }
-                                            break
-                                        } ?: break
-                                        recordReportedModel(line, state, upstreamProtocol)
-                                        if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
-                                        converter?.feed(line)?.forEach { writeSseLine(it) } ?: writeSseLine(line)
-                                        if (converter?.failed == true) {
+                                        }
+                                    }
+                                    try {
+                                        var sawDone = false
+                                        var streamFailure: GatewayError? = null
+                                        var lastDataLine: String? = null
+                                        for (line in prefixLines) {
+                                            if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
+                                            converter?.feed(line)?.forEach { emitLine(it) } ?: emitLine(line)
+                                            if (converter?.failed == true) {
+                                                lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                                if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                                                break
+                                            }
+                                            markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
+                                            recordUsage(line, state, upstreamProtocol)
+                                            if (isStreamDone(line, upstreamProtocol)) {
+                                                markTerminalStreamFailure(line, upstreamProtocol, state)
+                                                emitLine("")
+                                                sawDone = true
+                                                if (upstreamProtocol != GatewayProtocol.GEMINI) break
+                                            }
+                                        }
+                                        if (converter?.failed != true && (!sawDone || upstreamProtocol == GatewayProtocol.GEMINI)) {
+                                            while (true) {
+                                                val line = try {
+                                                    withTimeout(app.config.idleTimeoutMs) {
+                                                        readProtocolLine(upstream, maxLineBytes, envelope)
+                                                    }
+                                                } catch (e: TimeoutCancellationException) {
+                                                    throw GatewayError(
+                                                        HttpStatusCode.GatewayTimeout,
+                                                        "upstream_timeout",
+                                                        "上游流式响应空闲超时",
+                                                        "timeout_error",
+                                                    )
+                                                } catch (e: GatewayError) {
+                                                    if (e.code != "upstream_event_too_large") throw e
+                                                    streamFailure = e
+                                                    converter?.fail(e.message)?.forEach { emitLine(it) }
+                                                    break
+                                                } ?: break
+                                                recordReportedModel(line, state, upstreamProtocol)
+                                                if (converter != null && line.trim().startsWith("data:")) lastDataLine = line
+                                                converter?.feed(line)?.forEach { emitLine(it) } ?: emitLine(line)
+                                                if (converter?.failed == true) {
+                                                    lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
+                                                    if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
+                                                    break
+                                                }
+                                                markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
+                                                recordUsage(line, state, upstreamProtocol)
+                                                if (isStreamDone(line, upstreamProtocol)) {
+                                                    markTerminalStreamFailure(line, upstreamProtocol, state)
+                                                    emitLine("")
+                                                    sawDone = true
+                                                    if (upstreamProtocol != GatewayProtocol.GEMINI) break
+                                                }
+                                            }
+                                        }
+                                        converter?.finish()?.forEach { emitLine(it) }
+                                        if (converter?.failed == true && state.errorCode == null) {
                                             lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
                                             if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
-                                            break
                                         }
-                                        markFirstToken(line, upstreamProtocol, state, startedAt, attemptStartedNanos, app, alias, candidate, permit)
-                                        recordUsage(line, state, upstreamProtocol)
-                                        if (isStreamDone(line, upstreamProtocol)) {
-                                            markTerminalStreamFailure(line, upstreamProtocol, state)
-                                            writeSseLine("")
-                                            sawDone = true
-                                            if (upstreamProtocol != GatewayProtocol.GEMINI) break
+                                        if (streamFailure != null) {
+                                            completion.completeExceptionally(streamFailure)
+                                        } else {
+                                            if (!sawDone && state.errorCode == null) state.errorCode = "stream_interrupted"
+                                            completion.complete(Unit)
                                         }
+                                    } finally {
+                                        keepaliveJob.cancel()
                                     }
-                                }
-                                converter?.finish()?.forEach { writeSseLine(it) }
-                                if (converter?.failed == true && state.errorCode == null) {
-                                    lastDataLine?.let { markTerminalStreamFailure(it, upstreamProtocol, state) }
-                                    if (state.errorCode == null) state.errorCode = "protocol_conversion_failed"
-                                }
-                                if (streamFailure != null) {
-                                    completion.completeExceptionally(streamFailure)
-                                } else {
-                                    if (!sawDone && state.errorCode == null) state.errorCode = "stream_interrupted"
-                                    completion.complete(Unit)
                                 }
                             } catch (e: Throwable) {
                                 completion.completeExceptionally(e)
