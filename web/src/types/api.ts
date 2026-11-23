@@ -310,16 +310,24 @@ export interface ChannelRequest {
   quota?: ChannelQuotaSettingsRequest
 }
 
+export type KeyRuleMatchLogic = 'AND' | 'OR'
+
+export type KeyRuleRequestAction = 'DEFAULT' | 'FAILOVER' | 'FAIL_FAST'
+
+export type KeyDisableAction = 'NONE' | 'TEMPORARY' | 'PERMANENT'
+
 export interface KeyDisableRule {
   id: string
   name: string
   statusCodes: number[]
   statusCodeAtLeast: number | null
   bodyPatterns: string[]
+  matchLogic: KeyRuleMatchLogic
+  requestAction: KeyRuleRequestAction
   threshold: number
   windowMinutes: number
   streak: boolean
-  action: 'TEMPORARY' | 'PERMANENT'
+  action: KeyDisableAction
   disableMinutes: number | null
   includeTransportFailures: boolean
 }

@@ -71,6 +71,8 @@ import dev.soven.prismllm.channel.domain.key.ChannelKeyState
 import dev.soven.prismllm.resilience.CooldownPermit
 import dev.soven.prismllm.resilience.FailureKind
 import dev.soven.prismllm.channel.domain.key.KeyAttemptSignal
+import dev.soven.prismllm.channel.domain.key.KeyDisablePolicy
+import dev.soven.prismllm.channel.domain.key.KeyRuleRequestAction
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.java.Java
@@ -583,9 +585,21 @@ private suspend fun handleProxyRequest(
                     app.oauthAccountScheduler.recordSuccess(candidate.credential.id)
                     recordKeyOutcome(app, candidate, KeyAttemptSignal.Success, requestId, resources.probeLease)
                 } else {
-                    // 首 token 之后才出现的流异常不算凭据失效，只进入渠道冷却。
+                    // 首 token 之后才出现的流异常不算凭据失效，只进入渠道冷却；
+                    // 若未在提交前记账（如 200 流内错误不重试并原样透传给调用方），仍需按规则记一次密钥结果。
                     resources.recordCooldown { app.candidateCooldown.recordFailure(it, FailureKind.TRANSPORT) }
                         ?.let { app.metrics.upstreamCooldownStarted(candidate.channel.name, it.reason) }
+                    val terminalSignal = state.streamError?.toKeyAttemptSignal(state.upstreamStatus)
+                        ?: state.upstreamErrorBody?.let {
+                            KeyAttemptSignal.UpstreamResponse(
+                                statusCode = state.upstreamStatus ?: HttpStatusCode.OK.value,
+                                errorBody = it,
+                                upstreamCode = state.errorCode,
+                            )
+                        }
+                    if (terminalSignal != null) {
+                        recordKeyOutcome(app, candidate, terminalSignal, requestId, resources.probeLease)
+                    }
                 }
                 null
             } catch (_: CandidateUnavailableException) {
@@ -643,7 +657,7 @@ private suspend fun handleProxyRequest(
                     e,
                     failureCommitted,
                 )
-                val signal = e.toKeyAttemptSignal()
+                val signal = e.toKeyAttemptSignal(state.upstreamStatus)
                 if (signal != null) {
                     recordKeyOutcome(app, candidate, signal, requestId, resources.probeLease)
                 }
@@ -994,13 +1008,53 @@ private suspend fun recordKeyOutcome(
     }
 }
 
-/** 把上游异常映射成规则引擎信号；请求侧错误（400/404/422）交给规则自行决定是否计数。 */
-private fun GatewayError.toKeyAttemptSignal(): KeyAttemptSignal? {
-    val upstreamStatus = upstreamStatus
+private suspend fun applyRequestRuleAction(
+    app: GatewayApplication,
+    candidate: RouteCandidate,
+    error: GatewayError,
+    state: ProxyState,
+): GatewayError {
+    if (state.committed) return error
+    val signal = error.toKeyAttemptSignal(state.upstreamStatus) ?: return error
+    val policy = try {
+        app.keyAutoDisableRepository.loadEffectivePolicy(candidate.channel.id)
+    } catch (cause: CancellationException) {
+        throw cause
+    } catch (_: Exception) {
+        return error
+    }
+    val matched = policy.matchFirst(signal)?.first ?: return error
+    return when (matched.requestAction) {
+        KeyRuleRequestAction.DEFAULT -> error
+        KeyRuleRequestAction.FAILOVER -> error.withRetryable(true)
+        KeyRuleRequestAction.FAIL_FAST -> error.withRetryable(false)
+    }
+}
+
+private fun GatewayError.withRetryable(retryable: Boolean): GatewayError {
+    if (this.retryable == retryable) return this
+    return GatewayError(
+        status = status,
+        code = code,
+        message = message,
+        type = type,
+        upstreamCode = upstreamCode,
+        retryable = retryable,
+        retryAfterMs = retryAfterMs.takeIf { retryable },
+        upstreamStatus = upstreamStatus,
+        nativeResponseBody = nativeResponseBody,
+        upstreamErrorBody = upstreamErrorBody,
+        shapeRefused = shapeRefused,
+    )
+}
+
+/** 把上游异常映射成规则引擎信号；流内提交前错误以实际收到的 HTTP 状态码（如 200）参与规则匹配。 */
+private fun GatewayError.toKeyAttemptSignal(actualHttpStatus: Int? = null): KeyAttemptSignal? {
+    val statusForRule = actualHttpStatus ?: upstreamStatus
     return when {
         code == "client_disconnect" -> null
-        upstreamStatus != null -> KeyAttemptSignal.UpstreamResponse(
-            statusCode = upstreamStatus,
+        statusForRule != null -> KeyAttemptSignal.UpstreamResponse(
+            statusCode = statusForRule,
             errorBody = upstreamErrorBody.orEmpty(),
             upstreamCode = upstreamCode,
         )
@@ -1029,6 +1083,7 @@ private fun classifyFailure(e: GatewayError): FailureKind? = when (e.code) {
             404 -> FailureKind.MODEL_NOT_FOUND
             null -> null
             // 形状拒绝只说明该上游读不懂请求，换候选即可，当前渠道不应因此冷却。
+            // 其余情况（含 200 流内错误被规则设为 retryable 时）按瞬时故障冷却，避免反复打到同一坏渠道。
             else -> if (upstreamStatus >= 500 || (e.retryable && !e.shapeRefused)) FailureKind.SERVER_ERROR else null
         }
     }
@@ -1377,13 +1432,14 @@ private suspend fun searchChatCaller(
         }
         val text = readSearchResponseBody(response)
         if (!response.status.isSuccess()) {
-            throw upstreamException(
+            val rawError = upstreamException(
                 response.status,
                 text,
                 retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                 upstreamProtocol,
                 allowNativeMessagesError = false,
             )
+            throw applyRequestRuleAction(app, candidate, rawError, state)
         }
         val json = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
             ?: throw GatewayError(
@@ -1530,7 +1586,7 @@ private suspend fun proxyStream(
                 }
                 if (!response.status.isSuccess()) {
                     val errorText = response.bodyAsText()
-                    throw upstreamException(
+                    val rawError = upstreamException(
                         response.status,
                         // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
                         if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(errorText) else errorText,
@@ -1538,6 +1594,7 @@ private suspend fun proxyStream(
                         upstreamProtocol,
                         allowNativeMessagesError = protocol == upstreamProtocol,
                     )
+                    throw applyRequestRuleAction(app, candidate, rawError, state)
                 }
                 val upstream = response.bodyAsChannel()
                 val maxLineBytes = if (converter != null) MAX_PROTOCOL_EVENT_BYTES + 6 else Int.MAX_VALUE
@@ -1550,24 +1607,32 @@ private suspend fun proxyStream(
                             prefixLines.add(next)
                             recordReportedModel(next, state, upstreamProtocol)
                             if (upstreamProtocol == GatewayProtocol.RESPONSES) {
-                                responsesStreamRateLimitException(
+                                responsesStreamPreCommitException(
                                     next,
                                     retryAfterMillis(response.headers[HttpHeaders.RetryAfter]),
                                 )?.let { error ->
-                                    state.streamError = error
-                                    upstream.cancel(error)
-                                    throw error
+                                    val resolvedError = applyRequestRuleAction(app, candidate, error, state)
+                                    state.streamError = resolvedError
+                                    val shouldAbortAndThrow = if (allowUpstreamErrorFailover) {
+                                        resolvedError.retryable || resolvedError.upstreamStatus == 429
+                                    } else {
+                                        resolvedError.upstreamStatus == 429 && resolvedError.retryable
+                                    }
+                                    if (shouldAbortAndThrow) {
+                                        upstream.cancel(resolvedError)
+                                        throw resolvedError
+                                    }
                                 }
                             }
                             if (
-                                allowUpstreamErrorFailover &&
                                 ((upstreamProtocol == GatewayProtocol.MESSAGES && isAnthropicStreamError(next)) ||
                                     (upstreamProtocol == GatewayProtocol.GEMINI && isGeminiStreamError(next)))
                             ) {
-                                val error = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
+                                val rawError = if (upstreamProtocol == GatewayProtocol.GEMINI) geminiStreamException(next)
                                     else anthropicStreamException(next)
+                                val error = applyRequestRuleAction(app, candidate, rawError, state)
                                 state.streamError = error
-                                if (error.retryable) {
+                                if (allowUpstreamErrorFailover && error.retryable) {
                                     upstream.cancel(error)
                                     throw error
                                 }
@@ -1836,7 +1901,7 @@ private suspend fun proxyJson(
             }
             val text = response.bodyAsText()
             if (!response.status.isSuccess()) {
-                throw upstreamException(
+                val rawError = upstreamException(
                     response.status,
                     // Code Assist 的错误同样是 {"error": ...} 信封，解包后才能按 Gemini 错误识别。
                     if (envelope == UpstreamEnvelope.CODE_ASSIST) CodeAssistEnvelope.errorBody(text) else text,
@@ -1844,6 +1909,7 @@ private suspend fun proxyJson(
                     upstreamProtocol,
                     allowNativeMessagesError = protocol == upstreamProtocol,
                 )
+                throw applyRequestRuleAction(app, candidate, rawError, state)
             }
             val rawJson = runCatching { Json.parseToJsonElement(text).jsonObject }.getOrNull()
             val json = if (envelope == UpstreamEnvelope.CODE_ASSIST && rawJson != null) {
@@ -2320,7 +2386,7 @@ private fun anthropicStreamException(line: String): GatewayError {
     return upstreamException(status, payload, retryAfterMs = null, protocol = GatewayProtocol.MESSAGES)
 }
 
-private fun responsesStreamRateLimitException(line: String, retryAfterMs: Long?): GatewayError? {
+private fun responsesStreamPreCommitException(line: String, retryAfterMs: Long?): GatewayError? {
     val payload = ssePayload(line) ?: return null
     val root = runCatching { Json.parseToJsonElement(payload) as? JsonObject }.getOrNull() ?: return null
     val eventType = (root["type"] as? JsonPrimitive)?.contentOrNull
@@ -2331,25 +2397,44 @@ private fun responsesStreamRateLimitException(line: String, retryAfterMs: Long?)
     } ?: return null
     val code = (error["code"] as? JsonPrimitive)?.contentOrNull
     val type = (error["type"] as? JsonPrimitive)?.contentOrNull
-    val rateLimitCode = sequenceOf(code, type)
+    val upstreamCode = code?.takeIf { it.isNotBlank() } ?: type?.takeIf { it.isNotBlank() }
+    val isRateLimit = sequenceOf(code, type)
         .filterNotNull()
-        .firstOrNull { it.lowercase() in RESPONSES_RATE_LIMIT_CODES }
-        ?: return null
+        .any { it.lowercase() in RESPONSES_RATE_LIMIT_CODES }
 
-    val retryAfter = retryAfterMs ?: parseRateLimitResetMs(error.toString())
+    val diagnosticBody = extractResponsesDiagnosticPayload(payload)
+    if (isRateLimit) {
+        val retryAfter = retryAfterMs ?: parseRateLimitResetMs(error.toString())
+        val message = sanitizeUpstreamErrorBody(
+            (error["message"] as? JsonPrimitive)?.contentOrNull,
+        ) ?: "上游限流"
+        return GatewayError(
+            status = HttpStatusCode.TooManyRequests,
+            code = "upstream_error",
+            message = message,
+            type = "api_error",
+            upstreamCode = upstreamCode,
+            retryable = true,
+            retryAfterMs = retryAfter,
+            upstreamStatus = HttpStatusCode.TooManyRequests.value,
+            upstreamErrorBody = diagnosticBody,
+        )
+    }
+
     val message = sanitizeUpstreamErrorBody(
         (error["message"] as? JsonPrimitive)?.contentOrNull,
-    ) ?: "上游限流"
+    ) ?: "上游返回错误"
     return GatewayError(
-        status = HttpStatusCode.TooManyRequests,
+        status = HttpStatusCode.BadGateway,
         code = "upstream_error",
         message = message,
         type = "api_error",
-        upstreamCode = rateLimitCode,
-        retryable = true,
-        retryAfterMs = retryAfter,
-        upstreamStatus = HttpStatusCode.TooManyRequests.value,
-        upstreamErrorBody = extractResponsesDiagnosticPayload(payload),
+        upstreamCode = upstreamCode,
+        retryable = false,
+        retryAfterMs = retryAfterMs,
+        upstreamStatus = HttpStatusCode.OK.value,
+        nativeResponseBody = payload,
+        upstreamErrorBody = diagnosticBody,
     )
 }
 

@@ -18,6 +18,8 @@ function customRule(overrides = {}) {
     statusCodes: [401, 403],
     statusCodeAtLeast: null,
     bodyPatterns: ['invalid_api_key'],
+    matchLogic: 'AND',
+    requestAction: 'DEFAULT',
     threshold: 2,
     windowMinutes: 5,
     streak: true,
@@ -70,6 +72,8 @@ describe('密钥自动禁用规则', () => {
       statusCodes: [],
       statusCodeAtLeast: 500,
       bodyPatterns: [],
+      matchLogic: 'AND',
+      requestAction: 'DEFAULT',
       threshold: 3,
       windowMinutes: 5,
       streak: false,
@@ -108,7 +112,7 @@ describe('密钥自动禁用规则', () => {
       customRule({ threshold: 0 }),
       customRule({ windowMinutes: 0 }),
       customRule({ statusCodes: [99] }),
-      customRule({ statusCodes: [], statusCodeAtLeast: null, includeTransportFailures: false }),
+      customRule({ statusCodes: [], statusCodeAtLeast: null, bodyPatterns: [], includeTransportFailures: false }),
       customRule({ action: 'PERMANENT' }),
       customRule({ action: 'TEMPORARY', disableMinutes: null }),
       customRule({ bodyPatterns: ['x'.repeat(201)] }),
@@ -165,5 +169,37 @@ describe('密钥自动禁用规则', () => {
     assert.deepEqual(normalizeKeyAutoDisableSettings({ enabled: false, rules: [] }), { enabled: false, rules: [] })
     assert.deepEqual(normalizeKeyAutoDisableSettings({ enabled: false }), { enabled: false, rules: [] })
     assert.throws(() => normalizeKeyAutoDisableSettings({ enabled: true, rules: [] }))
+  })
+
+  it('支持 OR 关系、纯错误文本条件以及仅重试不禁用（NONE）', () => {
+    const rule = customRule({
+      statusCodes: [],
+      bodyPatterns: ['rate_limit_exceeded'],
+      matchLogic: 'OR',
+      requestAction: 'FAILOVER',
+      action: 'NONE',
+      disableMinutes: null,
+    })
+    const payload = buildKeyAutoDisableSettingsPayload({ enabled: true, rules: [rule] })
+    assert.deepEqual(payload.rules, [rule])
+    const roundTripped = fromKeyDisableRuleDraft(toKeyDisableRuleDraft(rule))
+    assert.deepEqual(buildKeyAutoDisableSettingsPayload({ enabled: true, rules: [roundTripped] }).rules, [rule])
+
+    assert.throws(() => buildKeyAutoDisableSettingsPayload({
+      enabled: true,
+      rules: [customRule({ statusCodes: [], statusCodeAtLeast: null, bodyPatterns: [], includeTransportFailures: false })],
+    }))
+    assert.throws(() => buildKeyAutoDisableSettingsPayload({
+      enabled: true,
+      rules: [customRule({ action: 'NONE', disableMinutes: 10 })],
+    }))
+    assert.throws(() => buildKeyAutoDisableSettingsPayload({
+      enabled: true,
+      rules: [customRule({ matchLogic: 'XOR' })],
+    }))
+    assert.throws(() => buildKeyAutoDisableSettingsPayload({
+      enabled: true,
+      rules: [customRule({ requestAction: 'RETRY_SAME' })],
+    }))
   })
 })

@@ -19,6 +19,8 @@ class KeyDisableRulesTest {
         statusCodes: List<Int> = listOf(401),
         statusCodeAtLeast: Int? = null,
         bodyPatterns: List<String> = emptyList(),
+        matchLogic: KeyRuleMatchLogic = KeyRuleMatchLogic.AND,
+        requestAction: KeyRuleRequestAction = KeyRuleRequestAction.DEFAULT,
         threshold: Int = 2,
         windowMinutes: Int = 5,
         streak: Boolean = true,
@@ -31,6 +33,8 @@ class KeyDisableRulesTest {
         statusCodes = statusCodes,
         statusCodeAtLeast = statusCodeAtLeast,
         bodyPatterns = bodyPatterns,
+        matchLogic = matchLogic,
+        requestAction = requestAction,
         threshold = threshold,
         windowMinutes = windowMinutes,
         streak = streak,
@@ -519,7 +523,7 @@ class KeyDisableRulesTest {
         assertFailsWith<IllegalArgumentException> { rule(id = "Bad-Id") }
         assertFailsWith<IllegalArgumentException> { rule(threshold = 0) }
         assertFailsWith<IllegalArgumentException> { rule(windowMinutes = 0) }
-        assertFailsWith<IllegalArgumentException> { rule(statusCodes = emptyList()) }
+        assertFailsWith<IllegalArgumentException> { rule(statusCodes = emptyList(), bodyPatterns = emptyList()) }
         assertFailsWith<IllegalArgumentException> { rule(statusCodes = listOf(401, 401)) }
         assertFailsWith<IllegalArgumentException> { rule(action = KeyDisableAction.TEMPORARY) }
         assertFailsWith<IllegalArgumentException> {
@@ -530,6 +534,9 @@ class KeyDisableRulesTest {
         }
         assertFailsWith<IllegalArgumentException> {
             rule(action = KeyDisableAction.PERMANENT, disableMinutes = 5)
+        }
+        assertFailsWith<IllegalArgumentException> {
+            rule(action = KeyDisableAction.NONE, disableMinutes = 5)
         }
         assertFailsWith<IllegalArgumentException> { rule(bodyPatterns = listOf("(?<=x)y")) }
         assertFailsWith<IllegalArgumentException> { rule(bodyPatterns = listOf("a".repeat(201))) }
@@ -735,5 +742,72 @@ class KeyDisableRulesTest {
             assertEquals(state, ChannelKeyState.fromKind(state.toKind()))
             assertEquals(state, ChannelKeyState.fromValue(state.value))
         }
+    }
+
+    @Test
+    fun `or matchLogic matches either status code or text pattern and supports text-only rules`() {
+        val orRule = rule(
+            id = "or_rule",
+            statusCodes = listOf(402),
+            bodyPatterns = listOf("insufficient_balance"),
+            matchLogic = KeyRuleMatchLogic.OR,
+            threshold = 1,
+        )
+        assertNotNull(orRule.match(response(402, "other error")))
+        assertEquals("insufficient_balance", orRule.match(response(400, "insufficient_balance"))?.matchedPattern)
+        assertEquals("insufficient_balance", orRule.match(response(200, "insufficient_balance"))?.matchedPattern)
+        assertNull(orRule.match(response(400, "other error")))
+
+        val textOnlyAnd = rule(
+            id = "text_only",
+            statusCodes = emptyList(),
+            bodyPatterns = listOf("channel_busy"),
+            matchLogic = KeyRuleMatchLogic.AND,
+            requestAction = KeyRuleRequestAction.FAILOVER,
+            action = KeyDisableAction.NONE,
+        )
+        assertEquals("channel_busy", textOnlyAnd.match(response(400, "channel_busy"))?.matchedPattern)
+        assertEquals("channel_busy", textOnlyAnd.match(response(200, "channel_busy"))?.matchedPattern)
+        assertNull(textOnlyAnd.match(response(500, "server error")))
+
+        val transportOr = rule(
+            id = "transport_or",
+            statusCodes = listOf(503),
+            bodyPatterns = listOf("overloaded"),
+            matchLogic = KeyRuleMatchLogic.OR,
+            includeTransportFailures = true,
+            threshold = 1,
+        )
+        assertNotNull(transportOr.match(KeyAttemptSignal.TransportFailure("connection reset")))
+        assertEquals("overloaded", transportOr.match(KeyAttemptSignal.TransportFailure("overloaded"))?.matchedPattern)
+    }
+
+    @Test
+    fun `action NONE does not accumulate counters or disable keys`() {
+        val policy = KeyDisablePolicy(
+            rules = listOf(
+                rule(
+                    id = "retry_only",
+                    statusCodes = listOf(400),
+                    bodyPatterns = listOf("busy"),
+                    requestAction = KeyRuleRequestAction.FAILOVER,
+                    action = KeyDisableAction.NONE,
+                    threshold = 1,
+                ),
+                rule(
+                    id = "fallback_disable",
+                    statusCodes = listOf(400),
+                    action = KeyDisableAction.PERMANENT,
+                    threshold = 1,
+                ),
+            ),
+        )
+        val firstMatch = policy.matchFirst(response(400, "upstream busy"))
+        assertEquals("retry_only", firstMatch?.first?.id)
+        assertEquals(KeyRuleRequestAction.FAILOVER, firstMatch?.first?.requestAction)
+
+        val update = policy.record(KeyHealthState(), response(400, "upstream busy"), now)
+        assertNull(update.decision)
+        assertTrue(update.state.counters.isEmpty())
     }
 }

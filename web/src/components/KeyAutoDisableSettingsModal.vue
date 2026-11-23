@@ -84,7 +84,7 @@ onMounted(load)
       <KeyDisableRuleFields :rules="form.rules" :enabled="form.enabled" :saving="saving" />
 
       <div class="callout info">
-        保存后立即生效，修改规则后重新计数。状态码与错误文本同时填写时取交集；未命中任何规则的上游响应不计数。
+        保存后立即生效，修改规则后重新计数。支持配置「同时满足（AND）」或「满足任一（OR）」，也可仅填写错误文本；当次请求动作仅在响应提交前生效，HTTP 200 流内错误同样参与匹配。未命中任何规则的上游响应不计数。
       </div>
       <p v-if="!form.enabled" class="muted small">关闭自动禁用后仍执行原有冷却规则，已停用的密钥保持停用。</p>
     </form>

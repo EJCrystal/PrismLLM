@@ -2,6 +2,12 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.channel.domain.key.ChannelKeyState
+import dev.soven.prismllm.channel.domain.key.KeyDisableAction
+import dev.soven.prismllm.channel.domain.key.KeyDisablePolicy
+import dev.soven.prismllm.channel.domain.key.KeyDisableRule
+import dev.soven.prismllm.channel.domain.key.KeyRuleMatchLogic
+import dev.soven.prismllm.channel.domain.key.KeyRuleRequestAction
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
 import dev.soven.prismllm.fake.FakeUpstream
@@ -328,6 +334,70 @@ class ProxyAttemptLoggingIntegrationTest {
             assertEquals("responses_failed", failed.errorCode)
             assertTrue(failed.committed)
             assertFalse(failed.retryable)
+        }
+    }
+
+    @Test
+    fun `custom rule fails over on http 200 stream error without disabling key and respects fail fast`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "custom_200_failover",
+                        name = "自定义200流内错误重试",
+                        statusCodes = listOf(200),
+                        bodyPatterns = listOf("channel_overloaded_custom"),
+                        matchLogic = KeyRuleMatchLogic.AND,
+                        requestAction = KeyRuleRequestAction.FAILOVER,
+                        action = KeyDisableAction.NONE,
+                    ),
+                    KeyDisableRule(
+                        id = "custom_400_fail_fast",
+                        name = "自定义400直接报错",
+                        statusCodes = listOf(400),
+                        bodyPatterns = listOf("must positive"),
+                        matchLogic = KeyRuleMatchLogic.OR,
+                        requestAction = KeyRuleRequestAction.FAIL_FAST,
+                        action = KeyDisableAction.NONE,
+                    ),
+                ),
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            val modelId = "custom-rule-200-stream"
+            createChannel(modelId, "${fake.baseUrl}/responses-custom-failed/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val primary = app.channelRepository.list().single { it.name == "1-$modelId" }
+            val requestId = UUID.randomUUID().toString()
+            val requestCount = fake.requests.size
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("response.completed"), body)
+            assertFalse(body.contains("channel_overloaded_custom"), body)
+            assertEquals(requestCount + 2, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(2, log.upstreamAttempts)
+            val failed = log.attempts.first()
+            assertEquals(200, failed.statusCode)
+            assertEquals("channel_overloaded", failed.upstreamErrorCode)
+            assertTrue(failed.retryable)
+            assertFalse(failed.committed)
+            // action = NONE：只做请求级故障转移，密钥仍保持 ACTIVE。
+            assertEquals(ChannelKeyState.ACTIVE, app.channelRepository.find(primary.id)!!.keys.single().state)
+
+            // 规则配置 FAIL_FAST 时，即使是原本默认会重试的 400/伪400 也不切换候选。
+            val failFastModel = "custom-rule-fail-fast"
+            createChannel(failFastModel, "${fake.baseUrl}/pseudo-400/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(failFastModel, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val fastRequestId = UUID.randomUUID().toString()
+            val beforeFastCount = fake.requests.size
+            val fastResp = client.sendProtocolStreamRequest(failFastModel, GatewayProtocol.RESPONSES, fastRequestId)
+            assertEquals(HttpStatusCode.BadGateway, fastResp.status)
+            assertEquals(beforeFastCount + 1, fake.requests.size)
         }
     }
 

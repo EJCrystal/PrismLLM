@@ -597,6 +597,14 @@ class FakeUpstream {
                     completed = true
                     return@respondBytesWriter
                 }
+                if (scenario == "responses-custom-failed") {
+                    writeSseEvent(
+                        "response.failed",
+                        """{"type":"response.failed","response":{"id":"resp_fake","status":"failed","error":{"code":"channel_overloaded","message":"channel_overloaded_custom"}}}""",
+                    )
+                    completed = true
+                    return@respondBytesWriter
+                }
                 if (scenario == "responses-created-stall") {
                     delay(2_000)
                     completed = true
