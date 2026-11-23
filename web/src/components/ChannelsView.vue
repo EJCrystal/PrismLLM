@@ -34,7 +34,7 @@ import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
 import FilterSelect from './FilterSelect.vue'
 import { formatTime, formatDuration, formatRelativeTime } from '../utils/format'
-import { refreshUntilCurrent } from '../utils/latestRequest'
+import { createLatestRequestGuard, refreshUntilCurrent } from '../utils/latestRequest'
 import {
   channelDisplayModels,
   channelLandingUrl,
@@ -874,15 +874,24 @@ function applyOAuthSnapshot(
     : ''
 }
 
+const oauthSnapshotRequests = createLatestRequestGuard()
+
 /** 轻量轮询订阅运行态，保证冷却/额度截止时间不会长期停留在旧快照。 */
 async function refreshOAuthSnapshot(): Promise<void> {
-  const request = listRevision
-  const [providersResult, accountsResult] = await Promise.all([
-    settled(api.listOAuthProviders()),
-    settled(api.listOAuthAccounts()),
-  ])
-  if (listDisposed || request !== listRevision) return
-  applyOAuthSnapshot(providersResult, accountsResult)
+  try {
+    const result = await oauthSnapshotRequests.run(async () => {
+      const [providersResult, accountsResult] = await Promise.all([
+        settled(api.listOAuthProviders()),
+        settled(api.listOAuthAccounts()),
+      ])
+      return { providersResult, accountsResult }
+    })
+    // 只提交最后发起的轮询，避免慢响应把更新的冷却状态覆盖回旧快照。
+    if (listDisposed || !result.isLatest) return
+    applyOAuthSnapshot(result.value.providersResult, result.value.accountsResult)
+  } catch {
+    // 轮询失败保留旧快照，下一次 tick 重试。
+  }
 }
 
 async function toggleSubscriptionProviderEnabled(item: ProviderListItem): Promise<void> {
@@ -939,6 +948,8 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
 
 async function load(): Promise<boolean> {
   const request = ++listRevision
+  // 全量加载会一并刷新订阅快照，使已发出的轮询结果失效，避免旧响应回写。
+  oauthSnapshotRequests.invalidate()
   loading.value = true
   error.value = ''
   try {
