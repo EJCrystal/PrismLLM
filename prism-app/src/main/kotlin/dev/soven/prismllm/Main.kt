@@ -28,6 +28,9 @@ fun main() {
         // TLS/HTTP2 由入口反向代理处理；下游末帧跟踪覆盖此处的 HTTP/1 管道。
         enableHttp2 = false
         enableH2c = false
+        // 保留独立的下游写停滞超时（30s），避免半开连接或停止读取的慢客户端无限占住 drain lease；
+        // SSE 首帧已由 proxyStream 立即写出 : connected 刷新响应头，静默期每 10s 发送 : keepalive。
+        responseWriteTimeoutSeconds = 30
     }) {
         app.install(this)
     }

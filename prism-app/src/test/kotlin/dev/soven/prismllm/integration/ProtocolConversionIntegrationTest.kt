@@ -25,6 +25,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.install
+import io.ktor.server.engine.connector
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import io.ktor.server.testing.testApplication
@@ -1302,6 +1303,90 @@ class ProtocolConversionIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.BadRequest, invalid.status)
             assertTrue(invalid.bodyAsText().contains("invalid_channel"))
             assertEquals(3, fake.modelRequests.size)
+        }
+    }
+
+    @Test
+    fun `gemini thought-only pause emits connected and keepalive comments without Netty write timeout`() = runBlocking {
+        // 用真实 Netty 宿主（故意设置 1s responseWriteTimeoutSeconds）复现之前 10s 静默被误杀 499 的场景：
+        // Gemini 上游先发 thought:true 分片（转换器静默跳过），1.6s 后才发正文；
+        // 有了 : connected + 周期 : keepalive，即便 Netty 启用短写超时也不会断连。
+        val upstream = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        val answerSentAtNanos = java.util.concurrent.atomic.AtomicLong(0L)
+        upstream.createContext("/") { exchange ->
+            exchange.responseHeaders.add("Content-Type", "text/event-stream; charset=utf-8")
+            exchange.sendResponseHeaders(200, 0)
+            exchange.responseBody.use { out ->
+                val thought = """data: {"responseId":"resp_think","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"thinking step 1"}]}}]}"""
+                out.write((thought + "\n\n").toByteArray())
+                out.flush()
+                Thread.sleep(1_600)
+                answerSentAtNanos.set(System.nanoTime())
+                val answer = """data: {"responseId":"resp_think","candidates":[{"content":{"role":"model","parts":[{"text":"OK"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":10,"candidatesTokenCount":2,"thoughtsTokenCount":100,"totalTokenCount":112}}"""
+                out.write((answer + "\n\n").toByteArray())
+                out.flush()
+            }
+        }
+        val previousKeepalive = dev.soven.prismllm.api.sseKeepaliveIntervalMs
+        dev.soven.prismllm.api.sseKeepaliveIntervalMs = 400L
+        val server = embeddedServer(Netty, configure = {
+            connector {
+                port = 0
+                host = "127.0.0.1"
+            }
+            enableHttp2 = false
+            enableH2c = false
+            responseWriteTimeoutSeconds = 1
+        }) { app.install(this) }
+        val http = HttpClient(CIO)
+        try {
+            upstream.start()
+            server.start(wait = false)
+            val channel = createChannelWithBaseUrl(
+                name = "gemini-slow-thought",
+                baseUrl = "http://127.0.0.1:${upstream.address.port}/v1beta",
+                protocols = listOf(GatewayProtocol.GEMINI),
+                modelMappings = listOf(ChannelModelRecord("gemini-thought-model")),
+                authType = "gemini",
+            )
+            exposeAsModel("gemini-thought", channel to "gemini-thought-model")
+            val key = createClientKey()
+            val port = server.engine.resolvedConnectors().first().port
+
+            http.preparePost("http://127.0.0.1:$port/v1/messages") {
+                header("x-api-key", key)
+                header("anthropic-version", "2023-06-01")
+                contentType(ContentType.Application.Json)
+                setBody("""{"model":"gemini-thought","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}""")
+            }.execute { response ->
+                assertEquals(HttpStatusCode.OK, response.status)
+                val body = response.bodyAsChannel()
+                val timedLines = mutableListOf<Pair<String, Long>>()
+                while (true) {
+                    val line = body.readUTF8Line() ?: break
+                    timedLines += line to System.nanoTime()
+                }
+                val lines = timedLines.map { it.first }
+                val answerSentAt = answerSentAtNanos.get()
+                assertTrue(answerSentAt > 0L, "upstream answer timestamp was not recorded")
+                assertEquals(": connected", lines.first(), "LINES=${lines.joinToString("\n")}")
+                val connectedAt = timedLines.first().second
+                val firstKeepaliveAt = timedLines.firstOrNull { it.first == ": keepalive" }?.second
+                assertTrue(connectedAt < answerSentAt, "expected : connected before upstream answer")
+                assertNotNull(firstKeepaliveAt, "expected keepalive comment, LINES=${lines.joinToString("\n")}")
+                assertTrue(firstKeepaliveAt < answerSentAt, "expected : keepalive before upstream answer")
+                assertTrue(lines.any { it.contains(""""text":"OK"""") }, "expected final text delta, LINES=${lines.joinToString("\n")}")
+                assertTrue(lines.any { it == "event: message_stop" }, "expected message_stop, LINES=${lines.joinToString("\n")}")
+            }
+
+            val log = awaitRequestLog()
+            assertEquals(200, log.statusCode)
+            assertNull(log.errorCode)
+        } finally {
+            dev.soven.prismllm.api.sseKeepaliveIntervalMs = previousKeepalive
+            http.close()
+            runCatching { server.stop(0, 1_000) }
+            runCatching { upstream.stop(0) }
         }
     }
 }
