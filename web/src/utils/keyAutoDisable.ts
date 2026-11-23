@@ -3,7 +3,10 @@ import type {
   ChannelKeyDisablePolicyResponse,
   KeyAutoDisableSettingsRequest,
   KeyAutoDisableSettingsResponse,
+  KeyDisableAction,
   KeyDisableRule,
+  KeyRuleMatchLogic,
+  KeyRuleRequestAction,
 } from '../types/api'
 
 /** 全局设置与渠道覆盖共用的策略形状。 */
@@ -14,7 +17,9 @@ export interface KeyDisableRuleDraft extends Omit<KeyDisableRule, 'statusCodes' 
   bodyPatternsText: string
 }
 
-const ACTIONS = new Set(['TEMPORARY', 'PERMANENT'])
+const MATCH_LOGICS = new Set<KeyRuleMatchLogic>(['AND', 'OR'])
+const REQUEST_ACTIONS = new Set<KeyRuleRequestAction>(['DEFAULT', 'FAILOVER', 'FAIL_FAST'])
+const ACTIONS = new Set<KeyDisableAction>(['NONE', 'TEMPORARY', 'PERMANENT'])
 const RULE_ID = /^[a-z0-9_]{1,40}$/
 
 /** 后端内置规则的镜像，仅用于首次渲染和加载失败时的占位。 */
@@ -36,6 +41,8 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
         '请充值',
         '额度(不足|用尽)',
       ],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: 1,
       windowMinutes: 5,
       streak: true,
@@ -49,6 +56,8 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
       statusCodes: [401, 403],
       statusCodeAtLeast: null,
       bodyPatterns: ['invalid[\\s_-]*(x-)?api[\\s_-]?key', 'incorrect api key', 'authentication_error', 'invalid_grant'],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: 2,
       windowMinutes: 5,
       streak: true,
@@ -66,6 +75,8 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
         '(?:^|[^\\w-])billing(?:$|[^\\w-])',
         '(?:^|[^\\w-])payment(?:$|[^\\w-])',
       ],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: 1,
       windowMinutes: 5,
       streak: true,
@@ -79,6 +90,8 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
       statusCodes: [401, 403],
       statusCodeAtLeast: null,
       bodyPatterns: [],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: 3,
       windowMinutes: 5,
       streak: false,
@@ -92,6 +105,8 @@ export const DEFAULT_KEY_AUTO_DISABLE_SETTINGS: Readonly<KeyAutoDisableSettingsR
       statusCodes: [429],
       statusCodeAtLeast: 500,
       bodyPatterns: [],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: 8,
       windowMinutes: 5,
       streak: false,
@@ -133,14 +148,22 @@ function normalizeRule(rule: unknown, index: number): KeyDisableRule {
   bodyPatterns.forEach((pattern) => {
     if (pattern.length > 200) throw new Error(`规则「${name}」的匹配模式不能超过 200 个字符`)
   })
+  const matchLogicRaw = source.matchLogic == null || source.matchLogic === '' ? 'AND' : String(source.matchLogic)
+  if (!MATCH_LOGICS.has(matchLogicRaw as KeyRuleMatchLogic)) {
+    throw new Error(`规则「${name}」的条件关系必须是 AND 或 OR`)
+  }
+  const requestActionRaw = source.requestAction == null || source.requestAction === '' ? 'DEFAULT' : String(source.requestAction)
+  if (!REQUEST_ACTIONS.has(requestActionRaw as KeyRuleRequestAction)) {
+    throw new Error(`规则「${name}」的请求动作必须是 DEFAULT、FAILOVER 或 FAIL_FAST`)
+  }
   const includeTransportFailures = source.includeTransportFailures === true
-  if (!statusCodes.length && statusCodeAtLeast == null && !includeTransportFailures) {
-    throw new Error(`规则「${name}」至少需要状态码、状态码下限或传输层失败之一`)
+  if (!statusCodes.length && statusCodeAtLeast == null && !includeTransportFailures && !bodyPatterns.length) {
+    throw new Error(`规则「${name}」至少需要状态码、状态码下限、错误文本或传输层条件之一`)
   }
   const action = String(source.action ?? '')
-  if (!ACTIONS.has(action)) throw new Error(`规则「${name}」的动作必须是 TEMPORARY 或 PERMANENT`)
-  if (action === 'PERMANENT' && source.disableMinutes !== null && source.disableMinutes !== undefined && source.disableMinutes !== '') {
-    throw new Error(`规则「${name}」是永久停用，不能配置临时停用时长`)
+  if (!ACTIONS.has(action as KeyDisableAction)) throw new Error(`规则「${name}」的动作必须是 NONE、TEMPORARY 或 PERMANENT`)
+  if (action !== 'TEMPORARY' && source.disableMinutes !== null && source.disableMinutes !== undefined && source.disableMinutes !== '') {
+    throw new Error(`规则「${name}」不是临时停用，不能配置临时停用时长`)
   }
   const disableMinutes = action === 'TEMPORARY'
     ? integer(source.disableMinutes, 1, 10_080, `规则「${name}」的临时停用时长`)
@@ -151,10 +174,12 @@ function normalizeRule(rule: unknown, index: number): KeyDisableRule {
     statusCodes: [...new Set(statusCodes)],
     statusCodeAtLeast,
     bodyPatterns,
-    threshold: integer(source.threshold, 1, 1000, `规则「${name}」的触发阈值`),
-    windowMinutes: integer(source.windowMinutes, 1, 1440, `规则「${name}」的统计窗口`),
+    matchLogic: matchLogicRaw as KeyRuleMatchLogic,
+    requestAction: requestActionRaw as KeyRuleRequestAction,
+    threshold: integer(source.threshold ?? 1, 1, 1000, `规则「${name}」的触发阈值`),
+    windowMinutes: integer(source.windowMinutes ?? 5, 1, 1440, `规则「${name}」的统计窗口`),
     streak: source.streak !== false,
-    action: action as 'TEMPORARY' | 'PERMANENT',
+    action: action as KeyDisableAction,
     disableMinutes,
     includeTransportFailures,
   }
@@ -180,6 +205,8 @@ function legacyRules(value: Required<Pick<LegacySettings, 'authFailureThreshold'
       statusCodes: [401, 403],
       statusCodeAtLeast: null,
       bodyPatterns: [],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: value.authFailureThreshold,
       windowMinutes: 1440,
       streak: true,
@@ -193,6 +220,8 @@ function legacyRules(value: Required<Pick<LegacySettings, 'authFailureThreshold'
       statusCodes: [401, 403, 429],
       statusCodeAtLeast: 500,
       bodyPatterns: [],
+      matchLogic: 'AND' as const,
+      requestAction: 'DEFAULT' as const,
       threshold: value.failureThreshold,
       windowMinutes: value.failureWindowMinutes,
       streak: false,
@@ -261,6 +290,8 @@ export function newKeyDisableRule(
     statusCodesText: '401,403',
     statusCodeAtLeast: null,
     bodyPatternsText: '',
+    matchLogic: 'AND',
+    requestAction: 'DEFAULT',
     threshold: 3,
     windowMinutes: 5,
     streak: true,
@@ -274,6 +305,8 @@ export function newKeyDisableRule(
 export function toKeyDisableRuleDraft(rule: KeyDisableRule): KeyDisableRuleDraft {
   return {
     ...rule,
+    matchLogic: rule.matchLogic ?? 'AND',
+    requestAction: rule.requestAction ?? 'DEFAULT',
     statusCodesText: rule.statusCodes.join(','),
     bodyPatternsText: rule.bodyPatterns.join('\n'),
   }
@@ -283,6 +316,10 @@ export function toKeyDisableRuleDraft(rule: KeyDisableRule): KeyDisableRuleDraft
 export function fromKeyDisableRuleDraft(draft: KeyDisableRuleDraft): KeyDisableRule {
   return {
     ...draft,
+    matchLogic: draft.matchLogic ?? 'AND',
+    requestAction: draft.requestAction ?? 'DEFAULT',
+    threshold: draft.action === 'NONE' ? (draft.threshold || 1) : draft.threshold,
+    windowMinutes: draft.action === 'NONE' ? (draft.windowMinutes || 5) : draft.windowMinutes,
     disableMinutes: draft.action === 'TEMPORARY' ? draft.disableMinutes : null,
     statusCodes: String(draft.statusCodesText ?? '')
       .split(',')

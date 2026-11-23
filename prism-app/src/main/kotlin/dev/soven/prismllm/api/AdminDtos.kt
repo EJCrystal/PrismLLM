@@ -1848,12 +1848,27 @@ data class OAuthProviderModelsResponse(
 )
 
 @Serializable
+data class OAuthProviderModelMappingsUpdateRequest(
+    val changes: List<OAuthModelMappingChangeRequest> = emptyList(),
+    val expectedRevision: Long,
+)
+
+@Serializable
+data class OAuthProviderEnabledRequest(
+    val enabled: Boolean,
+)
+
+@Serializable
 data class OAuthProviderResponse(
     val id: String,
     val label: String,
     val configured: Boolean,
     /** 该 provider 的官方端点渠道由系统置备，账号通过浏览器登录创建后自动关联。 */
     val managedChannel: Boolean = false,
+    /** 系统已置备该 provider 端点渠道时的渠道 ID；尚未置备时为 null。 */
+    val channelId: String? = null,
+    val baseUrl: String = "",
+    val protocols: List<String> = emptyList(),
 )
 
 fun OAuthAccountPolicy.toResponse() = OAuthAccountPolicyResponse(

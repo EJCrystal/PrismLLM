@@ -96,6 +96,76 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `provider endpoints expose metadata toggle enabled and save shared mappings independently`() = runBlocking {
+        val account = mappingAccount("provider-api", models = listOf("m"))
+        app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry("m", "family-m")))
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            val providersResponse = client.get("/admin/api/oauth-providers") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, providersResponse.status)
+            val chatgptProvider = Json.parseToJsonElement(providersResponse.bodyAsText()).jsonArray
+                .map { it.jsonObject }
+                .first { it["id"]!!.jsonPrimitive.content == "chatgpt" }
+            assertNotNull(chatgptProvider["channelId"]?.jsonPrimitive?.content)
+            assertEquals("https://chatgpt.com/backend-api/codex", chatgptProvider["baseUrl"]!!.jsonPrimitive.content)
+            assertEquals(listOf("responses"), chatgptProvider["protocols"]!!.jsonArray.map { it.jsonPrimitive.content })
+
+            val disableRes = client.put("/admin/api/oauth-providers/chatgpt/enabled") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"enabled":false}""")
+            }
+            assertEquals(HttpStatusCode.OK, disableRes.status)
+            assertFalse(Json.parseToJsonElement(disableRes.bodyAsText()).jsonObject["enabled"]!!.jsonPrimitive.boolean)
+
+            val enableRes = client.put("/admin/api/oauth-providers/chatgpt/enabled") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"enabled":true}""")
+            }
+            assertEquals(HttpStatusCode.OK, enableRes.status)
+            assertTrue(Json.parseToJsonElement(enableRes.bodyAsText()).jsonObject["enabled"]!!.jsonPrimitive.boolean)
+
+            val initial = Json.parseToJsonElement(
+                client.get("/admin/api/oauth-providers/chatgpt/model-mappings") { header(HttpHeaders.Cookie, cookie) }.bodyAsText(),
+            ).jsonObject
+            val revision = initial["revision"]!!.jsonPrimitive.long
+            val saveRes = client.put("/admin/api/oauth-providers/chatgpt/model-mappings") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"expectedRevision":$revision,"changes":[{"upstreamModel":"m","mode":"manual","canonicalModelId":"alias-m"}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, saveRes.status)
+            assertEquals("no-store", saveRes.headers["Cache-Control"])
+            val updated = Json.parseToJsonElement(saveRes.bodyAsText()).jsonObject
+            assertEquals(revision + 1, updated["revision"]!!.jsonPrimitive.long)
+            val row = updated["mappings"]!!.jsonArray.first { it.jsonObject["upstreamModel"]!!.jsonPrimitive.content == "m" }.jsonObject
+            assertEquals("manual", row["mode"]!!.jsonPrimitive.content)
+            assertEquals("alias-m", row["publicModelId"]!!.jsonPrimitive.content)
+
+            val conflictRes = client.put("/admin/api/oauth-providers/chatgpt/model-mappings") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"expectedRevision":$revision,"changes":[{"upstreamModel":"m","mode":"upstream"}]}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, conflictRes.status)
+
+            val invalidNull = client.put("/admin/api/oauth-providers/chatgpt/model-mappings") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"expectedRevision":${revision + 1},"changes":[{"upstreamModel":"m","mode":"upstream","canonicalModelId":null}]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, invalidNull.status)
+        }
+    }
+
+    @Test
     fun `settings mapping increments are shared without expanding account authorization or other providers`() = runBlocking {
         val a = mappingAccount("a", models = listOf("a"))
         val b = mappingAccount("b", models = listOf("b"))

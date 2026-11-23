@@ -57,13 +57,35 @@ class ProviderChannelProvisioner(
     suspend fun modelMappings(provider: OAuthProvider): ProviderModelMappings = channels.inTransaction {
         val channel = channels.findProviderChannelInTransaction(provider, lock = true)
         val providerAccounts = accounts.listProviderInTransaction(provider)
-        val defaults = automaticDefaults(providerAccounts)
-        ProviderModelMappings(
-            provider = provider,
-            revision = channel?.modelMappingRevision ?: 0,
-            affectedAccountCount = providerAccounts.size,
-            mappings = channel?.modelMappings.orEmpty().map { ProviderModelMapping(it, defaults[it.upstreamModel]) },
-        )
+        buildModelMappings(provider, channel, providerAccounts)
+    }
+
+    /** 提供商级共享模型映射保存；事务内先锁 provider 渠道父行校验版本再写入。 */
+    suspend fun updateModelMappings(
+        provider: OAuthProvider,
+        changes: List<ProviderModelMappingChange>,
+        expectedRevision: Long,
+    ): ProviderModelMappings {
+        val validated = validateChanges(changes)
+        require(expectedRevision >= 0) { "映射版本不能为负数" }
+        return channels.inTransaction {
+            val channel = channels.ensureProviderChannelInTransaction(provider)
+                ?: throw IllegalArgumentException("该提供方的上游协议尚未实现")
+            val providerAccounts = accounts.listProviderInTransaction(provider)
+            val saved = if (validated.isEmpty()) {
+                if (expectedRevision != channel.modelMappingRevision) throw ModelMappingRevisionChangedException()
+                channel
+            } else {
+                applyModelMappingChangesInTransaction(channel, providerAccounts, validated, expectedRevision)
+            }
+            buildModelMappings(provider, saved, providerAccounts)
+        }
+    }
+
+    /** 切换订阅提供商系统端点渠道的启停总开关。 */
+    suspend fun setProviderEnabled(provider: OAuthProvider, enabled: Boolean): ChannelRecord? = channels.inTransaction {
+        val channel = channels.ensureProviderChannelInTransaction(provider) ?: return@inTransaction null
+        channels.setEnabledInTransaction(channel.id, enabled)
     }
 
     suspend fun updateSettings(
@@ -89,21 +111,12 @@ class ProviderChannelProvisioner(
             val current = accounts.findDetailedInTransaction(accountId, lock = true) ?: return@inTransaction null
             if (changes.isNotEmpty()) {
                 requireNotNull(channel) { "该提供方的上游协议尚未实现" }
-                if (expectedModelMappingRevision != channel.modelMappingRevision) throw ModelMappingRevisionChangedException()
-                val defaults = automaticDefaults(accounts.listProviderInTransaction(current.provider))
-                val byUpstream = channel.modelMappings.associateBy { it.upstreamModel }.toMutableMap()
-                changes.forEach { change ->
-                    val previous = requireNotNull(byUpstream[change.upstreamModel]) { "共享目录不存在模型: ${change.upstreamModel}" }
-                    byUpstream[change.upstreamModel] = previous.copy(
-                        canonicalModelId = when (change.mode) {
-                            "manual" -> change.canonicalModelId
-                            "upstream" -> null
-                            else -> defaults[change.upstreamModel]
-                        },
-                        mappingSource = if (change.mode == "auto") null else "manual",
-                    )
-                }
-                channels.saveModelMappingsInTransaction(channel.id, byUpstream.values.sortedBy { it.upstreamModel })
+                applyModelMappingChangesInTransaction(
+                    channel = channel,
+                    providerAccounts = accounts.listProviderInTransaction(current.provider),
+                    changes = changes,
+                    expectedRevision = requireNotNull(expectedModelMappingRevision),
+                )
             }
             if (normalizedModels != null) accounts.setModelsInTransaction(accountId, normalizedModels)
             if (name != null || priority != null || enabled != null || proxyUrl != null || clearProxy) {
@@ -111,6 +124,43 @@ class ProviderChannelProvisioner(
             }
             accounts.findDetailedInTransaction(accountId)
         }
+    }
+
+    private fun buildModelMappings(
+        provider: OAuthProvider,
+        channel: ChannelRecord?,
+        providerAccounts: List<OAuthAccountRecord>,
+    ): ProviderModelMappings {
+        val defaults = automaticDefaults(providerAccounts)
+        return ProviderModelMappings(
+            provider = provider,
+            revision = channel?.modelMappingRevision ?: 0,
+            affectedAccountCount = providerAccounts.size,
+            mappings = channel?.modelMappings.orEmpty().map { ProviderModelMapping(it, defaults[it.upstreamModel]) },
+        )
+    }
+
+    private fun applyModelMappingChangesInTransaction(
+        channel: ChannelRecord,
+        providerAccounts: List<OAuthAccountRecord>,
+        changes: List<ProviderModelMappingChange>,
+        expectedRevision: Long,
+    ): ChannelRecord {
+        if (expectedRevision != channel.modelMappingRevision) throw ModelMappingRevisionChangedException()
+        val defaults = automaticDefaults(providerAccounts)
+        val byUpstream = channel.modelMappings.associateBy { it.upstreamModel }.toMutableMap()
+        changes.forEach { change ->
+            val previous = requireNotNull(byUpstream[change.upstreamModel]) { "共享目录不存在模型: ${change.upstreamModel}" }
+            byUpstream[change.upstreamModel] = previous.copy(
+                canonicalModelId = when (change.mode) {
+                    "manual" -> change.canonicalModelId
+                    "upstream" -> null
+                    else -> defaults[change.upstreamModel]
+                },
+                mappingSource = if (change.mode == "auto") null else "manual",
+            )
+        }
+        return channels.saveModelMappingsInTransaction(channel.id, byUpstream.values.sortedBy { it.upstreamModel })
     }
 
     /** 上游抓取在调用方完成；目录、当前授权裁剪和共享并集同一事务提交。 */

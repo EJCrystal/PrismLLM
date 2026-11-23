@@ -379,10 +379,10 @@ class KeyAutoDisableRepository(
         }
 
         // 探测失败不等待常规阈值：命中哪条规则就按该规则的动作重新计时/永久停用。
-        // 未命中规则的响应（如 400）视为探测不确定，只释放租约，让下一次请求再试。
+        // 动作设为 NONE 或未命中规则的响应视为探测不确定，只释放租约，让下一次请求再试。
         if (probeLease != null) {
             val rule = resolved.policy.rules.firstOrNull { it.match(signal) != null }
-            if (rule == null) {
+            if (rule == null || rule.action == KeyDisableAction.NONE) {
                 ChannelKeys.update({ ownedKey() }) { it[probeUntil] = null }
                 return@suspendTransaction null
             }
@@ -391,6 +391,7 @@ class KeyAutoDisableRepository(
             val targetState = when (rule.action) {
                 KeyDisableAction.TEMPORARY -> ChannelKeyState.AUTO_TEMPORARY
                 KeyDisableAction.PERMANENT -> ChannelKeyState.AUTO_PERMANENT
+                KeyDisableAction.NONE -> error("NONE already handled")
             }
             val disableUntil = rule.disableMinutes?.let { now + it * 60_000L }
             val decision = KeyDisableDecision(
@@ -447,6 +448,7 @@ class KeyAutoDisableRepository(
         val targetState = when (decision.action) {
             KeyDisableAction.TEMPORARY -> ChannelKeyState.AUTO_TEMPORARY
             KeyDisableAction.PERMANENT -> ChannelKeyState.AUTO_PERMANENT
+            KeyDisableAction.NONE -> error("NONE does not produce a disable decision")
         }
         val message = "${decision.ruleName} ${decision.count} 次".take(40)
         ChannelKeys.update({ ownedKey() }) {
@@ -599,6 +601,11 @@ class KeyAutoDisableRepository(
             policy = settings.policy,
         )
     }
+
+    /**
+     * 读取渠道当前生效的完整策略（不暴露到请求外，供代理层在异常时按规则判定故障转移）。
+     */
+    suspend fun loadEffectivePolicy(channelId: String): KeyDisablePolicy = resolvePolicy(channelId).policy
 
     private fun decodeChannelPolicy(value: String?): KeyDisablePolicy? = ChannelKeyDisablePolicyCodec.decode(value)
 

@@ -1205,16 +1205,39 @@ fun Route.adminRoutes(app: GatewayApplication) {
         get("/oauth-providers") {
             call.requireAdmin(app)
             val configured = app.oauthTokenProviders.available()
+            val providerChannels = app.channelRepository.list()
+                .filter { it.isProviderChannel && it.provider != null }
+                .associateBy { it.provider!! }
             call.respond(
                 OAuthProvider.entries.map { provider ->
+                    val endpoint = ProviderEndpoints.of(provider)
                     OAuthProviderResponse(
                         id = provider.value,
                         label = OAUTH_PROVIDER_LABELS[provider] ?: provider.value,
                         configured = provider in configured,
-                        managedChannel = dev.soven.prismllm.channel.domain.ProviderEndpoints.of(provider).servable,
+                        managedChannel = endpoint.servable,
+                        channelId = providerChannels[provider]?.id,
+                        baseUrl = endpoint.baseUrl,
+                        protocols = endpoint.protocols.map { it.value },
                     )
                 },
             )
+        }
+
+        put("/oauth-providers/{provider}/enabled") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(call.requiredParam("provider", "缺少 provider").trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val request = call.receive<OAuthProviderEnabledRequest>()
+            val updated = app.providerChannelProvisioner.setProviderEnabled(provider, request.enabled)
+                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+            val oauthByChannel = app.oauthAccountDirectory.listByChannel()
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("channelId", updated.id)
+                put("enabled", updated.enabled)
+            })
+            call.respond(updated.toResponse(oauthByChannel[updated.id].orEmpty()))
         }
 
         get("/oauth-providers/{provider}/model-mappings") {
@@ -1224,22 +1247,46 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val shared = app.providerChannelProvisioner.modelMappings(provider)
             call.response.headers.append("Cache-Control", "no-store")
             // 网关全局省略 null；共享资源的三个 nullable 字段却是合同中的必有键。
-            call.respond(kotlinx.serialization.json.Json { encodeDefaults = true; explicitNulls = true }.encodeToJsonElement(OAuthProviderModelMappingsResponse(
-                provider = provider.value,
-                revision = shared.revision,
-                affectedAccountCount = shared.affectedAccountCount,
-                mappings = shared.mappings.map { row ->
-                    OAuthProviderModelMappingResponse(
-                        upstreamModel = row.mapping.upstreamModel,
-                        canonicalModelId = row.mapping.canonicalModelId,
-                        publicModelId = row.mapping.publicModelId,
-                        automaticCanonicalModelId = row.automaticCanonicalModelId,
-                        mode = row.mode,
-                        mappingSource = row.mapping.mappingSource,
-                        catalogActive = row.mapping.catalogActive,
-                    )
-                },
-            )))
+            call.respond(encodeOAuthProviderModelMappings(shared))
+        }
+
+        put("/oauth-providers/{provider}/model-mappings") {
+            call.requireAdmin(app)
+            val provider = OAuthProvider.fromValue(call.requiredParam("provider", "缺少 provider").trim().lowercase())
+                ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            val payload = call.receive<JsonObject>()
+            val request = try {
+                GatewayApplication.gatewayJson.decodeFromJsonElement<OAuthProviderModelMappingsUpdateRequest>(payload)
+            } catch (cause: kotlinx.serialization.SerializationException) {
+                throw badRequest("invalid_oauth_model_mapping", "共享模型映射请求格式无效")
+            }
+            payload["changes"]?.takeIf { it != JsonNull }?.jsonArray?.forEach { value ->
+                val change = value.jsonObject
+                val mode = change["mode"]?.jsonPrimitive?.content
+                if (mode in setOf("auto", "upstream") && "canonicalModelId" in change) {
+                    throw badRequest("invalid_oauth_model_mapping", "auto/upstream 模式不能指定 canonicalModelId")
+                }
+            }
+            val updated = try {
+                app.providerChannelProvisioner.updateModelMappings(
+                    provider = provider,
+                    changes = request.changes.map {
+                        ProviderModelMappingChange(it.upstreamModel, it.mode, it.canonicalModelId)
+                    },
+                    expectedRevision = request.expectedRevision,
+                )
+            } catch (cause: ModelMappingRevisionChangedException) {
+                throw conflict("model_mapping_revision_changed", cause.message ?: "共享模型映射已变化")
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_oauth_model_mapping", cause.message ?: "共享模型映射无效")
+            }
+            call.markAdminAuditDetails(buildJsonObject {
+                put("provider", provider.value)
+                put("changeCount", request.changes.size)
+                put("revision", updated.revision)
+            })
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(encodeOAuthProviderModelMappings(updated))
         }
 
         put("/oauth-providers/{provider}/models") {
@@ -3086,6 +3133,32 @@ private fun validateOAuthProxyUrl(app: GatewayApplication, proxyUrl: String?) {
         throw badRequest("invalid_oauth_proxy", cause.message ?: "账号代理地址无效")
     }
 }
+
+private val oauthProviderModelMappingsJson = kotlinx.serialization.json.Json {
+    encodeDefaults = true
+    explicitNulls = true
+}
+
+private fun encodeOAuthProviderModelMappings(
+    shared: dev.soven.prismllm.oauth.ProviderModelMappings,
+) = oauthProviderModelMappingsJson.encodeToJsonElement(
+    OAuthProviderModelMappingsResponse(
+        provider = shared.provider.value,
+        revision = shared.revision,
+        affectedAccountCount = shared.affectedAccountCount,
+        mappings = shared.mappings.map { row ->
+            OAuthProviderModelMappingResponse(
+                upstreamModel = row.mapping.upstreamModel,
+                canonicalModelId = row.mapping.canonicalModelId,
+                publicModelId = row.mapping.publicModelId,
+                automaticCanonicalModelId = row.automaticCanonicalModelId,
+                mode = row.mode,
+                mappingSource = row.mapping.mappingSource,
+                catalogActive = row.mapping.catalogActive,
+            )
+        },
+    ),
+)
 
 private val OAUTH_PROVIDER_LABELS = mapOf(
     OAuthProvider.CHATGPT to "ChatGPT",

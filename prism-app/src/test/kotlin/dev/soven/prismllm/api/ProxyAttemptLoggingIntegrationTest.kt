@@ -2,6 +2,12 @@ package dev.soven.prismllm.api
 
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.channel.domain.key.ChannelKeyState
+import dev.soven.prismllm.channel.domain.key.KeyDisableAction
+import dev.soven.prismllm.channel.domain.key.KeyDisablePolicy
+import dev.soven.prismllm.channel.domain.key.KeyDisableRule
+import dev.soven.prismllm.channel.domain.key.KeyRuleMatchLogic
+import dev.soven.prismllm.channel.domain.key.KeyRuleRequestAction
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.requestlog.domain.RequestLogRecord
 import dev.soven.prismllm.fake.FakeUpstream
@@ -229,6 +235,261 @@ class ProxyAttemptLoggingIntegrationTest {
             val log = awaitRequestLog(requestId)
             assertNull(log.errorCode)
             assertEquals("reported-by-upstream", log.attempts.single().upstreamReportedModel)
+        }
+    }
+
+    @Test
+    fun `responses rate limit before output fails over before committing stream`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "responses-rate-limit-retry"
+            createChannel(modelId, "${fake.baseUrl}/responses-rate-limit/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val primary = app.channelRepository.list().single { it.name == "1-$modelId" }
+            val requestId = UUID.randomUUID().toString()
+            val requestCount = fake.requests.size
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("response.completed"), body)
+            assertFalse(body.contains("rate_limit_exceeded"), body)
+            assertEquals(requestCount + 2, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(2, log.upstreamAttempts)
+            assertEquals(2, log.attempts.size)
+            val failed = log.attempts.first()
+            assertEquals(primary.id, failed.channelId)
+            assertEquals(200, failed.statusCode)
+            assertEquals(429, failed.upstreamErrorStatusCode)
+            assertEquals("rate_limit_exceeded", failed.upstreamErrorCode)
+            assertEquals("upstream_error", failed.errorCode)
+            assertTrue(failed.retryable)
+            assertFalse(failed.committed)
+            assertNull(failed.firstTokenMs)
+            assertEquals("Upstream rate limit exceeded Bearer [REDACTED] sk-[REDACTED]", failed.errorMessage)
+            assertFalse(failed.errorMessage!!.contains("abc.def.ghi"))
+            assertFalse(failed.errorMessage!!.contains("sk-1234567890abcdef"))
+            assertTrue(app.candidateCooldown.isBlocked(primary.id, primary.keys.single().id, modelId))
+            val cooldownRemainingMs =
+                app.candidateCooldown.cooldownUntil(primary.id, primary.keys.single().id, modelId)!! - System.currentTimeMillis()
+            assertTrue(cooldownRemainingMs in 45_000L..55_000L, "cooldownRemainingMs=$cooldownRemainingMs")
+            val succeeded = log.attempts.last()
+            assertEquals(200, succeeded.statusCode)
+            assertNull(succeeded.upstreamErrorStatusCode)
+            assertNull(succeeded.errorCode)
+            assertTrue(succeeded.committed)
+            assertTrue(app.candidateCooldown.isBlocked(primary.id, primary.keys.single().id, modelId))
+        }
+    }
+
+    @Test
+    fun `responses rate limit with no fallback returns 429 before committing stream`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "responses-rate-limit-exhausted"
+            createChannel(modelId, "${fake.baseUrl}/responses-rate-limit-error/v1", protocol = GatewayProtocol.RESPONSES)
+            val requestId = UUID.randomUUID().toString()
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.TooManyRequests, response.status)
+            assertTrue(body.contains("rate_limit_exceeded"), body)
+            assertEquals(1, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(HttpStatusCode.TooManyRequests.value, log.statusCode)
+            assertEquals(1, log.upstreamAttempts)
+            val failed = log.attempts.single()
+            assertEquals(200, failed.statusCode)
+            assertEquals(429, failed.upstreamErrorStatusCode)
+            assertEquals("rate_limit_exceeded", failed.upstreamErrorCode)
+            assertTrue(failed.retryable)
+            assertFalse(failed.committed)
+            assertNull(log.firstTokenMs)
+        }
+    }
+
+    @Test
+    fun `responses rate limit after output is not retried`() = runBlocking {
+        testApplication {
+            application { app.install(this) }
+            val modelId = "responses-rate-limit-after-output"
+            createChannel(modelId, "${fake.baseUrl}/responses-rate-limit-after-output/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val requestId = UUID.randomUUID().toString()
+            val requestCount = fake.requests.size
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("Hel"), body)
+            assertTrue(body.contains("response.failed"), body)
+            assertEquals(requestCount + 1, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(1, log.upstreamAttempts)
+            val failed = log.attempts.single()
+            assertEquals("responses_failed", failed.errorCode)
+            assertTrue(failed.committed)
+            assertFalse(failed.retryable)
+        }
+    }
+
+    @Test
+    fun `custom rule fails over on http 200 stream error without disabling key and respects fail fast`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "custom_200_failover",
+                        name = "自定义200流内错误重试",
+                        statusCodes = listOf(200),
+                        bodyPatterns = listOf("channel_overloaded_custom"),
+                        matchLogic = KeyRuleMatchLogic.AND,
+                        requestAction = KeyRuleRequestAction.FAILOVER,
+                        action = KeyDisableAction.NONE,
+                    ),
+                    KeyDisableRule(
+                        id = "custom_400_fail_fast",
+                        name = "自定义400直接报错",
+                        statusCodes = listOf(400),
+                        bodyPatterns = listOf("must positive"),
+                        matchLogic = KeyRuleMatchLogic.OR,
+                        requestAction = KeyRuleRequestAction.FAIL_FAST,
+                        action = KeyDisableAction.NONE,
+                    ),
+                ),
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            val modelId = "custom-rule-200-stream"
+            createChannel(modelId, "${fake.baseUrl}/responses-custom-failed/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(modelId, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val primary = app.channelRepository.list().single { it.name == "1-$modelId" }
+            val requestId = UUID.randomUUID().toString()
+            val requestCount = fake.requests.size
+
+            val response = client.sendProtocolStreamRequest(modelId, GatewayProtocol.RESPONSES, requestId)
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status)
+            assertTrue(body.contains("response.completed"), body)
+            assertFalse(body.contains("channel_overloaded_custom"), body)
+            assertEquals(requestCount + 2, fake.requests.size)
+            val log = awaitRequestLog(requestId)
+            assertEquals(2, log.upstreamAttempts)
+            val failed = log.attempts.first()
+            assertEquals(200, failed.statusCode)
+            assertEquals("channel_overloaded", failed.upstreamErrorCode)
+            assertTrue(failed.retryable)
+            assertFalse(failed.committed)
+            // action = NONE：只做请求级故障转移，密钥仍保持 ACTIVE。
+            assertEquals(ChannelKeyState.ACTIVE, app.channelRepository.find(primary.id)!!.keys.single().state)
+
+            // 规则配置 FAIL_FAST 时，即使是原本默认会重试的 400/伪400 也不切换候选。
+            val failFastModel = "custom-rule-fail-fast"
+            createChannel(failFastModel, "${fake.baseUrl}/pseudo-400/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(failFastModel, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val fastRequestId = UUID.randomUUID().toString()
+            val beforeFastCount = fake.requests.size
+            val fastResp = client.sendProtocolStreamRequest(failFastModel, GatewayProtocol.RESPONSES, fastRequestId)
+            assertEquals(HttpStatusCode.BadGateway, fastResp.status)
+            assertEquals(beforeFastCount + 1, fake.requests.size)
+        }
+    }
+
+    @Test
+    fun `http 200 empty stream still counts as transport failure and records rate-limit usage`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "transport_disable",
+                        name = "传输故障禁用",
+                        statusCodes = emptyList(),
+                        includeTransportFailures = true,
+                        threshold = 1,
+                        action = KeyDisableAction.TEMPORARY,
+                        disableMinutes = 10,
+                    ),
+                ),
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            val transportModel = "transport-after-200"
+            createChannel(transportModel, "${fake.baseUrl}/responses-empty-stream/v1", protocol = GatewayProtocol.RESPONSES)
+            val channel = app.channelRepository.list().single { it.name == "1-$transportModel" }
+            val reqId = UUID.randomUUID().toString()
+
+            val emptyResp = client.sendProtocolStreamRequest(transportModel, GatewayProtocol.RESPONSES, reqId)
+            assertEquals(HttpStatusCode.BadGateway, emptyResp.status)
+            assertEquals(
+                ChannelKeyState.AUTO_TEMPORARY,
+                app.channelRepository.find(channel.id)!!.keys.single().state,
+                "收到 200 响应头后发生空流仍应走 TransportFailure 分支触发传输规则",
+            )
+
+            // 限流失败事件携带 usage 时应在抛异常前计入请求日志。
+            val usageModel = "responses-rate-limit-usage"
+            createChannel(usageModel, "${fake.baseUrl}/responses-custom-failed-with-usage/v1", protocol = GatewayProtocol.RESPONSES)
+            val usageReqId = UUID.randomUUID().toString()
+            val usageResp = client.sendProtocolStreamRequest(usageModel, GatewayProtocol.RESPONSES, usageReqId)
+            assertEquals(HttpStatusCode.TooManyRequests, usageResp.status)
+            val usageLog = awaitRequestLog(usageReqId)
+            assertEquals(7L, usageLog.inputTokens)
+            assertEquals(2L, usageLog.outputTokens)
+        }
+    }
+
+    @Test
+    fun `transport failure FAIL_FAST blocks fallback and custom FAILOVER works when default failover disabled`() = runBlocking {
+        app.keyAutoDisableRepository.saveSettings(
+            KeyDisablePolicy(
+                rules = listOf(
+                    KeyDisableRule(
+                        id = "transport_fail_fast",
+                        name = "空流直接失败",
+                        statusCodes = emptyList(),
+                        includeTransportFailures = true,
+                        requestAction = KeyRuleRequestAction.FAIL_FAST,
+                        action = KeyDisableAction.NONE,
+                    ),
+                    KeyDisableRule(
+                        id = "responses_custom_failover",
+                        name = "自定义非限流200错误切换",
+                        statusCodes = listOf(200),
+                        bodyPatterns = listOf("channel_overloaded_custom"),
+                        requestAction = KeyRuleRequestAction.FAILOVER,
+                        action = KeyDisableAction.NONE,
+                    ),
+                ),
+            ),
+        )
+        testApplication {
+            application { app.install(this) }
+            // 1. 传输故障命中 FAIL_FAST 后不应尝试备用候选。
+            val fastModel = "transport-fail-fast"
+            createChannel(fastModel, "${fake.baseUrl}/responses-empty-stream/v1", protocol = GatewayProtocol.RESPONSES)
+            createChannel(fastModel, "${fake.baseUrl}/ok/v1", protocol = GatewayProtocol.RESPONSES, priority = 2)
+            val beforeCount = fake.requests.size
+            val fastReqId = UUID.randomUUID().toString()
+            val fastResp = client.sendProtocolStreamRequest(fastModel, GatewayProtocol.RESPONSES, fastReqId)
+            assertEquals(HttpStatusCode.BadGateway, fastResp.status)
+            assertEquals(beforeCount + 1, fake.requests.size)
+
+            // 2. 单候选（allowUpstreamErrorFailover = false）时，显式 FAILOVER 仍应中止错误事件并返回错误而非透传 200 SSE。
+            val singleModel = "single-custom-sse-failover"
+            createChannel(singleModel, "${fake.baseUrl}/responses-custom-failed/v1", protocol = GatewayProtocol.RESPONSES)
+            val singleReqId = UUID.randomUUID().toString()
+            val singleResp = client.sendProtocolStreamRequest(singleModel, GatewayProtocol.RESPONSES, singleReqId)
+            assertEquals(HttpStatusCode.BadGateway, singleResp.status)
+            val singleLog = awaitRequestLog(singleReqId)
+            assertFalse(singleLog.attempts.single().committed)
+            assertTrue(singleLog.attempts.single().retryable)
         }
     }
 

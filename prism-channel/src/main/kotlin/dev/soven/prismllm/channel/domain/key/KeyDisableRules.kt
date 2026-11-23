@@ -32,9 +32,26 @@ sealed interface KeyAttemptSignal {
     data class TransportFailure(val message: String = "") : KeyAttemptSignal
 }
 
-/** 自动禁用动作。临时禁用带到期时间，永久禁用不会自动恢复，只能人工启用。 */
+/** 自动禁用动作。NONE 表示仅对当次请求做动作，不禁用密钥；TEMPORARY 带到期时间；PERMANENT 只能人工启用。 */
 @Serializable
-enum class KeyDisableAction { TEMPORARY, PERMANENT }
+enum class KeyDisableAction { NONE, TEMPORARY, PERMANENT }
+
+/** 规则的请求级动作（仅在响应提交前生效）。 */
+@Serializable
+enum class KeyRuleRequestAction {
+    /** 沿用网关默认判定（如 429/5xx/401/403/404/伪400/形状拒绝重试，其余 400 直接失败）。 */
+    DEFAULT,
+
+    /** 切换下一个候选重试（故障转移）。 */
+    FAILOVER,
+
+    /** 不切换候选，直接把错误返回给调用方。 */
+    FAIL_FAST,
+}
+
+/** 规则中「状态码/传输条件」与「错误文本匹配」的组合逻辑。 */
+@Serializable
+enum class KeyRuleMatchLogic { AND, OR }
 
 /** 密钥停用来源。人工停用永不被自动恢复任务改写。 */
 enum class KeyDisableKind { NONE, MANUAL, TEMPORARY, PERMANENT }
@@ -92,9 +109,10 @@ enum class ChannelKeyState(val value: String) {
 }
 
 /**
- * 一条自动禁用规则。规则按列表顺序匹配，首条命中生效，规则之间不叠加计数。
+ * 一条上游异常处理规则（请求级故障转移 + 密钥自动禁用）。规则按列表顺序匹配，首条命中生效，规则之间不叠加计数。
  *
- * 状态码与文本条件同时配置时取交集。[bodyPatterns] 使用 RE2 语法、大小写不敏感，
+ * 状态/传输条件与文本条件的关系由 [matchLogic] 控制：`AND` 时两者同时配置取交集；`OR` 时任一命中即生效。
+ * 只配置文本模式而未配置状态码/传输条件时，按任意失败响应的文本匹配处理。[bodyPatterns] 使用 RE2 语法、大小写不敏感，
  * 构造时编译校验：RE2 不支持反向引用和前后瞻，非法表达式直接拒绝而不是运行期静默失效。
  *
  * @author 文杰
@@ -107,7 +125,9 @@ data class KeyDisableRule(
     val statusCodes: List<Int> = emptyList(),
     val statusCodeAtLeast: Int? = null,
     val bodyPatterns: List<String> = emptyList(),
-    val threshold: Int,
+    val matchLogic: KeyRuleMatchLogic = KeyRuleMatchLogic.AND,
+    val requestAction: KeyRuleRequestAction = KeyRuleRequestAction.DEFAULT,
+    val threshold: Int = 1,
     val windowMinutes: Int = 5,
     val streak: Boolean = true,
     val action: KeyDisableAction,
@@ -120,8 +140,8 @@ data class KeyDisableRule(
         require(statusCodes.all { it in 100..599 }) { "状态码必须在 100..599 之间" }
         require(statusCodes.size == statusCodes.distinct().size) { "状态码不能重复" }
         require(statusCodeAtLeast == null || statusCodeAtLeast in 100..599) { "状态码下限必须在 100..599 之间" }
-        require(statusCodes.isNotEmpty() || statusCodeAtLeast != null || includeTransportFailures) {
-            "规则至少需要一个状态码、状态码下限或传输层条件"
+        require(statusCodes.isNotEmpty() || statusCodeAtLeast != null || includeTransportFailures || bodyPatterns.isNotEmpty()) {
+            "规则至少需要一个状态码、状态码下限、错误文本或传输层条件"
         }
         require(threshold in 1..1000) { "触发阈值必须在 1..1000 之间" }
         require(windowMinutes in 1..1440) { "统计窗口必须在 1..1440 分钟之间" }
@@ -129,8 +149,8 @@ data class KeyDisableRule(
         require(bodyPatterns.all { it.length in 1..MAX_PATTERN_LENGTH }) {
             "匹配模式长度必须在 1..$MAX_PATTERN_LENGTH 之间"
         }
-        require(action == KeyDisableAction.PERMANENT || disableMinutes != null) { "临时禁用必须配置时长" }
-        require(action == KeyDisableAction.TEMPORARY || disableMinutes == null) { "永久禁用不能配置时长" }
+        require(action != KeyDisableAction.TEMPORARY || disableMinutes != null) { "临时禁用必须配置时长" }
+        require(action == KeyDisableAction.TEMPORARY || disableMinutes == null) { "非临时禁用不能配置时长" }
         require(disableMinutes == null || disableMinutes in 1..MAX_DISABLE_MINUTES) {
             "临时禁用时长必须在 1..$MAX_DISABLE_MINUTES 分钟之间"
         }
@@ -143,15 +163,39 @@ data class KeyDisableRule(
     /** 临时禁用到期后可自动恢复；永久禁用只能人工处理。 */
     val autoRecoverable: Boolean get() = action == KeyDisableAction.TEMPORARY
 
+    private val hasStatusOrTransportCondition: Boolean
+        get() = statusCodes.isNotEmpty() || statusCodeAtLeast != null || includeTransportFailures
+
     /** 返回命中的模式；规则不匹配时返回 null。传输层失败没有错误体，文本条件作用于异常信息。 */
     fun match(signal: KeyAttemptSignal): KeyRuleMatch? = when (signal) {
         KeyAttemptSignal.Success, KeyAttemptSignal.Ignored -> null
-        is KeyAttemptSignal.TransportFailure ->
-            if (includeTransportFailures) matchText(signal.message) else null
+        is KeyAttemptSignal.TransportFailure -> {
+            val hasTextCondition = compiledPatterns.isNotEmpty()
+            when {
+                !hasStatusOrTransportCondition -> if (hasTextCondition) matchText(signal.message) else null
+                matchLogic == KeyRuleMatchLogic.OR -> {
+                    val textHit = if (hasTextCondition) matchText(signal.message) else null
+                    textHit ?: if (includeTransportFailures) KeyRuleMatch(null) else null
+                }
+                !includeTransportFailures -> null
+                else -> matchText(signal.message)
+            }
+        }
         is KeyAttemptSignal.UpstreamResponse -> {
+            val hasStatusCondition = statusCodes.isNotEmpty() || statusCodeAtLeast != null
             val codeMatched = signal.statusCode in statusCodes ||
                 (statusCodeAtLeast != null && signal.statusCode >= statusCodeAtLeast)
-            if (codeMatched) matchText(signal.errorBody, signal.upstreamCode) else null
+            val hasTextCondition = compiledPatterns.isNotEmpty()
+            when {
+                !hasStatusOrTransportCondition -> if (hasTextCondition) matchText(signal.errorBody, signal.upstreamCode) else null
+                matchLogic == KeyRuleMatchLogic.OR -> {
+                    val textHit = if (hasTextCondition) matchText(signal.errorBody, signal.upstreamCode) else null
+                    if (textHit != null) textHit else if (hasStatusCondition && codeMatched) KeyRuleMatch(null) else null
+                }
+                !hasStatusCondition -> null
+                !hasTextCondition -> if (codeMatched) KeyRuleMatch(null) else null
+                else -> if (codeMatched) matchText(signal.errorBody, signal.upstreamCode) else null
+            }
         }
     }
 
@@ -302,6 +346,7 @@ data class KeyDisableDecision(
     val disableUntil: Long?,
 ) {
     init {
+        require(action != KeyDisableAction.NONE) { "不禁用动作不会产生停用决定" }
         require(action == KeyDisableAction.PERMANENT || disableUntil != null) { "临时禁用必须带到期时间" }
         require(action == KeyDisableAction.TEMPORARY || disableUntil == null) { "永久禁用不能带到期时间" }
     }
@@ -366,6 +411,12 @@ data class KeyDisablePolicy(
         require(rules.map { it.id }.toSet().size == rules.size) { "规则 id 不能重复" }
     }
 
+    /** 只评估命中的首条规则及其文本命中结果（不更新健康计数）。 */
+    fun matchFirst(signal: KeyAttemptSignal): Pair<KeyDisableRule, KeyRuleMatch>? {
+        if (!enabled) return null
+        return rules.firstNotNullOfOrNull { rule -> rule.match(signal)?.let { rule to it } }
+    }
+
     fun record(state: KeyHealthState, signal: KeyAttemptSignal, now: Long): KeyHealthUpdate {
         if (!enabled) return KeyHealthUpdate(KeyHealthState())
         val rulesById = rules.associateBy { it.id }
@@ -385,6 +436,9 @@ data class KeyDisablePolicy(
         val matched = rules.firstNotNullOfOrNull { rule -> rule.match(signal)?.let { rule to it } }
             ?: return KeyHealthUpdate(prune(counters, rulesById, now))
         val (rule, hit) = matched
+        if (rule.action == KeyDisableAction.NONE) {
+            return KeyHealthUpdate(prune(counters, rulesById, now))
+        }
         val cutoff = now - rule.windowMinutes * 60_000L
         val recent = counters[rule.id]?.timestamps.orEmpty().filter { it > cutoff }
         val timestamps = (recent + now).takeLast(rule.threshold)

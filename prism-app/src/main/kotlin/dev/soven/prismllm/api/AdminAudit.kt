@@ -133,6 +133,8 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "POST" && path == "/admin/api/model-tests/fingerprint" -> "model_test.fingerprint_run"
     method == "PUT" && IQ_TEST_MANUAL_VERDICT_PATTERN.matches(path) -> "iq_test.manual_verdict"
     method == "POST" && CHANNEL_COOLDOWN_CLEAR_PATTERN.matches(path) -> "channel.cooldown.clear"
+    method == "PUT" && OAUTH_PROVIDER_ENABLED_PATTERN.matches(path) -> "oauth_provider.enabled.update"
+    method == "PUT" && OAUTH_PROVIDER_MODEL_MAPPINGS_PATTERN.matches(path) -> "oauth_provider.model_mappings.update"
     method == "POST" && path == "/admin/api/oauth-login/start" -> "oauth_account.login.start"
     method == "POST" && OAUTH_LOGIN_COMPLETE_PATTERN.matches(path) -> "oauth_account.login"
     method == "DELETE" && OAUTH_ACCOUNT_ITEM_PATTERN.matches(path) -> "oauth_account.delete"
@@ -191,6 +193,8 @@ private val IQ_TEST_MANUAL_VERDICT_PATTERN = Regex("^/admin/api/iq-tests/[^/]+/m
 private val CHANNEL_COOLDOWN_CLEAR_PATTERN = Regex("^/admin/api/channels/[^/]+/cooldown/clear$")
 private val CHANNEL_ITEM_PATTERN = Regex("^/admin/api/channels/[^/]+$")
 private val CHANNEL_KEY_DISABLE_POLICY_PATTERN = Regex("^/admin/api/channels/[^/]+/key-disable-policy$")
+private val OAUTH_PROVIDER_ENABLED_PATTERN = Regex("^/admin/api/oauth-providers/[^/]+/enabled$")
+private val OAUTH_PROVIDER_MODEL_MAPPINGS_PATTERN = Regex("^/admin/api/oauth-providers/[^/]+/model-mappings$")
 private val OAUTH_ACCOUNT_ITEM_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+$")
 private val OAUTH_ACCOUNT_SETTINGS_PATTERN = Regex("^/admin/api/oauth-accounts/[^/]+/(settings|channels|models)$")
 private val OAUTH_LOGIN_COMPLETE_PATTERN = Regex("^/admin/api/oauth-login/[^/]+/complete$")

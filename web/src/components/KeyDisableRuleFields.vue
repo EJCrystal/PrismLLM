@@ -39,24 +39,31 @@ function removeRule(index: number) {
     <div class="key-auto-disable-grid">
       <label class="field">
         <span>状态码</span>
-        <input v-model="rule.statusCodesText" placeholder="401,403" :disabled="saving || !enabled" />
+        <input v-model="rule.statusCodesText" placeholder="401,403 或 200" :disabled="saving || !enabled" />
       </label>
       <label class="field">
         <span>状态码下限</span>
         <input v-model.number="rule.statusCodeAtLeast" type="number" min="100" max="599" placeholder="例如 500" :disabled="saving || !enabled" />
       </label>
       <label class="field">
-        <span>触发次数</span>
-        <input v-model.number="rule.threshold" type="number" min="1" max="1000" required :disabled="saving || !enabled" />
+        <span>状态码与文本关系</span>
+        <select v-model="rule.matchLogic" :disabled="saving || !enabled">
+          <option value="AND">同时满足（AND）</option>
+          <option value="OR">满足任一（OR）</option>
+        </select>
       </label>
       <label class="field">
-        <span>统计窗口（分钟）</span>
-        <input v-model.number="rule.windowMinutes" type="number" min="1" max="1440" required :disabled="saving || !enabled" />
+        <span>当次请求动作（提交前）</span>
+        <select v-model="rule.requestAction" :disabled="saving || !enabled">
+          <option value="DEFAULT">跟随系统默认</option>
+          <option value="FAILOVER">切换候选重试（故障转移）</option>
+          <option value="FAIL_FAST">直接报错不重试</option>
+        </select>
       </label>
     </div>
 
     <label class="field">
-      <span>错误文本匹配（每行一个，RE2 正则）</span>
+      <span>错误文本匹配（每行一个，RE2 正则；也可匹配 HTTP 200 流内错误）</span>
       <textarea
         v-model="rule.bodyPatternsText" rows="3"
         placeholder="invalid_api_key&#10;insufficient_quota"
@@ -65,7 +72,7 @@ function removeRule(index: number) {
     </label>
 
     <div class="key-auto-disable-options">
-      <label class="check-row">
+      <label v-if="rule.action !== 'NONE'" class="check-row">
         <input v-model="rule.streak" type="checkbox" :disabled="saving || !enabled" />
         <span>连续计数（成功清零）</span>
       </label>
@@ -77,8 +84,9 @@ function removeRule(index: number) {
 
     <div class="key-auto-disable-grid">
       <label class="field">
-        <span>动作</span>
+        <span>密钥禁用动作</span>
         <select v-model="rule.action" :disabled="saving || !enabled">
+          <option value="NONE">不禁用密钥</option>
           <option value="TEMPORARY">临时停用</option>
           <option value="PERMANENT">永久停用</option>
         </select>
@@ -86,6 +94,14 @@ function removeRule(index: number) {
       <label v-if="rule.action === 'TEMPORARY'" class="field">
         <span>停用时长（分钟）</span>
         <input v-model.number="rule.disableMinutes" type="number" min="1" max="10080" required :disabled="saving || !enabled" />
+      </label>
+      <label v-if="rule.action !== 'NONE'" class="field">
+        <span>触发次数</span>
+        <input v-model.number="rule.threshold" type="number" min="1" max="1000" required :disabled="saving || !enabled" />
+      </label>
+      <label v-if="rule.action !== 'NONE'" class="field">
+        <span>统计窗口（分钟）</span>
+        <input v-model.number="rule.windowMinutes" type="number" min="1" max="1440" required :disabled="saving || !enabled" />
       </label>
     </div>
   </div>

@@ -178,6 +178,17 @@ class ChannelRepository(
         return requireNotNull(findInTransaction(channelId))
     }
 
+    fun setEnabledInTransaction(channelId: String, enabled: Boolean): ChannelRecord? {
+        requireTransaction()
+        Channels.select(Channels.id).where { Channels.id eq channelId }.forUpdate().singleOrNull() ?: return null
+        val now = System.currentTimeMillis()
+        Channels.update({ Channels.id eq channelId }) {
+            it[Channels.enabled] = enabled
+            it[updatedAt] = now
+        }
+        return requireNotNull(findInTransaction(channelId))
+    }
+
     /** 按订阅 provider 查找系统置备的渠道。 */
     suspend fun findProviderChannel(provider: OAuthProvider): ChannelRecord? = inTransaction {
         findProviderChannelInTransaction(provider)
