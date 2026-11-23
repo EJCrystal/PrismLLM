@@ -3,6 +3,7 @@
 create table channel_egress_settings (
     id integer primary key,
     allowed_hosts text not null default '[]',
+    revision bigint not null default 0,
     updated_at bigint not null,
     constraint channel_egress_settings_singleton check (id = 1)
 );

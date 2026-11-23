@@ -84,6 +84,9 @@ describe('渠道出口代理', () => {
       assert.throws(() => parseChannelProxyHostEntries(entry), /有效主机/)
     }
     assert.throws(() => parseChannelProxyHostEntries(Array.from({ length: 65 }, (_, index) => `host${index}.example`).join('\n')), /最多允许/)
+    assert.deepEqual(parseChannelProxyHostEntries('proxy.example., *.example.com.'), ['proxy.example', '*.example.com'])
+    assert.equal(channelProxyHostAllowed('proxy.example.', ['proxy.example']), true)
+    assert.equal(channelProxyHostAllowed('na.example.com', ['*.example.com.']), true)
   })
 
   it('通配只匹配子域名，回环地址始终放行', () => {

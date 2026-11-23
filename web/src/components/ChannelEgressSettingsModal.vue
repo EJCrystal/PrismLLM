@@ -2,6 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
+import { ApiError } from '../types/api'
 import type { ChannelEgressSettings } from '../types/api'
 import { parseChannelProxyHostEntries } from '../utils/channelEgress'
 import Modal from './Modal.vue'
@@ -46,12 +47,21 @@ async function save() {
   }
   saving.value = true
   try {
-    await api.updateChannelEgressSettings({ hosts })
+    await api.updateChannelEgressSettings({
+      hosts,
+      expectedRevision: current.value?.revision ?? null,
+    })
     notify('渠道出口代理白名单已保存，立即生效')
     emit('saved')
     emit('close')
   } catch (cause) {
-    notify(errorMessage(cause), 'error')
+    if (cause instanceof ApiError && cause.code === 'channel_egress_settings_conflict') {
+      // 其他管理员已修改名单：重新加载最新版本，避免用旧快照覆盖。
+      notify('出口代理白名单已被其他管理员修改，已重新加载最新名单，请确认后再次保存', 'warning')
+      await load()
+    } else {
+      notify(errorMessage(cause), 'error')
+    }
   } finally {
     saving.value = false
   }

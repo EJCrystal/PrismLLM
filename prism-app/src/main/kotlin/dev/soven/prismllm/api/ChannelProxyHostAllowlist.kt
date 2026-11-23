@@ -3,12 +3,29 @@ package dev.soven.prismllm.api
 import dev.soven.prismllm.admin.domain.ChannelEgressSettingsRecord
 import dev.soven.prismllm.admin.persistence.ChannelEgressSettingsRepository
 import dev.soven.prismllm.channel.domain.ChannelProxyHosts
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
+/** 生效白名单的不可变快照；一次响应只读取一个引用，避免混用不同版本的字段。 */
+data class ChannelProxyHostState(
+    val storedHosts: List<String>,
+    val deploymentHosts: List<String>,
+    val effectiveHosts: List<String>,
+    val revision: Long,
+    val updatedAt: Long,
+)
+
+class ChannelEgressSettingsConflictException(
+    val expectedRevision: Long?,
+    val actualRevision: Long,
+) : IllegalStateException("出口代理白名单已被其他管理员修改，请重新读取后再保存")
 
 /**
  * 渠道出口代理的生效放行名单：部署环境变量与管理台保存的主机取并集。
  *
- * 数据面读取易失缓存，管理台保存后立即更新，不需要重启网关；
+ * 数据面读取不可变快照，管理台保存后立即更新，不需要重启网关；
  * 启动时从数据库恢复一次，避免第一笔保存前看不到已放行的主机。
+ * 保存与刷新共用一把互斥锁，防止先完成的旧读取覆盖较新的缓存。
  *
  * @author 文杰
  * @since 2026-11-23
@@ -17,39 +34,46 @@ class ChannelProxyHostAllowlist(
     deploymentHosts: Collection<String>,
     private val repository: ChannelEgressSettingsRepository,
 ) {
-    private val deploymentHosts = deploymentHosts.toList()
+    private val mutex = Mutex()
+    private val deployment = deploymentHosts.toList()
 
     @Volatile
-    private var storedHosts: List<String> = emptyList()
+    private var state = ChannelProxyHostState(
+        storedHosts = emptyList(),
+        deploymentHosts = deployment,
+        effectiveHosts = deployment,
+        revision = 0,
+        updatedAt = 0,
+    )
 
-    @Volatile
-    private var storedUpdatedAt: Long = 0
+    fun snapshot(): ChannelProxyHostState = state
 
-    /** 数据面每个候选都会检查；预先合并，避免请求路径反复分配列表。 */
-    @Volatile
-    private var effectiveHosts: List<String> = deploymentHosts
-
-    fun deploymentHosts(): List<String> = deploymentHosts
-
-    fun storedHosts(): List<String> = storedHosts
-
-    fun storedUpdatedAt(): Long? = storedUpdatedAt.takeIf { it > 0 }
-
-    fun effectiveHosts(): List<String> = effectiveHosts
-
-    fun allows(host: String?): Boolean = ChannelProxyHosts.matches(host, effectiveHosts)
+    fun allows(host: String?): Boolean = ChannelProxyHosts.matches(host, state.effectiveHosts)
 
     suspend fun refresh() {
-        val record = repository.load() ?: ChannelEgressSettingsRecord(emptyList(), 0)
-        apply(record)
+        mutex.withLock {
+            apply(repository.load() ?: ChannelEgressSettingsRecord(emptyList(), 0, 0))
+        }
     }
 
-    suspend fun replace(hosts: List<String>): ChannelEgressSettingsRecord =
-        repository.save(hosts).also(::apply)
+    suspend fun replace(hosts: List<String>, expectedRevision: Long? = null): ChannelEgressSettingsRecord =
+        mutex.withLock {
+            val current = repository.load()
+            val actualRevision = current?.revision ?: 0
+            if (expectedRevision != null && expectedRevision != actualRevision) {
+                throw ChannelEgressSettingsConflictException(expectedRevision, actualRevision)
+            }
+            repository.save(hosts, actualRevision + 1).also(::apply)
+        }
 
     private fun apply(record: ChannelEgressSettingsRecord) {
-        storedHosts = record.allowedHosts
-        storedUpdatedAt = record.updatedAt
-        effectiveHosts = (deploymentHosts + record.allowedHosts).distinct()
+        val effective = (deployment + record.allowedHosts).distinct()
+        state = ChannelProxyHostState(
+            storedHosts = record.allowedHosts,
+            deploymentHosts = deployment,
+            effectiveHosts = effective,
+            revision = record.revision,
+            updatedAt = record.updatedAt,
+        )
     }
 }

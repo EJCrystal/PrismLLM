@@ -11,6 +11,7 @@ import org.jetbrains.exposed.v1.core.Table
 object ChannelEgressSettings : Table("channel_egress_settings") {
     val id = integer("id")
     val allowedHosts = text("allowed_hosts").default("[]")
+    val revision = long("revision").default(0)
     val updatedAt = long("updated_at")
 
     override val primaryKey = PrimaryKey(id)

@@ -18,6 +18,14 @@ class ChannelProxyHostsTest {
     }
 
     @Test
+    fun `trailing dots are normalized for entries and requested hosts`() {
+        assertEquals(listOf("proxy.example", "*.example.com"), ChannelProxyHosts.parse("proxy.example.,*.example.com."))
+        assertTrue(ChannelProxyHosts.matches("proxy.example.", listOf("proxy.example")))
+        assertTrue(ChannelProxyHosts.matches("na.example.com", listOf("*.example.com.")))
+        assertFalse(ChannelProxyHosts.matches("example.com.", listOf("*.example.com.")))
+    }
+
+    @Test
     fun `invalid entries cannot smuggle protocol port path or credentials`() {
         listOf(
             "http://proxy.example:8080",

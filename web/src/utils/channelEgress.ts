@@ -7,8 +7,12 @@ export function normalizeChannelProxyHost(host: string): string {
   return host.trim().replace(/^\[/, '').replace(/\]$/, '').toLowerCase().replace(/\.$/, '')
 }
 
+function normalizeEntry(entry: string): string {
+  return entry.trim().toLowerCase().replace(/\.$/, '')
+}
+
 export function isValidChannelProxyHostEntry(entry: string): boolean {
-  const host = entry.trim().toLowerCase()
+  const host = normalizeEntry(entry)
   if (host.startsWith('*.')) {
     const suffix = host.slice(2)
     return suffix.length <= 253 && suffix.includes('.') && hostPattern.test(suffix)
@@ -18,7 +22,7 @@ export function isValidChannelProxyHostEntry(entry: string): boolean {
 
 /** 解析管理台输入的主机列表，支持换行、逗号、分号和空格分隔。 */
 export function parseChannelProxyHostEntries(text: string): string[] {
-  const entries = [...new Set(text.split(/[\s,，;；]+/u).map((entry) => entry.trim().toLowerCase()).filter(Boolean))]
+  const entries = [...new Set(text.split(/[\s,，;；]+/u).map(normalizeEntry).filter(Boolean))]
   if (entries.length > MAX_CHANNEL_PROXY_ALLOWED_HOSTS) {
     throw new Error(`最多允许 ${MAX_CHANNEL_PROXY_ALLOWED_HOSTS} 个主机`)
   }
@@ -32,7 +36,7 @@ export function channelProxyHostAllowed(host: string, allowedHosts: string[]): b
   if (!normalized) return false
   if (loopbackHosts.has(normalized)) return true
   return allowedHosts.some((entry) => {
-    const value = entry.trim().toLowerCase()
+    const value = normalizeEntry(entry)
     if (value.startsWith('*.')) {
       const suffix = value.slice(2)
       return suffix.length > 0 && normalized.length > suffix.length + 1 && normalized.endsWith(`.${suffix}`)

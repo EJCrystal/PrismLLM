@@ -21,7 +21,8 @@ object ChannelProxyHosts {
         parse(raw?.split(',') ?: emptyList(), setting)
 
     fun parse(entries: Iterable<String>, setting: String = "CHANNEL_PROXY_ALLOWED_HOSTS"): List<String> {
-        val normalized = entries.map { it.trim().lowercase() }.filter { it.isNotEmpty() }.distinct()
+        // 尾点在 DNS 中表示绝对域名；统一去掉后再去重和比较，避免保存后匹配不到。
+        val normalized = entries.map(::normalizeEntry).filter { it.isNotEmpty() }.distinct()
         require(normalized.size <= MAX_ALLOWED_HOSTS) { "$setting 最多允许 $MAX_ALLOWED_HOSTS 个主机" }
         normalized.forEach { host ->
             require(isValidEntry(host)) {
@@ -32,7 +33,7 @@ object ChannelProxyHosts {
     }
 
     fun isValidEntry(entry: String): Boolean {
-        val host = entry.trim().lowercase()
+        val host = normalizeEntry(entry)
         if (host.startsWith(WILDCARD_PREFIX)) {
             val suffix = host.removePrefix(WILDCARD_PREFIX)
             return suffix.length <= 253 && '.' in suffix && hostPattern.matches(suffix)
@@ -43,8 +44,10 @@ object ChannelProxyHosts {
     fun matches(host: String?, allowedHosts: Collection<String>): Boolean {
         val normalized = host?.takeIf { it.isNotBlank() }?.let(::normalizeHost) ?: return false
         if (normalized in loopbackHosts) return true
-        return allowedHosts.any { entry -> matchesEntry(normalized, entry.trim().lowercase()) }
+        return allowedHosts.any { entry -> matchesEntry(normalized, normalizeEntry(entry)) }
     }
+
+    private fun normalizeEntry(entry: String): String = entry.trim().lowercase().removeSuffix(".")
 
     private fun matchesEntry(host: String, entry: String): Boolean {
         if (entry.startsWith(WILDCARD_PREFIX)) {

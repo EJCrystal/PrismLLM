@@ -31,21 +31,24 @@ class ChannelEgressSettingsRepository(
             ?.let { row ->
                 ChannelEgressSettingsRecord(
                     allowedHosts = decodeHosts(row[ChannelEgressSettings.allowedHosts]),
+                    revision = row[ChannelEgressSettings.revision],
                     updatedAt = row[ChannelEgressSettings.updatedAt],
                 )
             }
     }
 
-    suspend fun save(allowedHosts: List<String>): ChannelEgressSettingsRecord = suspendTransaction(database) {
-        val updatedAt = nowMs()
-        val encoded = Json.encodeToString(allowedHosts)
-        ChannelEgressSettings.upsert(ChannelEgressSettings.id) {
-            it[id] = SINGLETON_ID
-            it[ChannelEgressSettings.allowedHosts] = encoded
-            it[ChannelEgressSettings.updatedAt] = updatedAt
+    suspend fun save(allowedHosts: List<String>, revision: Long): ChannelEgressSettingsRecord =
+        suspendTransaction(database) {
+            val updatedAt = nowMs()
+            val encoded = Json.encodeToString(allowedHosts)
+            ChannelEgressSettings.upsert(ChannelEgressSettings.id) {
+                it[id] = SINGLETON_ID
+                it[ChannelEgressSettings.allowedHosts] = encoded
+                it[ChannelEgressSettings.revision] = revision
+                it[ChannelEgressSettings.updatedAt] = updatedAt
+            }
+            ChannelEgressSettingsRecord(allowedHosts, revision, updatedAt)
         }
-        ChannelEgressSettingsRecord(allowedHosts, updatedAt)
-    }
 
     private fun decodeHosts(raw: String): List<String> = runCatching {
         Json.decodeFromString<List<String>>(raw)

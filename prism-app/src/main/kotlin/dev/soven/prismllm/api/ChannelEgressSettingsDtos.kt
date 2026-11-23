@@ -6,6 +6,8 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class ChannelEgressSettingsRequest(
     val hosts: List<String> = emptyList(),
+    /** 读取时的版本；不一致说明其他管理员已修改，服务端返回冲突。 */
+    val expectedRevision: Long? = null,
 )
 
 @Serializable
@@ -16,12 +18,19 @@ data class ChannelEgressSettingsResponse(
     val deploymentHosts: List<String>,
     /** 实际生效的并集，包含回环主机的隐式放行。 */
     val effectiveHosts: List<String>,
+    /** 白名单版本；下一次保存可回传它做乐观并发校验。 */
+    val revision: Long,
     val updatedAt: Long? = null,
 )
 
-fun ChannelProxyHostAllowlist.toResponse() = ChannelEgressSettingsResponse(
-    hosts = storedHosts(),
-    deploymentHosts = deploymentHosts(),
-    effectiveHosts = effectiveHosts(),
-    updatedAt = storedUpdatedAt(),
-)
+fun ChannelProxyHostAllowlist.toResponse(): ChannelEgressSettingsResponse {
+    // 只读取一次不可变快照，避免四个字段来自不同版本。
+    val state = snapshot()
+    return ChannelEgressSettingsResponse(
+        hosts = state.storedHosts,
+        deploymentHosts = state.deploymentHosts,
+        effectiveHosts = state.effectiveHosts,
+        revision = state.revision,
+        updatedAt = state.updatedAt.takeIf { it > 0 },
+    )
+}

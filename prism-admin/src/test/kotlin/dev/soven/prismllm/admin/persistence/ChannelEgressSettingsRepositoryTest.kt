@@ -49,18 +49,20 @@ class ChannelEgressSettingsRepositoryTest {
 
     @Test
     fun `saved hosts are returned in order and replace previous entries`() = runBlocking {
-        val first = repository.save(listOf("*.onesproxy.vip", "proxy.example"))
+        val first = repository.save(listOf("*.onesproxy.vip", "proxy.example"), revision = 1)
         assertEquals(listOf("*.onesproxy.vip", "proxy.example"), first.allowedHosts)
+        assertEquals(1, first.revision)
         assertEquals(1_800_000_000_000, first.updatedAt)
 
-        val second = repository.save(listOf("proxy.example"))
+        val second = repository.save(listOf("proxy.example"), revision = 2)
         assertEquals(listOf("proxy.example"), second.allowedHosts)
+        assertEquals(2, second.revision)
         assertEquals(second, repository.load())
     }
 
     @Test
     fun `corrupt stored hosts fall back to an empty list instead of failing startup`() = runBlocking {
-        repository.save(listOf("proxy.example"))
+        repository.save(listOf("proxy.example"), revision = 1)
         suspendTransaction(factory.database) {
             ChannelEgressSettings.update({ ChannelEgressSettings.id eq 1 }) {
                 it[allowedHosts] = "{not-json"

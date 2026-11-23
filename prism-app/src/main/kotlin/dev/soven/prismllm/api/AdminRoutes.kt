@@ -314,7 +314,14 @@ fun Route.adminRoutes(app: GatewayApplication) {
             } catch (cause: IllegalArgumentException) {
                 throw badRequest("invalid_channel_egress_settings", cause.message ?: "渠道出口代理白名单无效")
             }
-            app.channelProxyHostAllowlist.replace(hosts)
+            try {
+                app.channelProxyHostAllowlist.replace(hosts, request.expectedRevision)
+            } catch (cause: ChannelEgressSettingsConflictException) {
+                throw conflict(
+                    "channel_egress_settings_conflict",
+                    cause.message ?: "出口代理白名单已被其他管理员修改，请重新读取后再保存",
+                )
+            }
             call.markAdminAuditDetails(buildJsonObject { put("hosts", hosts.size) })
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(app.channelProxyHostAllowlist.toResponse())

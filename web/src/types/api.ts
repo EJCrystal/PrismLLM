@@ -214,11 +214,14 @@ export interface ChannelEgressSettings {
   deploymentHosts: string[]
   /** 实际生效的并集。 */
   effectiveHosts: string[]
+  /** 白名单版本；保存时回传用于乐观并发校验。 */
+  revision: number
   updatedAt: number | null
 }
 
 export interface ChannelEgressSettingsRequest {
   hosts: string[]
+  expectedRevision?: number | null
 }
 
 export interface Channel {

@@ -628,7 +628,7 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
                 header("X-CSRF-Token", session.session.csrf)
                 contentType(ContentType.Application.Json)
-                setBody("""{"hosts":["*.example.com"]}""")
+                setBody("""{"hosts":["*.example.com."]}""")
             }
             assertEquals(HttpStatusCode.OK, settings.status, settings.bodyAsText())
             val settingsBody = Json.parseToJsonElement(settings.bodyAsText()).jsonObject
@@ -640,6 +640,7 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
                 listOf("*.example.com"),
                 settingsBody.getValue("effectiveHosts").jsonArray.map { it.jsonPrimitive.content },
             )
+            assertEquals(1, settingsBody.getValue("revision").jsonPrimitive.content.toLong())
 
             val accepted = client.post("/admin/api/channels") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")
@@ -650,6 +651,31 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.Created, accepted.status, accepted.bodyAsText())
             val id = Json.parseToJsonElement(accepted.bodyAsText()).jsonObject.getValue("id").jsonPrimitive.content
             assertEquals("us", app.channelRepository.find(id)!!.keys.single().egressProxyId)
+
+            val updated = client.put("/admin/api/channel-egress-settings") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"hosts":["*.example.com","proxy.example"],"expectedRevision":1}""")
+            }
+            assertEquals(HttpStatusCode.OK, updated.status, updated.bodyAsText())
+            assertEquals(
+                2,
+                Json.parseToJsonElement(updated.bodyAsText()).jsonObject.getValue("revision").jsonPrimitive.content.toLong(),
+            )
+
+            val stale = client.put("/admin/api/channel-egress-settings") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"hosts":["stale.example"],"expectedRevision":1}""")
+            }
+            assertEquals(HttpStatusCode.Conflict, stale.status, stale.bodyAsText())
+            assertTrue(stale.bodyAsText().contains("channel_egress_settings_conflict"), stale.bodyAsText())
+            assertEquals(
+                listOf("*.example.com", "proxy.example"),
+                app.channelEgressSettingsRepository.load()?.allowedHosts,
+            )
         }
     }
 }
