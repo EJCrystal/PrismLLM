@@ -80,6 +80,7 @@ describe('App navigation protects model route drafts', () => {
   let confirmResult
   let confirmCalls
   let fetchMock
+  let channelsCanLeave = true
   const button = (scope, label) => {
     const found = [...scope.querySelectorAll('button')].find(node => text(node) === label)
     assert.ok(found, `Expected button ${label}`)
@@ -89,6 +90,7 @@ describe('App navigation protects model route drafts', () => {
     fixture = makeFixture()
     confirmResult = false
     confirmCalls = []
+    channelsCanLeave = true
     window.confirm = message => { confirmCalls.push(message); return confirmResult }
     fetchMock = createFetch(fixture)
     globalThis.fetch = window.fetch = fetchMock
@@ -98,7 +100,7 @@ describe('App navigation protects model route drafts', () => {
     app.provide(ssrContextKey, { modules: new Set() })
     app.mount(host)
     await settle()
-    assert.equal(text(host.querySelector('h1')), '渠道')
+    assert.equal(text(host.querySelector('h1')), '提供商')
     button(host.querySelector('nav'), '模型路由').click()
     await settle()
     assert.equal(text(host.querySelector('h1')), '模型路由')
@@ -114,12 +116,17 @@ describe('App navigation protects model route drafts', () => {
     const errorState = await loadClientComponent(server, 'ErrorState', { Icon: icon })
     routeComponent = await loadClientComponent(server, 'ModelRoutesView', { Icon: icon, ErrorState: errorState })
     const inert = { render: () => h('div') }
+    const channelsStub = {
+      render: () => h('div'),
+      setup(_, { expose }) {
+        expose({ canLeave: () => channelsCanLeave })
+      },
+    }
     const components = {
       Icon: icon,
       ToastStack: inert,
       LoginView: inert,
-      ChannelsView: inert,
-      OAuthAccountsView: inert,
+      ChannelsView: channelsStub,
       ModelRoutesView: routeComponent,
       ClientKeysView: inert,
       LogsView: inert,
@@ -146,7 +153,7 @@ describe('App navigation protects model route drafts', () => {
     makeDraft()
     await nextTick()
     assert.match(text(host.querySelector('.route-save-bar')), /有未保存修改/)
-    button(host.querySelector('nav'), '渠道').click()
+    button(host.querySelector('nav'), '提供商').click()
     await settle()
     assert.equal(text(host.querySelector('h1')), '模型路由')
     assert.equal(host.querySelector('.route-editor') !== null, true)
@@ -154,11 +161,31 @@ describe('App navigation protects model route drafts', () => {
     assert.match(confirmCalls[0], /未保存.*离开页面将丢弃修改/)
 
     confirmResult = true
-    button(host.querySelector('nav'), '渠道').click()
+    button(host.querySelector('nav'), '提供商').click()
     await settle()
-    assert.equal(text(host.querySelector('h1')), '渠道')
+    assert.equal(text(host.querySelector('h1')), '提供商')
     assert.equal(host.querySelector('.route-editor'), null)
     assert.equal(confirmCalls.length, 2)
+  })
+
+  it('keeps the providers view while its mapping drafts refuse to leave', async () => {
+    await mount()
+    button(host.querySelector('nav'), '提供商').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '提供商')
+
+    channelsCanLeave = false
+    button(host.querySelector('nav'), '模型路由').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '提供商', 'dirty provider drafts block sidebar navigation')
+    button(host, '退出登录').click()
+    await settle()
+    assert.ok(host.querySelector('.app-shell'), 'dirty provider drafts block logout')
+
+    channelsCanLeave = true
+    button(host.querySelector('nav'), '模型路由').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '模型路由')
   })
 
   it('protects dirty drafts on explicit logout with the same confirmation', async () => {
@@ -189,7 +216,7 @@ describe('App navigation protects model route drafts', () => {
     await nextTick()
     assert.match(text(host.querySelector('.route-save-bar')), /保存中/)
 
-    button(host.querySelector('nav'), '渠道').click()
+    button(host.querySelector('nav'), '提供商').click()
     button(host, '退出登录').click()
     await settle()
     assert.equal(text(host.querySelector('h1')), '模型路由')
@@ -201,8 +228,8 @@ describe('App navigation protects model route drafts', () => {
     fixture.pendingPut = null
     await settle()
     assert.match(text(host.querySelector('.route-save-bar')), /模型路由已保存/)
-    button(host.querySelector('nav'), '渠道').click()
+    button(host.querySelector('nav'), '提供商').click()
     await settle()
-    assert.equal(text(host.querySelector('h1')), '渠道')
+    assert.equal(text(host.querySelector('h1')), '提供商')
   })
 })

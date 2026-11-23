@@ -4,7 +4,7 @@ import { api } from '../api'
 import { notify } from '../toast'
 import { clearUpstreamModelCache } from '../upstreamModelCache'
 import { ApiError } from '../types/api'
-import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, HealthWindow, ModelDefaultPrice, ModelPrice, ProtocolProbeResult, RuntimeOccupancy, UpstreamRequestOverrides } from '../types/api'
+import type { AdminAuditLog, Channel, ChannelHealthReport, ChannelKeyState, HealthWindow, ModelDefaultPrice, ModelPrice, OAuthAccount, OAuthProviderInfo, ProtocolProbeResult, RuntimeOccupancy, UpstreamRequestOverrides } from '../types/api'
 import { useAutoRefresh } from '../composables/useAutoRefresh'
 import { useMediaQuery } from '../composables/useMediaQuery'
 import CopyButton from './CopyButton.vue'
@@ -21,6 +21,7 @@ import ChannelKeyDisablePolicyModal from './ChannelKeyDisablePolicyModal.vue'
 import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
+import OAuthProviderDrawer, { type OAuthProviderDrawerTab } from './OAuthProviderDrawer.vue'
 import ChannelHealthSummary from './ChannelHealthSummary.vue'
 import ChannelModelPreview from './ChannelModelPreview.vue'
 import ChannelKeyEditor from './ChannelKeyEditor.vue'
@@ -37,9 +38,16 @@ import {
   channelDisplayModels,
   channelLandingUrl,
   recentProbeByChannel as indexRecentProbeByChannel,
-  channelMatchesFilters,
-  channelModelFilterOptions,
 } from '../utils/channelDisplay'
+import type { OAuthAccountStatusFilter } from '../utils/oauthAccount'
+import {
+  buildProviderListItems,
+  providerMatchesFilters,
+  providerModelFilterOptions,
+  summarizeSubscriptionAlerts,
+  type ProviderKindFilter,
+  type ProviderListItem,
+} from '../utils/providerDisplay'
 import type { ChannelFormDraft, OriginalModelMapping } from '../utils/channelForm'
 import { buildChannelPayload, buildPriorityUpdatePayload, canonicalModelSnapshot, channelRoutingHint, isKeyRoutable, mergeProbedProtocols, removeProbeAddedProtocols } from '../utils/channelForm'
 import { channelKeyRateLimitSummary, normalizeChannelKeyRateLimit, validateChannelKeyRateLimit } from '../utils/channelKeyRateLimit'
@@ -100,6 +108,17 @@ interface RateLimitTarget {
 }
 
 const channels = ref<Channel[]>([])
+const oauthDrawer = ref<InstanceType<typeof OAuthProviderDrawer> | null>(null)
+const oauthProviders = ref<OAuthProviderInfo[]>([])
+const oauthAccounts = ref<OAuthAccount[]>([])
+const oauthLoadError = ref('')
+const providerKindFilter = ref<ProviderKindFilter>('all')
+const activeOAuthDrawer = ref<{
+  providerId: string
+  tab: OAuthProviderDrawerTab
+  statusFilter: OAuthAccountStatusFilter
+  autoOpenCreate: boolean
+} | null>(null)
 const relativeNow = ref(Date.now())
 const relativeRefreshMs = ref(60_000)
 const expandedModelChannelIds = ref<string[]>([])
@@ -319,7 +338,12 @@ const error = ref('')
 const channelStatusFilter = ref<ChannelStatusFilter>('all')
 const channelModelFilter = ref('')
 const channelNameFilter = ref('')
-const hasChannelFilters = computed(() => channelStatusFilter.value !== 'all' || !!channelModelFilter.value || !!channelNameFilter.value.trim())
+const hasChannelFilters = computed(() =>
+  providerKindFilter.value !== 'all'
+  || channelStatusFilter.value !== 'all'
+  || !!channelModelFilter.value
+  || !!channelNameFilter.value.trim(),
+)
 const channelToggleSavingIds = ref<string[]>([])
 const showForm = ref(false)
 const saving = ref(false)
@@ -428,19 +452,55 @@ watch(
   { flush: 'sync' },
 )
 
-const enabledCount = computed(() => channels.value.filter((channel) => channel.enabled).length)
-const channelStatusOptions = computed(() => [
-  { id: 'all' as const, label: '全部', count: channels.value.length },
-  { id: 'enabled' as const, label: '启用', count: enabledCount.value },
-  { id: 'disabled' as const, label: '停用', count: channels.value.length - enabledCount.value },
+const providerItems = computed(() =>
+  buildProviderListItems(channels.value, oauthProviders.value, oauthAccounts.value, relativeNow.value),
+)
+const subscriptionCount = computed(() => providerItems.value.filter((item) => item.kind === 'subscription').length)
+const customCount = computed(() => providerItems.value.filter((item) => item.kind === 'custom').length)
+const enabledCount = computed(() => providerItems.value.filter((item) => item.enabled).length)
+const totalStaticKeyCount = computed(() =>
+  channels.value.filter((channel) => channel.kind !== 'provider').reduce((sum, channel) => sum + (channel.keys?.length ?? 0), 0),
+)
+const routableStaticKeyCount = computed(() =>
+  channels.value
+    .filter((channel) => channel.kind !== 'provider')
+    .reduce((sum, channel) => sum + (channel.keys?.filter((key) => isKeyRoutable(key)).length ?? 0), 0),
+)
+const subscriptionAlerts = computed(() => summarizeSubscriptionAlerts(oauthAccounts.value, relativeNow.value))
+const readyOAuthAccountCount = computed(() =>
+  providerItems.value
+    .filter((item) => item.kind === 'subscription')
+    .reduce((sum, item) => sum + item.accountSummary.ready, 0),
+)
+const providerKindOptions = computed(() => [
+  { id: 'all' as const, label: '全部类型', count: providerItems.value.length },
+  { id: 'subscription' as const, label: '官方订阅', count: subscriptionCount.value },
+  { id: 'custom' as const, label: '自定义 API', count: customCount.value },
 ])
-const channelModelOptions = computed(() => channelModelFilterOptions(channels.value))
+const channelStatusOptions = computed(() => [
+  { id: 'all' as const, label: '全部', count: providerItems.value.length },
+  { id: 'enabled' as const, label: '启用', count: enabledCount.value },
+  { id: 'disabled' as const, label: '停用', count: providerItems.value.length - enabledCount.value },
+])
+const channelModelOptions = computed(() => providerModelFilterOptions(providerItems.value))
 watch(channelModelOptions, (models) => {
   if (channelModelFilter.value && !models.includes(channelModelFilter.value)) channelModelFilter.value = ''
 })
-const displayedChannels = computed(() => channels.value
-  .filter((channel) => channelMatchesFilters(channel, channelStatusFilter.value, channelModelFilter.value, channelNameFilter.value))
-  .sort((left, right) => left.name.localeCompare(right.name)))
+const displayedProviders = computed(() => {
+  const matched = providerItems.value.filter((item) =>
+    providerMatchesFilters(item, providerKindFilter.value, channelStatusFilter.value, channelModelFilter.value, channelNameFilter.value),
+  )
+  const subscriptions = matched.filter((item) => item.kind === 'subscription')
+  const customs = matched
+    .filter((item) => item.kind === 'custom')
+    .sort((left, right) => left.displayName.localeCompare(right.displayName))
+  return [...subscriptions, ...customs]
+})
+const activeOAuthDrawerItem = computed(() => {
+  const target = activeOAuthDrawer.value
+  if (!target) return null
+  return providerItems.value.find((item) => item.kind === 'subscription' && item.providerId === target.providerId) ?? null
+})
 const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value, defaultPrices.value))
 const pricePrompt = computed(() => {
   const channelId = pricePromptChannelId.value
@@ -763,6 +823,57 @@ function closeTestDrawer(): void {
 
 const channelUpdateSavingIds = ref<string[]>([])
 
+function openOAuthDrawer(
+  providerId: string,
+  options: { tab?: OAuthProviderDrawerTab; statusFilter?: OAuthAccountStatusFilter; autoOpenCreate?: boolean } = {},
+): void {
+  activeOAuthDrawer.value = {
+    providerId,
+    tab: options.tab ?? 'accounts',
+    statusFilter: options.statusFilter ?? 'all',
+    autoOpenCreate: options.autoOpenCreate ?? false,
+  }
+}
+
+function openQuickCreateSubscriptionAccount(): void {
+  const target = oauthProviders.value.find((provider) => provider.configured) ?? oauthProviders.value[0]
+  if (!target) {
+    notify('当前没有可用的官方订阅提供方', 'warning')
+    return
+  }
+  openOAuthDrawer(target.id, { tab: 'accounts', autoOpenCreate: true })
+}
+
+function consumeAutoCreate(): void {
+  if (activeOAuthDrawer.value) activeOAuthDrawer.value.autoOpenCreate = false
+}
+
+async function toggleSubscriptionProviderEnabled(item: ProviderListItem): Promise<void> {
+  if (!item.providerId) return
+  const savingKey = item.channel?.id ?? item.key
+  if (channelUpdateSavingIds.value.includes(savingKey)) return
+  channelUpdateSavingIds.value = [...channelUpdateSavingIds.value, savingKey]
+  channelToggleSavingIds.value = [...channelToggleSavingIds.value, savingKey]
+  const enabled = !item.enabled
+  try {
+    const updated = await api.updateOAuthProviderEnabled(item.providerId, enabled)
+    listRevision++
+    loading.value = false
+    const index = channels.value.findIndex((existing) => existing.id === updated.id)
+    if (index >= 0) channels.value[index] = updated
+    else channels.value = [...channels.value, updated]
+    clearUpstreamModelCache(updated.id)
+    if (!listDisposed) void loadHealth()
+    notify(`提供商「${item.displayName}」已${enabled ? '启用' : '停用'}`, 'success')
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+    await load()
+  } finally {
+    channelUpdateSavingIds.value = channelUpdateSavingIds.value.filter((id) => id !== savingKey)
+    channelToggleSavingIds.value = channelToggleSavingIds.value.filter((id) => id !== savingKey)
+  }
+}
+
 async function toggleChannelEnabled(channel: Channel): Promise<void> {
   if (channelUpdateSavingIds.value.includes(channel.id)) return
   channelUpdateSavingIds.value = [...channelUpdateSavingIds.value, channel.id]
@@ -779,7 +890,7 @@ async function toggleChannelEnabled(channel: Channel): Promise<void> {
     if (index >= 0) channels.value[index] = updated
     clearUpstreamModelCache(channel.id)
     if (!listDisposed) void loadHealth()
-    notify(`渠道「${channel.name}」已${enabled ? '启用' : '停用'}`, 'success')
+    notify(`提供商「${channel.name}」已${enabled ? '启用' : '停用'}`, 'success')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
     await load()
@@ -794,14 +905,28 @@ async function load(): Promise<boolean> {
   loading.value = true
   error.value = ''
   try {
-    const [channelsData, pricesData, defaultPricesData] = await Promise.all([
+    const [channelsData, pricesData, defaultPricesData, oauthProvidersResult, oauthAccountsResult] = await Promise.all([
       api.listChannels(),
       api.listModelPrices(),
       api.listModelDefaultPrices(),
+      api.listOAuthProviders()
+        .then((value) => ({ ok: true as const, value }))
+        .catch((cause: unknown) => ({ ok: false as const, cause })),
+      api.listOAuthAccounts()
+        .then((value) => ({ ok: true as const, value }))
+        .catch((cause: unknown) => ({ ok: false as const, cause })),
     ])
     if (request !== listRevision) return false
-    // 系统按订阅 provider 置备的端点渠道由账号页维护，不在渠道列表展示。
-    channels.value = (channelsData ?? []).filter((channel) => channel.kind !== 'provider')
+    channels.value = channelsData ?? []
+    // 订阅数据读取失败时保留上次快照，并单独暴露错误，避免把失败伪装成空列表。
+    if (oauthProvidersResult.ok) oauthProviders.value = oauthProvidersResult.value ?? []
+    if (oauthAccountsResult.ok) oauthAccounts.value = oauthAccountsResult.value ?? []
+    const oauthFailures: Array<{ label: string; cause: unknown }> = []
+    if (!oauthProvidersResult.ok) oauthFailures.push({ label: '订阅提供方', cause: oauthProvidersResult.cause })
+    if (!oauthAccountsResult.ok) oauthFailures.push({ label: '订阅账号', cause: oauthAccountsResult.cause })
+    oauthLoadError.value = oauthFailures.length
+      ? `${oauthFailures.map((item) => item.label).join('、')}读取失败：${errorMessage(oauthFailures[0].cause)}`
+      : ''
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
     void loadHealth()
@@ -1207,6 +1332,26 @@ async function remove(channel: Channel): Promise<void> {
   }
 }
 
+function subscriptionActionItems(item: ProviderListItem) {
+  const items: Array<{ id: string; label: string; icon?: string; disabled?: boolean }> = []
+  if (item.providerId) {
+    items.push({ id: 'accounts', label: '管理订阅账号', icon: 'users' })
+    items.push({ id: 'mappings', label: '配置共享模型映射', icon: 'list' })
+  }
+  if (item.channel) {
+    items.push({ id: 'prices', label: '配置模型单价', icon: 'price' })
+    items.push({ id: 'health', label: '查看健康详情', icon: 'chart' })
+  }
+  return items
+}
+
+function subscriptionAction(id: string, item: ProviderListItem) {
+  if (id === 'accounts' && item.providerId) openOAuthDrawer(item.providerId, { tab: 'accounts' })
+  if (id === 'mappings' && item.providerId) openOAuthDrawer(item.providerId, { tab: 'mappings' })
+  if (id === 'prices' && item.channel) openPrice(item.channel)
+  if (id === 'health' && item.channel) healthTarget.value = item.channel
+}
+
 function channelActionItems(channel: Channel) {
   const disableMode = channel.keyDisableMode ?? (channel.keyDisablePolicySet ? 'custom' : 'inherit')
   return [
@@ -1221,7 +1366,7 @@ function channelActionItems(channel: Channel) {
       }[disableMode],
       icon: 'shield',
     },
-    { id: 'delete', label: '删除渠道', icon: 'trash', danger: true },
+    { id: 'delete', label: '删除提供商', icon: 'trash', danger: true },
   ]
 }
 function channelAction(id: string, channel: Channel) {
@@ -1230,6 +1375,14 @@ function channelAction(id: string, channel: Channel) {
   if (id === 'disable-policy') keyDisablePolicyTarget.value = channel
   if (id === 'delete') remove(channel)
 }
+
+/** 侧边栏切换/退出登录前的离开确认：映射抽屉有未保存草稿时先征询用户。 */
+function canLeave(): boolean {
+  if (oauthDrawer.value?.hasDirty() !== true) return true
+  return window.confirm('共享模型映射还有未保存的修改，离开页面将丢弃这些草稿。确定离开吗？')
+}
+
+defineExpose({ canLeave })
 
 useAutoRefresh(healthRefreshMs, () => { void loadHealth() }, () => loading.value || healthLoading.value || document.hidden, { refreshOnVisible: true })
 useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => document.hidden, { refreshOnVisible: true })
@@ -1243,27 +1396,86 @@ onMounted(() => {
 <template>
   <section class="page-stack page-compact">
     <div class="channel-page-head">
-      <dl class="channel-summary" aria-label="渠道概况">
-        <div><dt>渠道总数</dt><dd>{{ channels.length }}</dd></div>
+      <dl class="channel-summary" aria-label="提供商概况">
+        <div><dt>提供商总数</dt><dd>{{ providerItems.length }}</dd></div>
         <div><dt>启用中</dt><dd class="text-success">{{ enabledCount }}</dd></div>
+        <div><dt>API 密钥</dt><dd>{{ routableStaticKeyCount }} / {{ totalStaticKeyCount }}</dd></div>
+        <div><dt>订阅账号</dt><dd>{{ readyOAuthAccountCount }} / {{ oauthAccounts.length }}</dd></div>
       </dl>
       <div class="section-head-actions channel-page-actions">
         <button type="button" class="button ghost" @click="showDefaultPrices = true">
           <Icon name="price" :size="16" />
           模型默认价
         </button>
+        <button
+          v-if="oauthProviders.length"
+          type="button"
+          class="button ghost"
+          @click="openQuickCreateSubscriptionAccount"
+        >
+          <Icon name="users" :size="16" />
+          添加订阅账号
+        </button>
         <button type="button" class="button primary" @click="openCreate">
           <Icon name="plus" :size="17" />
-          新建渠道
+          新建自定义提供商
         </button>
       </div>
     </div>
 
     <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
 
+    <div v-if="oauthLoadError" class="callout warning provider-alert-callout" role="alert">
+      <div>
+        <strong>订阅数据读取失败</strong>
+        <p>{{ oauthLoadError }}。已保留上次成功读取的数据；自定义提供商不受影响。</p>
+      </div>
+      <div class="channel-price-callout-actions">
+        <button type="button" class="button ghost mini" :disabled="loading" @click="load">
+          <Icon name="refresh" :size="14" />
+          重试
+        </button>
+      </div>
+    </div>
+
+    <div
+      v-if="subscriptionAlerts.reauthCount > 0 || subscriptionAlerts.coolingCount > 0 || subscriptionAlerts.quotaBlockedCount > 0"
+      class="callout warning provider-alert-callout"
+    >
+      <div>
+        <strong>订阅账号状态提醒</strong>
+        <p>
+          <template v-if="subscriptionAlerts.reauthCount > 0">{{ subscriptionAlerts.reauthCount }} 个账号需要重新授权</template>
+          <template v-if="subscriptionAlerts.reauthCount > 0 && subscriptionAlerts.coolingCount > 0"> · </template>
+          <template v-if="subscriptionAlerts.coolingCount > 0">{{ subscriptionAlerts.coolingCount }} 个账号冷却中</template>
+          <template v-if="subscriptionAlerts.quotaBlockedCount > 0"> · {{ subscriptionAlerts.quotaBlockedCount }} 个账号额度阻断</template>
+        </p>
+      </div>
+      <div class="channel-price-callout-actions">
+        <button
+          v-if="subscriptionAlerts.firstReauthProviderId"
+          type="button"
+          class="button primary mini"
+          @click="openOAuthDrawer(subscriptionAlerts.firstReauthProviderId, { tab: 'accounts', statusFilter: 'reauth' })"
+        >查看需重授权</button>
+        <button
+          v-else-if="subscriptionAlerts.firstCoolingProviderId"
+          type="button"
+          class="button ghost mini"
+          @click="openOAuthDrawer(subscriptionAlerts.firstCoolingProviderId, { tab: 'accounts', statusFilter: 'cooling' })"
+        >查看冷却账号</button>
+        <button
+          v-else-if="subscriptionAlerts.firstQuotaBlockedProviderId"
+          type="button"
+          class="button ghost mini"
+          @click="openOAuthDrawer(subscriptionAlerts.firstQuotaBlockedProviderId, { tab: 'accounts' })"
+        >查看额度阻断账号</button>
+      </div>
+    </div>
+
     <div v-if="pricePrompt" class="callout warning channel-price-callout">
       <div>
-        <strong>渠道「{{ pricePrompt.channelName }}」还有 {{ pricePrompt.count }} 个上游模型未配置单价</strong>
+        <strong>提供商「{{ pricePrompt.channelName }}」还有 {{ pricePrompt.count }} 个上游模型未配置单价</strong>
         <p>这些请求仍会正常转发，但不会计入费用。</p>
       </div>
       <div class="channel-price-callout-actions">
@@ -1273,35 +1485,36 @@ onMounted(() => {
     </div>
 
     <div class="panel table-panel">
-      <div v-if="channels.length" class="channel-list-toolbar">
+      <div v-if="providerItems.length" class="channel-list-toolbar">
         <label class="search-box channel-name-search">
           <Icon name="search" :size="15" />
-          <input v-model="channelNameFilter" type="search" aria-label="按渠道名称筛选" placeholder="按名称筛选渠道" autocomplete="off" />
+          <input v-model="channelNameFilter" type="search" aria-label="按提供商或订阅账号名称筛选" placeholder="按名称或订阅账号筛选" autocomplete="off" />
         </label>
-        <div class="channel-list-filters" role="group" aria-label="渠道筛选">
+        <div class="channel-list-filters" role="group" aria-label="提供商筛选">
+          <FilterSelect v-model="providerKindFilter" label="类型" default-value="all" :options="providerKindOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelStatusFilter" label="状态" default-value="all" :options="channelStatusOptions.map(option => ({ value: option.id, label: option.label + '（' + option.count + '）' }))" />
           <FilterSelect v-model="channelModelFilter" label="模型" searchable :options="[{ value: '', label: '全部模型' }, ...channelModelOptions.map(model => ({ value: model, label: model }))]" />
-          <button v-if="hasChannelFilters" type="button" class="filter-reset" @click="channelStatusFilter = 'all'; channelModelFilter = ''; channelNameFilter = ''">清除筛选</button>
+          <button v-if="hasChannelFilters" type="button" class="filter-reset" @click="providerKindFilter = 'all'; channelStatusFilter = 'all'; channelModelFilter = ''; channelNameFilter = ''">清除筛选</button>
         </div>
       </div>
       <ErrorState v-if="healthError" title="健康度读取失败" :message="healthError" :busy="healthLoading" @retry="loadHealth" />
       <p v-if="healthReport?.indexing" class="muted small health-indexing-note" role="status">正在分批补齐历史健康度；完成后会自动更新。</p>
       <TablePlaceholder
-        v-if="loading || channels.length === 0"
+        v-if="loading || providerItems.length === 0"
         :loading="loading"
-        loading-text="正在读取渠道…"
-        :empty="channels.length === 0"
+        loading-text="正在读取提供商…"
+        :empty="providerItems.length === 0"
         icon="channels"
-        title="还没有渠道"
-        desc="先接入一个支持所需协议的上游，授权模型并对外提供服务。"
-        action-text="新建渠道"
+        title="还没有提供商"
+        desc="先接入一个自定义 API 上游，或登录 ChatGPT / Antigravity 官方订阅账号。"
+        action-text="新建自定义提供商"
         @action="openCreate"
       />
       <div v-else v-scroll-hint class="table-scroll table-scroll-paged channel-table-view">
         <table class="data-table channels-table">
           <thead>
             <tr>
-              <th class="channel-name-col">名称</th>
+              <th class="channel-name-col">提供商</th>
               <th class="channel-protocols-col">协议</th>
               <th>授权模型</th>
               <th>健康观测</th>
@@ -1310,231 +1523,438 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-if="!displayedChannels.length">
-              <td colspan="6" class="channel-filter-empty muted">当前筛选条件下没有渠道</td>
+            <tr v-if="!displayedProviders.length">
+              <td colspan="6" class="channel-filter-empty muted">当前筛选条件下没有提供商</td>
             </tr>
-            <tr v-for="channel in displayedChannels" :key="channel.id">
-              <td class="channel-name-col">
-                <div class="channel-name-head channel-row-lead">
-                  <a
-                    v-if="channelLandingUrl(channel.baseUrl)"
-                    class="primary-cell channel-name-link"
-                    :href="channelLandingUrl(channel.baseUrl) || undefined"
-                    :title="channel.name + '；在新窗口打开上游地址：' + channelLandingUrl(channel.baseUrl)"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                  >{{ channel.name }}</a>
-                  <div v-else class="primary-cell" :title="channel.name">{{ channel.name }}</div>
-                  <button
-                    type="button"
-                    class="channel-status-toggle"
-                    role="switch"
-                    :class="channel.enabled ? 'is-enabled' : 'is-disabled'"
-                    :aria-checked="channel.enabled"
-                    :aria-label="channel.name + (channel.enabled ? '：已启用，点击停用' : '：已停用，点击启用')"
-                    :title="channel.enabled ? '点击停用该渠道' : '点击启用该渠道'"
-                    :disabled="channelUpdateSavingIds.includes(channel.id)"
-                    @click="toggleChannelEnabled(channel)"
-                  >
-                    <span class="channel-status-track" aria-hidden="true"><span></span></span>
-                    <span class="channel-status-label">{{ channel.enabled ? '启用' : '停用' }}</span>
-                  </button>
-                </div>
-                <div class="channel-id-cell">
-                  <span class="mono muted small channel-id-text" :title="channel.id">{{ channel.id }}</span>
-                  <CopyButton :text="channel.id" title="复制渠道 ID" :size="12" />
-                </div>
-                <div class="muted small">
-                  {{ channel.keys?.length || 0 }} 个密钥
-                  <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => isKeyRoutable(key)).length }} 个启用</template>
-                </div>
-                <div v-if="channel.keys?.some((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY')" class="text-danger small">
-                  {{ channel.keys.filter((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY').length }} 个自动禁用
-                </div>
-                <span v-if="channelRoutingHint(channel)" class="badge warning channel-status-hint" :title="channel.name + '：' + channelRoutingHint(channel)">{{ channelRoutingHint(channel) }}</span>
-              </td>
-              <td class="channel-protocols-col">
-                <div class="channel-row-lead"><ChannelProtocols :protocols="channel.protocols" /></div>
-              </td>
-              <td>
-                <ChannelModelPreview v-if="channel.models?.length" :items="modelPreviewItems(channel)" :list-id="'channel-models-' + channel.id" :expanded="modelsExpanded(channel.id)" @toggle="toggleModels(channel.id)" />
-                <div v-else class="channel-row-lead"><span class="badge warning">未授权模型</span></div>
-                <button
-                  v-if="priceSummary(channel).count > 0"
-                  type="button"
-                  class="channel-price-warning"
-                  title="点击配置模型计费单价"
-                  @click="configureChannelPrices(channel)"
-                >
-                  <Icon name="price" :size="12" />
-                  {{ priceSummary(channel).count }} 个上游模型未定价
-                </button>
-              </td>
-              <td class="channel-status-cell">
-                <div class="channel-status-stack">
-                  <ChannelHealthSummary :channel="channel" :summary="healthDisplayByChannel.get(channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = channel" />
-                  <div
-                    v-if="channelConcurrent(channel.id) > 0"
-                    class="channel-occupancy"
-                    :class="{ 'is-active': channelConcurrent(channel.id) > 0 }"
-                    :title="channelOccupancyTitle(channel)"
-                  >
-                    <span class="channel-occupancy-dot" aria-hidden="true"></span>
-                    在途 {{ channelConcurrent(channel.id) }}
+            <template v-for="item in displayedProviders" :key="item.key">
+              <!-- 官方订阅提供商行 -->
+              <tr v-if="item.kind === 'subscription'" class="provider-subscription-row" :data-provider-id="item.providerId || item.key">
+                <td class="channel-name-col">
+                  <div class="channel-name-head channel-row-lead">
+                    <div class="primary-cell" :title="item.displayName">{{ item.displayName }}</div>
+                    <span class="badge info small provider-kind-badge">官方订阅</span>
+                    <button
+                      v-if="item.channel"
+                      type="button"
+                      class="channel-status-toggle"
+                      role="switch"
+                      :class="item.enabled ? 'is-enabled' : 'is-disabled'"
+                      :aria-checked="item.enabled"
+                      :aria-label="item.displayName + (item.enabled ? '：已启用，点击停用' : '：已停用，点击启用')"
+                      :title="item.enabled ? '点击停用该订阅提供商' : '点击启用该订阅提供商'"
+                      :disabled="channelUpdateSavingIds.includes(item.channel.id)"
+                      @click="toggleSubscriptionProviderEnabled(item)"
+                    >
+                      <span class="channel-status-track" aria-hidden="true"><span></span></span>
+                      <span class="channel-status-label">{{ item.enabled ? '启用' : '停用' }}</span>
+                    </button>
+                    <span v-else-if="!item.configured" class="badge warning small">未配置 OAuth</span>
                   </div>
-                  <button v-if="channelCooldownText(channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(channel)" @click="healthTarget = channel">
-                    {{ channelCooldownText(channel) }}
+                  <div v-if="item.channel" class="channel-id-cell">
+                    <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
+                    <CopyButton :text="item.channel.id" title="复制提供商 ID" :size="12" />
+                  </div>
+                  <div class="muted small">
+                    <template v-if="item.accountSummary.total > 0">
+                      {{ item.accountSummary.total }} 个订阅账号 · {{ item.accountSummary.ready }} 个就绪
+                    </template>
+                    <template v-else>0 个订阅账号 · 尚未接入</template>
+                  </div>
+                  <div v-if="item.accountSummary.reauth > 0 || item.accountSummary.cooling > 0 || item.accountSummary.quotaBlocked > 0" class="small provider-account-alerts">
+                    <span v-if="item.accountSummary.reauth > 0" class="text-danger">{{ item.accountSummary.reauth }} 个需重新授权</span>
+                    <span v-if="item.accountSummary.cooling > 0" class="text-warning">{{ item.accountSummary.cooling }} 个冷却中</span>
+                    <span v-if="item.accountSummary.quotaBlocked > 0" class="text-danger">{{ item.accountSummary.quotaBlocked }} 个额度阻断</span>
+                  </div>
+                </td>
+                <td class="channel-protocols-col">
+                  <div class="channel-row-lead"><ChannelProtocols :protocols="item.protocols" /></div>
+                </td>
+                <td>
+                  <template v-if="item.channel">
+                    <ChannelModelPreview v-if="item.channel.models?.length" :items="modelPreviewItems(item.channel)" :list-id="'channel-models-' + item.channel.id" :expanded="modelsExpanded(item.channel.id)" @toggle="toggleModels(item.channel.id)" />
+                    <div v-else class="channel-row-lead"><span class="badge warning">未同步模型</span></div>
+                    <button
+                      v-if="priceSummary(item.channel).count > 0"
+                      type="button"
+                      class="channel-price-warning"
+                      title="点击配置模型计费单价"
+                      @click="configureChannelPrices(item.channel)"
+                    >
+                      <Icon name="price" :size="12" />
+                      {{ priceSummary(item.channel).count }} 个上游模型未定价
+                    </button>
+                  </template>
+                  <div v-else class="channel-row-lead"><span class="muted small">添加账号后自动置备</span></div>
+                </td>
+                <td class="channel-status-cell">
+                  <div v-if="item.channel" class="channel-status-stack">
+                    <ChannelHealthSummary :channel="item.channel" :summary="healthDisplayByChannel.get(item.channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = item.channel" />
+                    <div
+                      v-if="channelConcurrent(item.channel.id) > 0"
+                      class="channel-occupancy"
+                      :class="{ 'is-active': channelConcurrent(item.channel.id) > 0 }"
+                      :title="channelOccupancyTitle(item.channel)"
+                    >
+                      <span class="channel-occupancy-dot" aria-hidden="true"></span>
+                      在途 {{ channelConcurrent(item.channel.id) }}
+                    </div>
+                  </div>
+                  <span v-else class="muted small">—</span>
+                </td>
+                <td class="muted channel-updated-cell" :title="item.updatedAt ? formatTime(item.updatedAt, { style: 'medium' }) : ''">
+                  <div class="channel-row-lead">{{ item.updatedAt ? formatRelativeTime(item.updatedAt, relativeNow) : '未置备' }}</div>
+                </td>
+                <td class="actions-col">
+                  <div class="row-actions channel-row-lead">
+                    <button
+                      v-if="item.providerId"
+                      type="button"
+                      class="button ghost mini"
+                      :disabled="!item.configured && item.accountSummary.total === 0"
+                      @click="openOAuthDrawer(item.providerId, { tab: 'accounts', autoOpenCreate: item.accountSummary.total === 0 })"
+                    >
+                      {{ item.accountSummary.total > 0 ? '管理账号' : '添加账号' }}
+                    </button>
+                    <button
+                      v-if="item.providerId && item.channel"
+                      type="button"
+                      class="button ghost mini"
+                      @click="openOAuthDrawer(item.providerId, { tab: 'mappings' })"
+                    >
+                      模型映射
+                    </button>
+                    <ActionMenu
+                      v-if="subscriptionActionItems(item).length"
+                      :label="item.displayName + '的更多操作'"
+                      compact
+                      :items="subscriptionActionItems(item)"
+                      @select="subscriptionAction($event, item)"
+                    />
+                  </div>
+                </td>
+              </tr>
+
+              <!-- 自定义 API 提供商行 -->
+              <tr v-else-if="item.channel" :data-channel-id="item.channel.id">
+                <td class="channel-name-col">
+                  <div class="channel-name-head channel-row-lead">
+                    <a
+                      v-if="channelLandingUrl(item.channel.baseUrl)"
+                      class="primary-cell channel-name-link"
+                      :href="channelLandingUrl(item.channel.baseUrl) || undefined"
+                      :title="item.channel.name + '；在新窗口打开上游地址：' + channelLandingUrl(item.channel.baseUrl)"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >{{ item.channel.name }}</a>
+                    <div v-else class="primary-cell" :title="item.channel.name">{{ item.channel.name }}</div>
+                    <span class="badge neutral small provider-kind-badge">自定义 API</span>
+                    <button
+                      type="button"
+                      class="channel-status-toggle"
+                      role="switch"
+                      :class="item.channel.enabled ? 'is-enabled' : 'is-disabled'"
+                      :aria-checked="item.channel.enabled"
+                      :aria-label="item.channel.name + (item.channel.enabled ? '：已启用，点击停用' : '：已停用，点击启用')"
+                      :title="item.channel.enabled ? '点击停用该提供商' : '点击启用该提供商'"
+                      :disabled="channelUpdateSavingIds.includes(item.channel.id)"
+                      @click="toggleChannelEnabled(item.channel)"
+                    >
+                      <span class="channel-status-track" aria-hidden="true"><span></span></span>
+                      <span class="channel-status-label">{{ item.channel.enabled ? '启用' : '停用' }}</span>
+                    </button>
+                  </div>
+                  <div class="channel-id-cell">
+                    <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
+                    <CopyButton :text="item.channel.id" title="复制提供商 ID" :size="12" />
+                  </div>
+                  <div class="muted small">
+                    {{ item.channel.keys?.length || 0 }} 个密钥
+                    <template v-if="item.channel.keys?.length">· {{ item.channel.keys.filter((key) => isKeyRoutable(key)).length }} 个启用</template>
+                  </div>
+                  <div v-if="item.channel.keys?.some((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY')" class="text-danger small">
+                    {{ item.channel.keys.filter((key) => key.state === 'AUTO_PERMANENT' || key.state === 'AUTO_TEMPORARY').length }} 个自动禁用
+                  </div>
+                  <span v-if="channelRoutingHint(item.channel)" class="badge warning channel-status-hint" :title="item.channel.name + '：' + channelRoutingHint(item.channel)">{{ channelRoutingHint(item.channel) }}</span>
+                </td>
+                <td class="channel-protocols-col">
+                  <div class="channel-row-lead"><ChannelProtocols :protocols="item.channel.protocols" /></div>
+                </td>
+                <td>
+                  <ChannelModelPreview v-if="item.channel.models?.length" :items="modelPreviewItems(item.channel)" :list-id="'channel-models-' + item.channel.id" :expanded="modelsExpanded(item.channel.id)" @toggle="toggleModels(item.channel.id)" />
+                  <div v-else class="channel-row-lead"><span class="badge warning">未授权模型</span></div>
+                  <button
+                    v-if="priceSummary(item.channel).count > 0"
+                    type="button"
+                    class="channel-price-warning"
+                    title="点击配置模型计费单价"
+                    @click="configureChannelPrices(item.channel)"
+                  >
+                    <Icon name="price" :size="12" />
+                    {{ priceSummary(item.channel).count }} 个上游模型未定价
                   </button>
-                </div>
-              </td>
-              <td class="muted channel-updated-cell" :title="formatTime(channel.updatedAt, { style: 'medium' })"><div class="channel-row-lead">{{ formatRelativeTime(channel.updatedAt, relativeNow) }}</div></td>
-              <td class="actions-col">
-                <div class="row-actions channel-row-lead">
-                  <button type="button" class="icon-button" title="模型测试：检查上游响应，可能产生调用费用" :aria-label="'模型测试：' + channel.name" @click="openTestDrawer(channel)">
-                    <Icon name="bolt" :size="16" />
-                  </button>
-                  <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
-                    <Icon name="edit" :size="16" />
-                  </button>
-                  <ActionMenu :label="channel.name + '的更多操作'" compact :items="channelActionItems(channel)" @select="channelAction($event, channel)" />
-                </div>
-              </td>
-            </tr>
+                </td>
+                <td class="channel-status-cell">
+                  <div class="channel-status-stack">
+                    <ChannelHealthSummary :channel="item.channel" :summary="healthDisplayByChannel.get(item.channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = item.channel" />
+                    <div
+                      v-if="channelConcurrent(item.channel.id) > 0"
+                      class="channel-occupancy"
+                      :class="{ 'is-active': channelConcurrent(item.channel.id) > 0 }"
+                      :title="channelOccupancyTitle(item.channel)"
+                    >
+                      <span class="channel-occupancy-dot" aria-hidden="true"></span>
+                      在途 {{ channelConcurrent(item.channel.id) }}
+                    </div>
+                    <button v-if="channelCooldownText(item.channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(item.channel)" @click="healthTarget = item.channel">
+                      {{ channelCooldownText(item.channel) }}
+                    </button>
+                  </div>
+                </td>
+                <td class="muted channel-updated-cell" :title="formatTime(item.channel.updatedAt, { style: 'medium' })"><div class="channel-row-lead">{{ formatRelativeTime(item.channel.updatedAt, relativeNow) }}</div></td>
+                <td class="actions-col">
+                  <div class="row-actions channel-row-lead">
+                    <button type="button" class="icon-button" title="模型测试：检查上游响应，可能产生调用费用" :aria-label="'模型测试：' + item.channel.name" @click="openTestDrawer(item.channel)">
+                      <Icon name="bolt" :size="16" />
+                    </button>
+                    <button type="button" class="icon-button" title="编辑提供商" :aria-label="'编辑提供商 ' + item.channel.name" @click="openEdit(item.channel)">
+                      <Icon name="edit" :size="16" />
+                    </button>
+                    <ActionMenu :label="item.channel.name + '的更多操作'" compact :items="channelActionItems(item.channel)" @select="channelAction($event, item.channel)" />
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
-      <div v-if="!loading && displayedChannels.length" class="channel-mobile-list">
-        <article v-for="channel in displayedChannels" :key="channel.id" class="channel-mobile-card">
-          <header class="channel-mobile-head">
-            <div class="channel-mobile-identity">
-              <a
-                v-if="channelLandingUrl(channel.baseUrl)"
-                class="channel-mobile-name"
-                :href="channelLandingUrl(channel.baseUrl) || undefined"
-                :title="`在新窗口打开上游地址：${channelLandingUrl(channel.baseUrl)}`"
-                target="_blank"
-                rel="noopener noreferrer"
-              >{{ channel.name }}</a>
-              <div v-else class="channel-mobile-name" :title="channel.name">{{ channel.name }}</div>
-              <div class="channel-id-cell channel-mobile-id">
-                <span class="mono muted small channel-id-text" :title="channel.id">{{ channel.id }}</span>
-                <CopyButton :text="channel.id" title="复制渠道 ID" :size="12" />
-              </div>
-              <div class="muted small channel-mobile-keys">
-                {{ channel.keys?.length || 0 }} 个密钥
-                <template v-if="channel.keys?.length">· {{ channel.keys.filter((key) => isKeyRoutable(key)).length }} 个启用</template>
-                <template v-if="channelAutoDisabledCount(channel)">· {{ channelAutoDisabledCount(channel) }} 个自动禁用</template>
-              </div>
-              <span
-                v-if="channelRoutingHint(channel)"
-                class="badge warning channel-status-hint"
-                :title="`${channel.name}：${channelRoutingHint(channel)}，当前没有请求会路由到这些密钥`"
-              >{{ channelRoutingHint(channel) }}</span>
-            </div>
-            <button
-              type="button"
-              class="channel-status-toggle"
-              role="switch"
-              :class="channel.enabled ? 'is-enabled' : 'is-disabled'"
-              :aria-checked="channel.enabled"
-              :aria-label="channel.name + (channel.enabled ? '：已启用，点击停用' : '：已停用，点击启用')"
-              :title="channel.enabled ? '点击停用该渠道' : '点击启用该渠道'"
-              :disabled="channelUpdateSavingIds.includes(channel.id)"
-              @click="toggleChannelEnabled(channel)"
-            >
-              <span class="channel-status-track" aria-hidden="true"><span></span></span>
-              <span class="channel-status-label">{{ channel.enabled ? '启用' : '停用' }}</span>
-            </button>
-          </header>
-
-          <div class="channel-mobile-status">
-            <ChannelHealthSummary :channel="channel" :summary="healthDisplayByChannel.get(channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = channel" />
-            <div v-if="channelConcurrent(channel.id) > 0" class="channel-mobile-status-main">
-              <div
-                class="channel-occupancy"
-                :class="{ 'is-active': channelConcurrent(channel.id) > 0 }"
-                :title="channelOccupancyTitle(channel)"
-              >
-                <span class="channel-occupancy-dot" aria-hidden="true"></span>
-                在途 {{ channelConcurrent(channel.id) }}
-              </div>
-            </div>
-            <button v-if="channelCooldownText(channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(channel)" @click="healthTarget = channel">
-              {{ channelCooldownText(channel) }}
-            </button>
-          </div>
-
-          <div class="channel-mobile-meta">
-            <ChannelProtocols :protocols="channel.protocols" :size="20" />
-            <span class="channel-mobile-updated" :title="formatTime(channel.updatedAt, { style: 'medium' })">{{ formatRelativeTime(channel.updatedAt, relativeNow) }}</span>
-          </div>
-          <ChannelModelPreview v-if="channel.models?.length" :items="modelPreviewItems(channel)" :list-id="'channel-mobile-models-' + channel.id" :expanded="modelsExpanded(channel.id)" @toggle="toggleModels(channel.id)" />
-          <span v-else class="badge warning">未授权模型</span>
-
-          <div class="channel-mobile-actions">
-            <button type="button" class="icon-button" title="模型测试：检查上游响应，可能产生调用费用" :aria-label="'模型测试：' + channel.name" @click="openTestDrawer(channel)">
-              <Icon name="bolt" :size="16" />
-            </button>
-            <button type="button" class="icon-button" title="编辑渠道" :aria-label="'编辑渠道 ' + channel.name" @click="openEdit(channel)">
-              <Icon name="edit" :size="16" />
-            </button>
-            <ActionMenu :label="channel.name + '的更多操作'" compact :items="channelActionItems(channel)" @select="channelAction($event, channel)" />
-            <button
-              type="button"
-              class="button ghost mini channel-mobile-details-toggle"
-              :aria-expanded="mobileDetailsOpen(channel.id)"
-              :aria-controls="mobileDetailsOpen(channel.id) ? `channel-mobile-details-${channel.id}` : undefined"
-              @click="toggleMobileDetails(channel.id)"
-            >
-              {{ mobileDetailsOpen(channel.id) ? '收起' : '详情' }}
-              <Icon :name="mobileDetailsOpen(channel.id) ? 'up' : 'chevron'" :size="14" />
-            </button>
-          </div>
-
-          <div v-if="mobileDetailsOpen(channel.id)" :id="`channel-mobile-details-${channel.id}`" class="channel-mobile-details">
-            <div class="channel-mobile-detail-grid">
-              <div class="channel-mobile-detail-item">
-                <span>P95 首 token</span>
-                <strong>{{ channelP95Text(channel) }}</strong>
-              </div>
-              <div class="channel-mobile-detail-item">
-                <span>最近探测</span>
-                <strong>{{ channelProbeText(channel) }}</strong>
-              </div>
-              <div class="channel-mobile-detail-item">
-                <span>更新时间</span>
-                <strong>{{ formatTime(channel.updatedAt) }}</strong>
-              </div>
-            </div>
-
-            <div class="channel-mobile-detail-section">
-              <span class="channel-mobile-detail-label">全部模型 · {{ channelDisplayModels(channel).length }}</span>
-              <div class="channel-mobile-detail-models">
-                <span v-for="item in channelDisplayModels(channel)" :key="item.displayName" class="channel-mobile-detail-model">
-                  <span class="badge info channel-model-name" :title="modelTitle(channel, item)">{{ item.displayName }}</span>
-                  <span v-if="unpricedDisplayModels(channel, item).length" class="channel-model-price-flag">未定价</span>
-                  <span v-else class="channel-model-price-source" :class="`is-${priceSourceForDisplay(channel, item)}`">{{ priceSourceLabel(priceSourceForDisplay(channel, item)) }}</span>
-                </span>
-                <span v-if="!channelDisplayModels(channel).length" class="muted small">未授权模型</span>
-              </div>
-            </div>
-
-            <div class="channel-mobile-detail-section">
-              <span class="channel-mobile-detail-label">密钥 · {{ channel.keys?.length || 0 }}</span>
-              <div class="channel-mobile-detail-keys">
-                <div v-for="key in (channel.keys ?? [])" :key="key.id" class="channel-mobile-key">
-                  <span class="channel-mobile-key-name" :title="key.name">{{ key.name || '未命名密钥' }}</span>
-                  <span class="badge" :class="keyStateBadge(key.state).class">{{ keyStateBadge(key.state).label }}</span>
-                  <span class="muted small channel-mobile-key-meta">{{ channelKeyRateLimitSummary(key.rateLimit) }}</span>
+      <div v-if="!loading && displayedProviders.length" class="channel-mobile-list">
+        <template v-for="item in displayedProviders" :key="item.key">
+          <!-- 手机端：官方订阅提供商卡片 -->
+          <article v-if="item.kind === 'subscription'" class="channel-mobile-card">
+            <header class="channel-mobile-head">
+              <div class="channel-mobile-identity">
+                <div class="channel-mobile-name" :title="item.displayName">
+                  {{ item.displayName }}
+                  <span class="badge info small provider-kind-badge">官方订阅</span>
                 </div>
-                <span v-if="!channel.keys?.length" class="muted small">没有密钥</span>
+                <div v-if="item.channel" class="channel-id-cell channel-mobile-id">
+                  <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
+                  <CopyButton :text="item.channel.id" title="复制提供商 ID" :size="12" />
+                </div>
+                <div class="muted small channel-mobile-keys">
+                  <template v-if="item.accountSummary.total > 0">
+                    {{ item.accountSummary.total }} 个账号 · {{ item.accountSummary.ready }} 个就绪
+                  </template>
+                  <template v-else>0 个账号 · 尚未接入</template>
+                  <template v-if="item.accountSummary.reauth"> · {{ item.accountSummary.reauth }} 个需重授权</template>
+                  <template v-if="item.accountSummary.cooling"> · {{ item.accountSummary.cooling }} 个冷却中</template>
+                </div>
+              </div>
+              <button
+                v-if="item.channel"
+                type="button"
+                class="channel-status-toggle"
+                role="switch"
+                :class="item.enabled ? 'is-enabled' : 'is-disabled'"
+                :aria-checked="item.enabled"
+                :aria-label="item.displayName + (item.enabled ? '：已启用，点击停用' : '：已停用，点击启用')"
+                :disabled="channelUpdateSavingIds.includes(item.channel.id)"
+                @click="toggleSubscriptionProviderEnabled(item)"
+              >
+                <span class="channel-status-track" aria-hidden="true"><span></span></span>
+                <span class="channel-status-label">{{ item.enabled ? '启用' : '停用' }}</span>
+              </button>
+            </header>
+
+            <div v-if="item.channel" class="channel-mobile-status">
+              <ChannelHealthSummary :channel="item.channel" :summary="healthDisplayByChannel.get(item.channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = item.channel" />
+            </div>
+
+            <div class="channel-mobile-meta">
+              <ChannelProtocols :protocols="item.protocols" :size="20" />
+              <span class="channel-mobile-updated">{{ item.updatedAt ? formatRelativeTime(item.updatedAt, relativeNow) : '未置备' }}</span>
+            </div>
+            <ChannelModelPreview v-if="item.channel?.models?.length" :items="modelPreviewItems(item.channel)" :list-id="'channel-mobile-models-' + item.channel.id" :expanded="modelsExpanded(item.channel.id)" @toggle="toggleModels(item.channel.id)" />
+
+            <div class="channel-mobile-actions">
+              <button
+                v-if="item.providerId"
+                type="button"
+                class="button primary mini"
+                :disabled="!item.configured && item.accountSummary.total === 0"
+                @click="openOAuthDrawer(item.providerId, { tab: 'accounts', autoOpenCreate: item.accountSummary.total === 0 })"
+              >
+                {{ item.accountSummary.total > 0 ? '管理账号' : '添加账号' }}
+              </button>
+              <button
+                v-if="item.providerId && item.channel"
+                type="button"
+                class="button ghost mini"
+                @click="openOAuthDrawer(item.providerId, { tab: 'mappings' })"
+              >
+                模型映射
+              </button>
+              <ActionMenu
+                v-if="subscriptionActionItems(item).length"
+                :label="item.displayName + '的更多操作'"
+                compact
+                :items="subscriptionActionItems(item)"
+                @select="subscriptionAction($event, item)"
+              />
+            </div>
+          </article>
+
+          <!-- 手机端：自定义 API 提供商卡片 -->
+          <article v-else-if="item.channel" class="channel-mobile-card">
+            <header class="channel-mobile-head">
+              <div class="channel-mobile-identity">
+                <a
+                  v-if="channelLandingUrl(item.channel.baseUrl)"
+                  class="channel-mobile-name"
+                  :href="channelLandingUrl(item.channel.baseUrl) || undefined"
+                  :title="`在新窗口打开上游地址：${channelLandingUrl(item.channel.baseUrl)}`"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >{{ item.channel.name }}</a>
+                <div v-else class="channel-mobile-name" :title="item.channel.name">{{ item.channel.name }}</div>
+                <div class="channel-id-cell channel-mobile-id">
+                  <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
+                  <CopyButton :text="item.channel.id" title="复制提供商 ID" :size="12" />
+                </div>
+                <div class="muted small channel-mobile-keys">
+                  {{ item.channel.keys?.length || 0 }} 个密钥
+                  <template v-if="item.channel.keys?.length">· {{ item.channel.keys.filter((key) => isKeyRoutable(key)).length }} 个启用</template>
+                  <template v-if="channelAutoDisabledCount(item.channel)">· {{ channelAutoDisabledCount(item.channel) }} 个自动禁用</template>
+                </div>
+                <span
+                  v-if="channelRoutingHint(item.channel)"
+                  class="badge warning channel-status-hint"
+                  :title="`${item.channel.name}：${channelRoutingHint(item.channel)}，当前没有请求会路由到这些密钥`"
+                >{{ channelRoutingHint(item.channel) }}</span>
+              </div>
+              <button
+                type="button"
+                class="channel-status-toggle"
+                role="switch"
+                :class="item.channel.enabled ? 'is-enabled' : 'is-disabled'"
+                :aria-checked="item.channel.enabled"
+                :aria-label="item.channel.name + (item.channel.enabled ? '：已启用，点击停用' : '：已停用，点击启用')"
+                :title="item.channel.enabled ? '点击停用该提供商' : '点击启用该提供商'"
+                :disabled="channelUpdateSavingIds.includes(item.channel.id)"
+                @click="toggleChannelEnabled(item.channel)"
+              >
+                <span class="channel-status-track" aria-hidden="true"><span></span></span>
+                <span class="channel-status-label">{{ item.channel.enabled ? '启用' : '停用' }}</span>
+              </button>
+            </header>
+
+            <div class="channel-mobile-status">
+              <ChannelHealthSummary :channel="item.channel" :summary="healthDisplayByChannel.get(item.channel.id)" :loading="healthLoading" :error="healthError" :observed-at="healthDisplayReport?.to" @open="healthTarget = item.channel" />
+              <div v-if="channelConcurrent(item.channel.id) > 0" class="channel-mobile-status-main">
+                <div
+                  class="channel-occupancy"
+                  :class="{ 'is-active': channelConcurrent(item.channel.id) > 0 }"
+                  :title="channelOccupancyTitle(item.channel)"
+                >
+                  <span class="channel-occupancy-dot" aria-hidden="true"></span>
+                  在途 {{ channelConcurrent(item.channel.id) }}
+                </div>
+              </div>
+              <button v-if="channelCooldownText(item.channel)" type="button" class="channel-cooldown muted small" :title="channelCooldownTitle(item.channel)" @click="healthTarget = item.channel">
+                {{ channelCooldownText(item.channel) }}
+              </button>
+            </div>
+
+            <div class="channel-mobile-meta">
+              <ChannelProtocols :protocols="item.channel.protocols" :size="20" />
+              <span class="channel-mobile-updated" :title="formatTime(item.channel.updatedAt, { style: 'medium' })">{{ formatRelativeTime(item.channel.updatedAt, relativeNow) }}</span>
+            </div>
+            <ChannelModelPreview v-if="item.channel.models?.length" :items="modelPreviewItems(item.channel)" :list-id="'channel-mobile-models-' + item.channel.id" :expanded="modelsExpanded(item.channel.id)" @toggle="toggleModels(item.channel.id)" />
+            <span v-else class="badge warning">未授权模型</span>
+
+            <div class="channel-mobile-actions">
+              <button type="button" class="icon-button" title="模型测试：检查上游响应，可能产生调用费用" :aria-label="'模型测试：' + item.channel.name" @click="openTestDrawer(item.channel)">
+                <Icon name="bolt" :size="16" />
+              </button>
+              <button type="button" class="icon-button" title="编辑提供商" :aria-label="'编辑提供商 ' + item.channel.name" @click="openEdit(item.channel)">
+                <Icon name="edit" :size="16" />
+              </button>
+              <ActionMenu :label="item.channel.name + '的更多操作'" compact :items="channelActionItems(item.channel)" @select="channelAction($event, item.channel)" />
+              <button
+                type="button"
+                class="button ghost mini channel-mobile-details-toggle"
+                :aria-expanded="mobileDetailsOpen(item.channel.id)"
+                :aria-controls="mobileDetailsOpen(item.channel.id) ? `channel-mobile-details-${item.channel.id}` : undefined"
+                @click="toggleMobileDetails(item.channel.id)"
+              >
+                {{ mobileDetailsOpen(item.channel.id) ? '收起' : '详情' }}
+                <Icon :name="mobileDetailsOpen(item.channel.id) ? 'up' : 'chevron'" :size="14" />
+              </button>
+            </div>
+
+            <div v-if="mobileDetailsOpen(item.channel.id)" :id="`channel-mobile-details-${item.channel.id}`" class="channel-mobile-details">
+              <div class="channel-mobile-detail-grid">
+                <div class="channel-mobile-detail-item">
+                  <span>P95 首 token</span>
+                  <strong>{{ channelP95Text(item.channel) }}</strong>
+                </div>
+                <div class="channel-mobile-detail-item">
+                  <span>最近探测</span>
+                  <strong>{{ channelProbeText(item.channel) }}</strong>
+                </div>
+                <div class="channel-mobile-detail-item">
+                  <span>更新时间</span>
+                  <strong>{{ formatTime(item.channel.updatedAt) }}</strong>
+                </div>
+              </div>
+
+              <div class="channel-mobile-detail-section">
+                <span class="channel-mobile-detail-label">全部模型 · {{ channelDisplayModels(item.channel).length }}</span>
+                <div class="channel-mobile-detail-models">
+                  <span v-for="modelItem in channelDisplayModels(item.channel)" :key="modelItem.displayName" class="channel-mobile-detail-model">
+                    <span class="badge info channel-model-name" :title="modelTitle(item.channel, modelItem)">{{ modelItem.displayName }}</span>
+                    <span v-if="unpricedDisplayModels(item.channel, modelItem).length" class="channel-model-price-flag">未定价</span>
+                    <span v-else class="channel-model-price-source" :class="`is-${priceSourceForDisplay(item.channel, modelItem)}`">{{ priceSourceLabel(priceSourceForDisplay(item.channel, modelItem)) }}</span>
+                  </span>
+                  <span v-if="!channelDisplayModels(item.channel).length" class="muted small">未授权模型</span>
+                </div>
+              </div>
+
+              <div class="channel-mobile-detail-section">
+                <span class="channel-mobile-detail-label">密钥 · {{ item.channel.keys?.length || 0 }}</span>
+                <div class="channel-mobile-detail-keys">
+                  <div v-for="key in (item.channel.keys ?? [])" :key="key.id" class="channel-mobile-key">
+                    <span class="channel-mobile-key-name" :title="key.name">{{ key.name || '未命名密钥' }}</span>
+                    <span class="badge" :class="keyStateBadge(key.state).class">{{ keyStateBadge(key.state).label }}</span>
+                    <span class="muted small channel-mobile-key-meta">{{ channelKeyRateLimitSummary(key.rateLimit) }}</span>
+                  </div>
+                  <span v-if="!item.channel.keys?.length" class="muted small">没有密钥</span>
+                </div>
               </div>
             </div>
-          </div>
-        </article>
+          </article>
+        </template>
       </div>
-      <p v-else-if="!loading && channels.length" class="channel-mobile-empty muted">当前筛选条件下没有渠道</p>
+      <p v-else-if="!loading && providerItems.length" class="channel-mobile-empty muted">当前筛选条件下没有提供商</p>
     </div>
+
+    <OAuthProviderDrawer
+      v-if="activeOAuthDrawer && activeOAuthDrawerItem"
+      ref="oauthDrawer"
+      :key="activeOAuthDrawer.providerId"
+      :item="activeOAuthDrawerItem"
+      :channels="channels"
+      :initial-tab="activeOAuthDrawer.tab"
+      :initial-status-filter="activeOAuthDrawer.statusFilter"
+      :auto-open-create="activeOAuthDrawer.autoOpenCreate"
+      :toggling-enabled="Boolean(activeOAuthDrawerItem.channel && channelUpdateSavingIds.includes(activeOAuthDrawerItem.channel.id))"
+      @close="activeOAuthDrawer = null"
+      @changed="load"
+      @auto-create-consumed="consumeAutoCreate"
+      @toggle-enabled="toggleSubscriptionProviderEnabled"
+      @open-prices="openPrice($event)"
+      @open-health="healthTarget = $event"
+    />
 
     <ChannelHealthModal v-if="healthTarget" :key="healthTarget.id" :channel="healthTarget" :initial-window="healthWindow" :concurrent-requests="occupancy ? channelConcurrent(healthTarget.id) : undefined" :last-probe-at="recentProbe(healthTarget)?.createdAt" @close="onCloseHealthModal" />
     <ChannelQuotaModal v-if="quotaTarget" :key="quotaTarget.id" :channel="quotaTarget" @close="quotaTarget = null" @saved="onQuotaSaved" />
@@ -1706,7 +2126,7 @@ onMounted(() => {
             <ChannelEgressProxyEditor :proxies="form.egressProxies" :keys="channelKeys" />
 
             <p v-if="channelKeys.length === 0" class="muted small">
-              当前渠道没有静态密钥。可保存后在「订阅账号」页关联 OAuth 账号，账号会作为该渠道路由凭据。
+              当前渠道没有静态密钥。订阅账号请在「提供商」页的官方订阅提供商里统一管理，系统会自动把它作为路由凭据。
             </p>
 
             <div v-if="!isMobile" class="channel-key-workspace">
@@ -2003,7 +2423,12 @@ onMounted(() => {
 .channel-status-toggle.is-disabled .channel-status-label { color: var(--danger); }
 .channel-status-toggle:disabled { opacity: .55; cursor: wait; }
 .channel-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
-.channel-name-head { display: flex; align-items: center; gap: 8px; min-width: 0; margin-bottom: 2px; }
+.channel-name-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; margin-bottom: 2px; }
+.channel-name-head .primary-cell { flex: 0 1 auto; min-width: 0; }
+.provider-kind-badge { flex: 0 0 auto; font-size: 11px; padding: 1px 6px; }
+.provider-account-alerts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; }
+.provider-alert-callout { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
+.provider-alert-callout p { margin: 2px 0 0; }
 .channel-name-head .primary-cell { flex: 1 1 auto; min-width: 0; }
 .channel-name-head .channel-status-toggle { flex: 0 0 auto; gap: 4px; }
 .channel-name-head .channel-status-track { width: 28px; height: 16px; }
