@@ -25,6 +25,8 @@ const actionLabels: Record<string, string> = {
   'channel.delete': '删除渠道',
   'channel_key.auto_disable': '自动禁用上游密钥',
   'channel_key.auto_recover': '自动恢复上游密钥',
+  'oauth_provider.enabled.update': '切换订阅提供商启停',
+  'oauth_provider.model_mappings.update': '更新订阅提供商共享模型映射',
   'oauth_account.login.start': '发起订阅账号 OAuth 授权',
   'oauth_account.login': '完成订阅账号 OAuth 授权',
   'oauth_account.import': '导入订阅账号',

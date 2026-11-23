@@ -47,6 +47,26 @@ import {
   oauthTestModels,
 } from '../utils/oauthAccount'
 
+const props = withDefaults(defineProps<{
+  /** 嵌入提供商抽屉时限定为单个订阅提供方；未传时展示全部提供方。 */
+  fixedProvider?: string | null
+  /** 初始状态筛选（如从顶部异常提醒跳转进入）。 */
+  initialStatusFilter?: OAuthAccountStatusFilter
+  /** 嵌入抽屉内使用时去掉外层页级间距并精简重复信息。 */
+  embedded?: boolean
+  /** 打开后立即弹出「新建账号」登录弹窗。 */
+  autoOpenCreate?: boolean
+}>(), {
+  fixedProvider: null,
+  initialStatusFilter: 'all',
+  embedded: false,
+  autoOpenCreate: false,
+})
+
+const emit = defineEmits<{
+  (event: 'changed'): void
+}>()
+
 const accounts = ref<OAuthAccount[]>([])
 const providers = ref<OAuthProviderInfo[]>([])
 const channels = ref<Channel[]>([])
@@ -115,15 +135,22 @@ const settingsForm = reactive({
   channelIds: [] as string[],
 })
 
-const activeCount = computed(() => accounts.value.filter((item) => oauthAccountMatchesStatus(item, 'ready', now.value)).length)
-const reauthCount = computed(() => accounts.value.filter((item) => oauthAccountMatchesStatus(item, 'reauth', now.value)).length)
-const coolingCount = computed(() => accounts.value.filter((item) => oauthAccountMatchesStatus(item, 'cooling', now.value)).length)
+const scopedAccounts = computed(() =>
+  props.fixedProvider ? accounts.value.filter((item) => item.provider === props.fixedProvider) : accounts.value,
+)
+const activeCount = computed(() => scopedAccounts.value.filter((item) => oauthAccountMatchesStatus(item, 'ready', now.value)).length)
+const reauthCount = computed(() => scopedAccounts.value.filter((item) => oauthAccountMatchesStatus(item, 'reauth', now.value)).length)
+const coolingCount = computed(() => scopedAccounts.value.filter((item) => oauthAccountMatchesStatus(item, 'cooling', now.value)).length)
 const listQuery = ref('')
-const providerFilter = ref('')
-const statusFilter = ref<OAuthAccountStatusFilter>('all')
+const providerFilter = ref(props.fixedProvider ?? '')
+const statusFilter = ref<OAuthAccountStatusFilter>(props.initialStatusFilter)
 const expandedModels = ref(new Set<string>())
 const expandedQuotas = ref(new Set<string>())
-const hasListFilters = computed(() => !!listQuery.value.trim() || !!providerFilter.value || statusFilter.value !== 'all')
+const hasListFilters = computed(() =>
+  !!listQuery.value.trim()
+  || (!props.fixedProvider && !!providerFilter.value)
+  || statusFilter.value !== 'all',
+)
 const listProviderOptions = computed(() => [...new Set([...providers.value.map((item) => item.id), ...accounts.value.map((item) => item.provider)])]
   .sort((a, b) => oauthProviderLabel(a).localeCompare(oauthProviderLabel(b))))
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
@@ -253,9 +280,9 @@ function accountModelView(account: OAuthAccount) {
   return accountModelViews.value.get(account.id) ?? oauthAccountModelsView(account, channels.value)
 }
 
-const filteredAccounts = computed(() => accounts.value.filter((account) => oauthAccountMatchesFilter(
+const filteredAccounts = computed(() => scopedAccounts.value.filter((account) => oauthAccountMatchesFilter(
   account, accountModelView(account).names,
-  { query: listQuery.value, provider: providerFilter.value, status: statusFilter.value }, now.value,
+  { query: listQuery.value, provider: props.fixedProvider || providerFilter.value, status: statusFilter.value }, now.value,
 )))
 const accountQuotaViews = computed(() => new Map(accounts.value.map((account) => [account.id, oauthQuotaPreview(account, now.value)])))
 
@@ -274,7 +301,7 @@ function toggleStatusFilter(value: OAuthAccountStatusFilter) {
 
 function resetListFilters() {
   listQuery.value = ''
-  providerFilter.value = ''
+  providerFilter.value = props.fixedProvider ?? ''
   statusFilter.value = 'all'
 }
 
@@ -392,6 +419,7 @@ async function syncAccountModels(account: OAuthAccount): Promise<OAuthAccount | 
     const refreshed = accounts.value.find((item) => item.id === account.id) ?? null
     if (context && !settingsContextCurrent(context)) return refreshed
     notify(`已同步 ${result.models.length} 个模型`)
+    emit('changed')
     if (refreshed && context) {
       settingsTarget.value = refreshed
       await loadSettingsMappings(context)
@@ -441,7 +469,7 @@ function resetImportForm(provider: string) {
 function openImport() {
   reauthTarget.value = null
   resetLoginSession()
-  const provider = configuredProviders.value[0]?.id ?? providers.value[0]?.id ?? 'chatgpt'
+  const provider = props.fixedProvider || configuredProviders.value[0]?.id || providers.value[0]?.id || 'chatgpt'
   resetImportForm(provider)
   showImport.value = true
 }
@@ -511,6 +539,7 @@ async function completeLogin() {
     notify(reauthTarget.value ? '订阅账号已重新授权' : '订阅账号已通过浏览器登录')
     showImport.value = false
     await load()
+    emit('changed')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -540,6 +569,7 @@ async function toggleAccountEnabled(account: OAuthAccount) {
     await api.updateOAuthAccountSettings(account.id, { enabled })
     notify(`订阅账号「${account.name}」已${enabled ? '启用' : '停用'}`)
     await load()
+    emit('changed')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -568,6 +598,7 @@ async function clearCooldown(account: OAuthAccount) {
     await api.clearOAuthAccountCooldown(account.id)
     notify('账号冷却已解除')
     await load()
+    emit('changed')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -740,6 +771,7 @@ async function saveSettings() {
       return
     }
     notify('账号设置已更新')
+    emit('changed')
     closeSettings()
   } catch (cause) {
     if (!settingsContextCurrent(context)) return
@@ -774,6 +806,7 @@ async function deleteAccount(account: OAuthAccount) {
     await api.deleteOAuthAccount(account.id)
     notify('订阅账号已删除')
     await load()
+    emit('changed')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -822,12 +855,23 @@ function accountAction(id: string, account: OAuthAccount) {
   else if (id === 'delete') void deleteAccount(account)
 }
 
-onMounted(() => {
-  load()
+onMounted(async () => {
+  await load()
+  if (props.autoOpenCreate) openImport()
   clock = window.setInterval(() => {
     now.value = Date.now()
   }, 30_000)
 })
+
+watch(() => props.fixedProvider, (value) => {
+  providerFilter.value = value ?? ''
+})
+
+watch(() => props.initialStatusFilter, (value) => {
+  statusFilter.value = value
+})
+
+defineExpose({ openImport, reload: load })
 
 onBeforeUnmount(() => {
   settingsGeneration++
@@ -838,10 +882,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="page-stack page-compact oauth-accounts-page">
+  <section class="page-stack page-compact oauth-accounts-page" :class="{ 'is-embedded': embedded }">
     <div class="stat-row four oauth-account-stats" aria-label="订阅账号状态筛选">
       <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'all' }" :aria-pressed="statusFilter === 'all'" @click="toggleStatusFilter('all')">
-        <span>订阅账号</span><strong>{{ accounts.length }}</strong><small>全部账号 · 独立凭据</small>
+        <span>订阅账号</span><strong>{{ scopedAccounts.length }}</strong><small>全部账号 · 独立凭据</small>
       </button>
       <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'ready' }" :aria-pressed="statusFilter === 'ready'" title="已启用且凭据有效；未排除冷却、额度阻断或并发限制，不等于实时可调度" @click="toggleStatusFilter('ready')">
         <span>凭据就绪</span><strong class="text-success">{{ activeCount }}</strong><small>启用且有效 · 非实时可调度</small>
@@ -859,14 +903,14 @@ onBeforeUnmount(() => {
         <Icon name="search" :size="17" />
         <input v-model="listQuery" type="search" aria-label="搜索订阅账号" placeholder="搜索邮箱、账号、渠道或模型" />
       </label>
-      <label class="oauth-provider-filter">
+      <label v-if="!fixedProvider" class="oauth-provider-filter">
         <span class="small muted">提供方</span>
         <select v-model="providerFilter" aria-label="筛选提供方">
           <option value="">全部提供方</option>
           <option v-for="provider in listProviderOptions" :key="provider" :value="provider">{{ oauthProviderLabel(provider) }}</option>
         </select>
       </label>
-      <span class="oauth-filter-count small muted" role="status">展示 {{ filteredAccounts.length }} / 共 {{ accounts.length }}</span>
+      <span class="oauth-filter-count small muted" role="status">展示 {{ filteredAccounts.length }} / 共 {{ scopedAccounts.length }}</span>
       <button v-if="hasListFilters" type="button" class="button ghost mini" @click="resetListFilters">重置筛选</button>
       <button type="button" class="button primary oauth-create-account" @click="openImport">
         <Icon name="plus" :size="17" />新建账号
@@ -876,15 +920,15 @@ onBeforeUnmount(() => {
     <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
 
     <p v-if="!loading && !error && filteredAccounts.length" class="oauth-accounts-scroll-hint small muted">左右滚动可查看额度、调度及操作。</p>
-    <div v-if="loading || !error || accounts.length" class="panel table-panel">
+    <div v-if="loading || !error || scopedAccounts.length" class="panel table-panel">
       <TablePlaceholder
-        v-if="loading || accounts.length === 0"
+        v-if="loading || scopedAccounts.length === 0"
         :loading="loading"
         loading-text="正在读取订阅账号…"
-        :empty="accounts.length === 0"
+        :empty="scopedAccounts.length === 0"
         icon="users"
         title="还没有订阅账号"
-        desc="直接新建 ChatGPT 或 Antigravity 账号，再按需关联渠道；账号不再依赖任何渠道密钥。"
+        :desc="fixedProvider ? `还没有接入 ${oauthProviderLabel(fixedProvider)} 订阅账号，点击新建后通过浏览器登录授权即可使用。` : '直接新建 ChatGPT 或 Antigravity 账号，再按需关联渠道；账号不再依赖任何渠道密钥。'"
         action-text="新建账号"
         @action="openImport"
       />
@@ -1066,7 +1110,7 @@ onBeforeUnmount(() => {
 
         <label class="field">
           <span>提供方</span>
-          <select v-model="importForm.provider" :disabled="reauthTarget != null">
+          <select v-model="importForm.provider" :disabled="reauthTarget != null || !!fixedProvider">
             <option v-for="provider in providers" :key="provider.id" :value="provider.id" :disabled="!provider.configured">
               {{ provider.label }}{{ provider.configured ? '' : '（未配置）' }}
             </option>

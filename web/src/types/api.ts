@@ -1280,6 +1280,15 @@ export interface OAuthProviderInfo {
   label: string
   configured: boolean
   managedChannel: boolean
+  /** 系统已置备该 provider 端点渠道时的渠道 ID；尚未置备时为 null。 */
+  channelId?: string | null
+  baseUrl?: string
+  protocols?: string[]
+}
+
+export interface OAuthProviderModelMappingsUpdateRequest {
+  changes: OAuthModelMappingChange[]
+  expectedRevision: number
 }
 
 export interface OAuthProviderModel {

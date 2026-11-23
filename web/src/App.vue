@@ -6,7 +6,6 @@ import Icon from './components/Icon.vue'
 import ToastStack from './components/ToastStack.vue'
 import LoginView from './components/LoginView.vue'
 import ChannelsView from './components/ChannelsView.vue'
-import OAuthAccountsView from './components/OAuthAccountsView.vue'
 import ModelRoutesView from './components/ModelRoutesView.vue'
 import ClientKeysView from './components/ClientKeysView.vue'
 import LogsView from './components/LogsView.vue'
@@ -18,8 +17,7 @@ import ThemeToggle from './components/ThemeToggle.vue'
 import InfoPopover from './components/InfoPopover.vue'
 
 const navItems = [
-  { id: 'channels', label: '渠道', icon: 'channels' },
-  { id: 'oauth-accounts', label: '订阅账号', icon: 'users' },
+  { id: 'channels', label: '提供商', icon: 'channels' },
   { id: 'model-routes', label: '模型路由', icon: 'list' },
   { id: 'client-keys', label: '调用方密钥', icon: 'keys' },
   { id: 'logs', label: '请求日志', icon: 'logs' },
@@ -30,16 +28,12 @@ const navItems = [
 
 const meta = {
   channels: {
-    title: '渠道',
-    desc: '管理上游接入点，支持多协议组合。凭据加密保存，创建后不再回显。',
-  },
-  'oauth-accounts': {
-    title: '订阅账号',
-    desc: '统一管理 ChatGPT / Antigravity 订阅账号的授权、模型与调度；凭据自动续期，可关联多个渠道，并统一处理上游额度、滑动窗口与 429 冷却。',
+    title: '提供商',
+    desc: '统一管理自定义 API 接入点与官方订阅提供方，集中维护密钥、订阅账号、模型映射、单价与健康度。',
   },
   'model-routes': {
     title: '模型路由',
-    desc: '按对外模型设置跨渠道凭据顺序，统一管理静态密钥与订阅账号。新增模型需要先添加路由凭据。',
+    desc: '按对外模型设置跨提供商凭据顺序，统一管理静态密钥与订阅账号。新增模型需要先添加路由凭据。',
   },
   'client-keys': {
     title: '调用方密钥',
@@ -75,7 +69,6 @@ const isDataView = computed(() => view.value === 'channels' || view.value === 'l
 const isListView = computed(
   () =>
     isDataView.value ||
-    view.value === 'oauth-accounts' ||
     view.value === 'client-keys',
 )
 
@@ -240,7 +233,6 @@ onBeforeUnmount(() => {
 
       <main class="content" :class="{ 'content-data': isDataView, 'content-fill': isListView }">
         <ChannelsView v-if="view === 'channels'" />
-        <OAuthAccountsView v-else-if="view === 'oauth-accounts'" />
         <ModelRoutesView v-else-if="view === 'model-routes'" ref="modelRoutesView" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />

@@ -134,6 +134,32 @@ describe('API 契约的运行时形状', () => {
     assert.deepEqual(account.modelCatalog, ['upstream'], 'Old modelCatalog stays string[]')
   })
 
+  it('订阅提供商启停与独立共享模型映射写接口编码 provider 并发送 JSON', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    const calls = []
+    t.after(() => { globalThis.fetch = originalFetch; globalThis.document = originalDocument })
+    globalThis.document = { cookie: '' }
+    globalThis.fetch = async (input, init = {}) => {
+      calls.push({ url: String(input), method: init.method, body: init.body })
+      return new Response(JSON.stringify({ ok: true }), { status: 200 })
+    }
+    await api.updateOAuthProviderEnabled('chat/gpt', false)
+    await api.updateOAuthProviderModelMappings('chat/gpt', {
+      expectedRevision: 3,
+      changes: [{ upstreamModel: 'm', mode: 'manual', canonicalModelId: 'alias' }],
+    })
+    assert.deepEqual(calls.map((call) => [call.method, call.url]), [
+      ['PUT', '/admin/api/oauth-providers/chat%2Fgpt/enabled'],
+      ['PUT', '/admin/api/oauth-providers/chat%2Fgpt/model-mappings'],
+    ])
+    assert.deepEqual(JSON.parse(calls[0].body), { enabled: false })
+    assert.deepEqual(JSON.parse(calls[1].body), {
+      expectedRevision: 3,
+      changes: [{ upstreamModel: 'm', mode: 'manual', canonicalModelId: 'alias' }],
+    })
+  })
+
   it('模型路由列表分页搜索、详情查询安全编码对外模型 ID，保存仅发送凭据身份', async (t) => {
     const originalFetch = globalThis.fetch
     const originalDocument = globalThis.document

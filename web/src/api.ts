@@ -77,6 +77,7 @@ import type {
   OAuthProviderInfo,
   OAuthProviderModelsResponse,
   OAuthProviderModelMappingsResponse,
+  OAuthProviderModelMappingsUpdateRequest,
   PageOptions,
   ProtocolProbeResponse,
   RequestLog,
@@ -203,8 +204,18 @@ export const api = {
     request<Channel>(`/channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteChannel: (id: string) => request<null>(`/channels/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listOAuthProviders: () => requestList<OAuthProviderInfo>('/oauth-providers'),
+  updateOAuthProviderEnabled: (provider: string, enabled: boolean) =>
+    request<Channel>(`/oauth-providers/${encodeURIComponent(provider)}/enabled`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
   getOAuthProviderModelMappings: (provider: string) =>
     request<OAuthProviderModelMappingsResponse>(`/oauth-providers/${encodeURIComponent(provider)}/model-mappings`),
+  updateOAuthProviderModelMappings: (provider: string, payload: OAuthProviderModelMappingsUpdateRequest) =>
+    request<OAuthProviderModelMappingsResponse>(`/oauth-providers/${encodeURIComponent(provider)}/model-mappings`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }),
   refreshOAuthAccountModels: (id: string) =>
     request<OAuthProviderModelsResponse>(`/oauth-accounts/${encodeURIComponent(id)}/models/refresh`, {
       method: 'POST',
