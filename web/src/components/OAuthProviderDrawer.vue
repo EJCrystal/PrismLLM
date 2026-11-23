@@ -28,6 +28,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'close'): void
   (event: 'changed'): void
+  (event: 'auto-create-consumed'): void
   (event: 'toggle-enabled', item: ProviderListItem): void
   (event: 'open-prices', channel: Channel): void
   (event: 'open-health', channel: Channel): void
@@ -35,14 +36,28 @@ const emit = defineEmits<{
 
 const activeTab = ref<OAuthProviderDrawerTab>(props.initialTab)
 const mappingsPanel = ref<InstanceType<typeof OAuthProviderMappingsPanel> | null>(null)
+/** 映射面板一旦打开就保持挂载，仅用 v-show 切换，避免丢失未保存草稿。 */
+const mappingsMounted = ref(activeTab.value === 'mappings')
 
 watch(() => props.initialTab, (tab) => {
   activeTab.value = tab
 })
 
-watch(() => props.item.key, () => {
+watch(activeTab, (tab) => {
+  if (tab === 'mappings') mappingsMounted.value = true
+})
+
+// 提供商身份而不是列表 key：渠道置备后 key 会变化，不应重置当前标签页。
+watch(() => props.item.providerId, () => {
   activeTab.value = props.initialTab
 })
+
+function requestClose() {
+  if (mappingsMounted.value && mappingsPanel.value?.hasDirty()) {
+    if (!window.confirm('共享模型映射还有未保存的修改，确定关闭并放弃这些草稿吗？')) return
+  }
+  emit('close')
+}
 
 function onAccountsChanged() {
   emit('changed')
@@ -60,7 +75,7 @@ function onMappingsSaved() {
     eyebrow="官方订阅提供商"
     roomy
     mobile-fullscreen
-    @close="$emit('close')"
+    @close="requestClose"
   >
     <template #title-extra>
       <span class="badge info small">官方订阅</span>
@@ -129,16 +144,17 @@ function onMappingsSaved() {
       </div>
     </template>
 
-    <div v-if="activeTab === 'accounts'" class="provider-drawer-pane" role="tabpanel">
+    <div v-show="activeTab === 'accounts'" class="provider-drawer-pane" role="tabpanel">
       <OAuthAccountsView
         :fixed-provider="item.providerId"
         :initial-status-filter="initialStatusFilter"
         :auto-open-create="autoOpenCreate"
         embedded
         @changed="onAccountsChanged"
+        @auto-create-consumed="$emit('auto-create-consumed')"
       />
     </div>
-    <div v-else-if="item.providerId" class="provider-drawer-pane" role="tabpanel">
+    <div v-if="mappingsMounted && item.providerId" v-show="activeTab === 'mappings'" class="provider-drawer-pane" role="tabpanel">
       <OAuthProviderMappingsPanel
         ref="mappingsPanel"
         :provider="item.providerId"

@@ -65,6 +65,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: 'changed'): void
+  /** autoOpenCreate 触发过一次新建弹窗后通知父级清除标志，避免重挂载时重复弹出。 */
+  (event: 'auto-create-consumed'): void
 }>()
 
 const accounts = ref<OAuthAccount[]>([])
@@ -554,6 +556,7 @@ async function refreshToken(account: OAuthAccount) {
     await api.refreshOAuthAccount(account.id)
     notify('access token 已刷新')
     await load()
+    emit('changed')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -584,6 +587,7 @@ async function refreshQuota(account: OAuthAccount) {
     await api.refreshOAuthAccountQuota(account.id)
     notify('上游额度已更新')
     await load()
+    emit('changed')
   } catch (cause) {
     notify(errorMessage(cause), 'error')
   } finally {
@@ -855,12 +859,18 @@ function accountAction(id: string, account: OAuthAccount) {
   else if (id === 'delete') void deleteAccount(account)
 }
 
-onMounted(async () => {
-  await load()
-  if (props.autoOpenCreate) openImport()
+let disposed = false
+
+onMounted(() => {
+  // 计时器先于异步加载创建，保证加载期间卸载也能被 onBeforeUnmount 清理。
   clock = window.setInterval(() => {
     now.value = Date.now()
   }, 30_000)
+  void load().then(() => {
+    if (disposed || !props.autoOpenCreate) return
+    openImport()
+    emit('auto-create-consumed')
+  })
 })
 
 watch(() => props.fixedProvider, (value) => {
@@ -874,6 +884,7 @@ watch(() => props.initialStatusFilter, (value) => {
 defineExpose({ openImport, reload: load })
 
 onBeforeUnmount(() => {
+  disposed = true
   settingsGeneration++
   mappingRequests.invalidate()
   listRequests.invalidate()

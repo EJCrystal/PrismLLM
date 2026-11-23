@@ -110,6 +110,7 @@ interface RateLimitTarget {
 const channels = ref<Channel[]>([])
 const oauthProviders = ref<OAuthProviderInfo[]>([])
 const oauthAccounts = ref<OAuthAccount[]>([])
+const oauthLoadError = ref('')
 const providerKindFilter = ref<ProviderKindFilter>('all')
 const activeOAuthDrawer = ref<{
   providerId: string
@@ -842,6 +843,10 @@ function openQuickCreateSubscriptionAccount(): void {
   openOAuthDrawer(target.id, { tab: 'accounts', autoOpenCreate: true })
 }
 
+function consumeAutoCreate(): void {
+  if (activeOAuthDrawer.value) activeOAuthDrawer.value.autoOpenCreate = false
+}
+
 async function toggleSubscriptionProviderEnabled(item: ProviderListItem): Promise<void> {
   if (!item.providerId) return
   const savingKey = item.channel?.id ?? item.key
@@ -903,13 +908,24 @@ async function load(): Promise<boolean> {
       api.listChannels(),
       api.listModelPrices(),
       api.listModelDefaultPrices(),
-      api.listOAuthProviders().catch(() => [] as OAuthProviderInfo[]),
-      api.listOAuthAccounts().catch(() => [] as OAuthAccount[]),
+      api.listOAuthProviders()
+        .then((value) => ({ ok: true as const, value }))
+        .catch((cause: unknown) => ({ ok: false as const, cause })),
+      api.listOAuthAccounts()
+        .then((value) => ({ ok: true as const, value }))
+        .catch((cause: unknown) => ({ ok: false as const, cause })),
     ])
     if (request !== listRevision) return false
     channels.value = channelsData ?? []
-    oauthProviders.value = oauthProvidersResult ?? []
-    oauthAccounts.value = oauthAccountsResult ?? []
+    // 订阅数据读取失败时保留上次快照，并单独暴露错误，避免把失败伪装成空列表。
+    if (oauthProvidersResult.ok) oauthProviders.value = oauthProvidersResult.value ?? []
+    if (oauthAccountsResult.ok) oauthAccounts.value = oauthAccountsResult.value ?? []
+    const oauthFailures: Array<{ label: string; cause: unknown }> = []
+    if (!oauthProvidersResult.ok) oauthFailures.push({ label: '订阅提供方', cause: oauthProvidersResult.cause })
+    if (!oauthAccountsResult.ok) oauthFailures.push({ label: '订阅账号', cause: oauthAccountsResult.cause })
+    oauthLoadError.value = oauthFailures.length
+      ? `${oauthFailures.map((item) => item.label).join('、')}读取失败：${errorMessage(oauthFailures[0].cause)}`
+      : ''
     prices.value = pricesData ?? []
     defaultPrices.value = defaultPricesData ?? []
     void loadHealth()
@@ -1399,6 +1415,19 @@ onMounted(() => {
     </div>
 
     <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
+
+    <div v-if="oauthLoadError" class="callout warning provider-alert-callout" role="alert">
+      <div>
+        <strong>订阅数据读取失败</strong>
+        <p>{{ oauthLoadError }}。已保留上次成功读取的数据；自定义提供商不受影响。</p>
+      </div>
+      <div class="channel-price-callout-actions">
+        <button type="button" class="button ghost mini" :disabled="loading" @click="load">
+          <Icon name="refresh" :size="14" />
+          重试
+        </button>
+      </div>
+    </div>
 
     <div
       v-if="subscriptionAlerts.reauthCount > 0 || subscriptionAlerts.coolingCount > 0 || subscriptionAlerts.quotaBlockedCount > 0"
@@ -1902,7 +1931,7 @@ onMounted(() => {
 
     <OAuthProviderDrawer
       v-if="activeOAuthDrawer && activeOAuthDrawerItem"
-      :key="activeOAuthDrawerItem.key + ':' + activeOAuthDrawer.tab"
+      :key="activeOAuthDrawer.providerId"
       :item="activeOAuthDrawerItem"
       :channels="channels"
       :initial-tab="activeOAuthDrawer.tab"
@@ -1911,6 +1940,7 @@ onMounted(() => {
       :toggling-enabled="Boolean(activeOAuthDrawerItem.channel && channelUpdateSavingIds.includes(activeOAuthDrawerItem.channel.id))"
       @close="activeOAuthDrawer = null"
       @changed="load"
+      @auto-create-consumed="consumeAutoCreate"
       @toggle-enabled="toggleSubscriptionProviderEnabled"
       @open-prices="openPrice($event)"
       @open-health="healthTarget = $event"

@@ -315,7 +315,11 @@ onBeforeUnmount(() => {
   requests.invalidate()
 })
 
-defineExpose({ reload: load })
+defineExpose({
+  reload: load,
+  /** 供父级在切换/关闭前判断是否有未保存草稿。 */
+  hasDirty: () => dirtyCount.value > 0,
+})
 </script>
 
 <template>
