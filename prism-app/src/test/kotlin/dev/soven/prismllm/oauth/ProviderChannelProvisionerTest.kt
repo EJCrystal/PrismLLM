@@ -632,6 +632,36 @@ class ProviderChannelProvisionerTest {
                 expectedRevision = initial.revision,
             )
         }
+
+        // 未置备的提供方只做开关时不得顺带创建渠道。
+        assertNull(provisioner.setProviderEnabled(OAuthProvider.ANTIGRAVITY, false))
+        assertNull(channels.findProviderChannel(OAuthProvider.ANTIGRAVITY))
+
+        // 人工新增共享映射：先休眠保存，目录出现后由并集自动激活。
+        val withNew = provisioner.updateModelMappings(
+            provider = OAuthProvider.CHATGPT,
+            changes = listOf(ProviderModelMappingChange("fresh", "manual", "fresh-alias")),
+            expectedRevision = updated.revision,
+        )
+        val fresh = withNew.mappings.first { it.mapping.upstreamModel == "fresh" }
+        assertEquals("manual", fresh.mode)
+        assertEquals("fresh-alias", fresh.mapping.publicModelId)
+        assertFalse(fresh.mapping.catalogActive)
+        assertFalse("fresh" in providerChannel().models)
+
+        assertFailsWith<IllegalArgumentException> {
+            provisioner.updateModelMappings(
+                provider = OAuthProvider.CHATGPT,
+                changes = listOf(ProviderModelMappingChange("auto-new", "auto")),
+                expectedRevision = withNew.revision,
+            )
+        }
+        assertEquals(withNew.revision, shared().revision, "被拒绝的新增不能推进版本")
+
+        sync(acc, "fresh" to "fresh-alias")
+        val revived = shared().mappings.first { it.mapping.upstreamModel == "fresh" }
+        assertTrue(revived.mapping.catalogActive)
+        assertTrue("fresh" in providerChannel().models)
     }
 
     private suspend fun account(provider: OAuthProvider = OAuthProvider.CHATGPT, now: Long = System.currentTimeMillis()): OAuthAccountRecord = accounts.create(NewOAuthAccount(name = "account-" + UUID.randomUUID(), provider = provider, refreshToken = cipher.encrypt("refresh")), now)

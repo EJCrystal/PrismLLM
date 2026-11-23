@@ -76,15 +76,24 @@ class ProviderChannelProvisioner(
                 if (expectedRevision != channel.modelMappingRevision) throw ModelMappingRevisionChangedException()
                 channel
             } else {
-                applyModelMappingChangesInTransaction(channel, providerAccounts, validated, expectedRevision)
+                applyModelMappingChangesInTransaction(
+                    channel = channel,
+                    providerAccounts = providerAccounts,
+                    changes = validated,
+                    expectedRevision = expectedRevision,
+                    allowCreate = true,
+                )
             }
             buildModelMappings(provider, saved, providerAccounts)
         }
     }
 
-    /** 切换订阅提供商系统端点渠道的启停总开关。 */
+    /**
+     * 切换订阅提供商系统端点渠道的启停总开关。
+     * 只操作已置备的渠道，不会被一次开关请求顺带创建空渠道。
+     */
     suspend fun setProviderEnabled(provider: OAuthProvider, enabled: Boolean): ChannelRecord? = channels.inTransaction {
-        val channel = channels.ensureProviderChannelInTransaction(provider) ?: return@inTransaction null
+        val channel = channels.findProviderChannelInTransaction(provider, lock = true) ?: return@inTransaction null
         channels.setEnabledInTransaction(channel.id, enabled)
     }
 
@@ -145,12 +154,25 @@ class ProviderChannelProvisioner(
         providerAccounts: List<OAuthAccountRecord>,
         changes: List<ProviderModelMappingChange>,
         expectedRevision: Long,
+        allowCreate: Boolean = false,
     ): ChannelRecord {
         if (expectedRevision != channel.modelMappingRevision) throw ModelMappingRevisionChangedException()
         val defaults = automaticDefaults(providerAccounts)
         val byUpstream = channel.modelMappings.associateBy { it.upstreamModel }.toMutableMap()
         changes.forEach { change ->
-            val previous = requireNotNull(byUpstream[change.upstreamModel]) { "共享目录不存在模型: ${change.upstreamModel}" }
+            val previous = byUpstream[change.upstreamModel]
+            if (previous == null) {
+                require(allowCreate) { "共享目录不存在模型: ${change.upstreamModel}" }
+                // 人工新增共享行：先以休眠手工映射保存，等账号目录出现该模型时再由并集自动激活。
+                require(change.mode != "auto") { "新增共享映射不能使用自动模式: ${change.upstreamModel}" }
+                byUpstream[change.upstreamModel] = ChannelModelRecord(
+                    upstreamModel = change.upstreamModel,
+                    canonicalModelId = if (change.mode == "manual") change.canonicalModelId else null,
+                    mappingSource = "manual",
+                    catalogActive = false,
+                )
+                return@forEach
+            }
             byUpstream[change.upstreamModel] = previous.copy(
                 canonicalModelId = when (change.mode) {
                     "manual" -> change.canonicalModelId

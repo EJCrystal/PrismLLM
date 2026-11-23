@@ -470,10 +470,10 @@ const routableStaticKeyCount = computed(() =>
     .reduce((sum, channel) => sum + (channel.keys?.filter((key) => isKeyRoutable(key)).length ?? 0), 0),
 )
 const subscriptionAlerts = computed(() => summarizeSubscriptionAlerts(oauthAccounts.value, relativeNow.value))
-const readyOAuthAccountCount = computed(() =>
+const schedulableOAuthAccountCount = computed(() =>
   providerItems.value
     .filter((item) => item.kind === 'subscription')
-    .reduce((sum, item) => sum + item.accountSummary.ready, 0),
+    .reduce((sum, item) => sum + item.accountSummary.schedulable, 0),
 )
 const providerKindOptions = computed(() => [
   { id: 'all' as const, label: '全部类型', count: providerItems.value.length },
@@ -1457,7 +1457,10 @@ onMounted(() => {
         <div><dt>提供商总数</dt><dd>{{ providerItems.length }}</dd></div>
         <div><dt>启用中</dt><dd class="text-success">{{ enabledCount }}</dd></div>
         <div><dt>API 密钥</dt><dd>{{ routableStaticKeyCount }} / {{ totalStaticKeyCount }}</dd></div>
-        <div><dt>订阅账号</dt><dd>{{ readyOAuthAccountCount }} / {{ oauthAccounts.length }}</dd></div>
+        <div>
+          <dt>可调度订阅账号</dt>
+          <dd :title="'已启用、凭据有效、未冷却且未被额度阻断的账号 / 全部订阅账号'">{{ schedulableOAuthAccountCount }} / {{ oauthAccounts.length }}</dd>
+        </div>
       </dl>
       <div class="section-head-actions channel-page-actions">
         <button type="button" class="button ghost" @click="showDefaultPrices = true">
@@ -1611,9 +1614,9 @@ onMounted(() => {
                     <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
                     <CopyButton :text="item.channel.id" title="复制提供商 ID" :size="12" />
                   </div>
-                  <div class="muted small">
+                  <div class="muted small" :title="'可调度 = 已启用、凭据有效、未冷却且未被额度阻断'">
                     <template v-if="item.accountSummary.total > 0">
-                      {{ item.accountSummary.total }} 个订阅账号 · {{ item.accountSummary.ready }} 个就绪
+                      {{ item.accountSummary.total }} 个订阅账号 · {{ item.accountSummary.schedulable }} 个可调度
                     </template>
                     <template v-else>0 个订阅账号 · 尚未接入</template>
                   </div>
@@ -1798,9 +1801,9 @@ onMounted(() => {
                   <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
                   <CopyButton :text="item.channel.id" title="复制提供商 ID" :size="12" />
                 </div>
-                <div class="muted small channel-mobile-keys">
+                <div class="muted small channel-mobile-keys" :title="'可调度 = 已启用、凭据有效、未冷却且未被额度阻断'">
                   <template v-if="item.accountSummary.total > 0">
-                    {{ item.accountSummary.total }} 个账号 · {{ item.accountSummary.ready }} 个就绪
+                    {{ item.accountSummary.total }} 个账号 · {{ item.accountSummary.schedulable }} 个可调度
                   </template>
                   <template v-else>0 个账号 · 尚未接入</template>
                   <template v-if="item.accountSummary.reauth"> · {{ item.accountSummary.reauth }} 个需重授权</template>

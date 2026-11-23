@@ -1259,7 +1259,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
             val request = call.receive<OAuthProviderEnabledRequest>()
             val updated = app.providerChannelProvisioner.setProviderEnabled(provider, request.enabled)
-                ?: throw badRequest("oauth_provider_not_servable", "该提供方的上游协议尚未实现: " + provider.value)
+                ?: throw notFound("oauth_provider_not_provisioned", "该提供方尚未置备系统端点渠道")
             val oauthByChannel = app.oauthAccountDirectory.listByChannel()
             call.markAdminAuditDetails(buildJsonObject {
                 put("provider", provider.value)

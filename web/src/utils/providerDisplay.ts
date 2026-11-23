@@ -12,11 +12,22 @@ export type ProviderKindFilter = 'all' | 'custom' | 'subscription'
 
 export interface SubscriptionAccountSummary {
   total: number
+  /** 已启用、凭据有效、未冷却且未被额度阻断，当前可以真正参与调度。 */
+  schedulable: number
   ready: number
   reauth: number
   cooling: number
   quotaBlocked: number
   disabled: number
+}
+
+/** 与后端账号准入对齐的实时可调度判断（不含瞬时并发占用）。 */
+export function isOAuthAccountSchedulable(account: Pick<OAuthAccount, 'enabled' | 'authState' | 'quota' | 'runtime'>, now: number): boolean {
+  return account.enabled
+    && account.authState === 'ACTIVE'
+    && !isOAuthAccountCooling(account, now)
+    && !isOAuthQuotaBlocked(account, now)
+    && account.quota?.allowed !== false
 }
 
 export interface ProviderListItem {
@@ -60,19 +71,21 @@ export function summarizeSubscriptionAccounts(
   accounts: readonly OAuthAccount[],
   now: number,
 ): SubscriptionAccountSummary {
+  let schedulable = 0
   let ready = 0
   let reauth = 0
   let cooling = 0
   let quotaBlocked = 0
   let disabled = 0
   for (const account of accounts) {
+    if (isOAuthAccountSchedulable(account, now)) schedulable++
     if (oauthAccountMatchesStatus(account, 'ready', now)) ready++
     if (account.authState === 'REAUTH_REQUIRED') reauth++
     if (isOAuthAccountCooling(account, now)) cooling++
     if (isOAuthQuotaBlocked(account, now)) quotaBlocked++
     if (!account.enabled) disabled++
   }
-  return { total: accounts.length, ready, reauth, cooling, quotaBlocked, disabled }
+  return { total: accounts.length, schedulable, ready, reauth, cooling, quotaBlocked, disabled }
 }
 
 export function summarizeSubscriptionAlerts(

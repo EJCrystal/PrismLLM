@@ -93,6 +93,7 @@ describe('providerDisplay', () => {
       makeAccount({ id: 'acc-1', provider: 'chatgpt' }),
       makeAccount({ id: 'acc-2', provider: 'chatgpt', authState: 'REAUTH_REQUIRED' }),
       makeAccount({ id: 'acc-3', provider: 'chatgpt', runtime: { windowUsed: 0, cooldownUntil: NOW + 60_000, consecutiveRateLimits: 1, activeRequests: 0, quotaBlockedUntil: null } }),
+      makeAccount({ id: 'acc-4', provider: 'chatgpt', runtime: { windowUsed: 0, cooldownUntil: null, consecutiveRateLimits: 0, activeRequests: 0, quotaBlockedUntil: NOW + 60_000 } }),
     ]
 
     const items = buildProviderListItems(channels, oauthProviders, accounts, NOW)
@@ -100,10 +101,12 @@ describe('providerDisplay', () => {
     assert.equal(items[0].kind, 'subscription')
     assert.equal(items[0].displayName, 'OpenAI 订阅')
     assert.equal(items[0].channel?.id, 'ch-chatgpt')
-    assert.equal(items[0].accountSummary.total, 3)
-    assert.equal(items[0].accountSummary.ready, 2)
+    assert.equal(items[0].accountSummary.total, 4)
+    assert.equal(items[0].accountSummary.ready, 3)
+    assert.equal(items[0].accountSummary.schedulable, 1)
     assert.equal(items[0].accountSummary.reauth, 1)
     assert.equal(items[0].accountSummary.cooling, 1)
+    assert.equal(items[0].accountSummary.quotaBlocked, 1)
 
     assert.equal(items[1].kind, 'subscription')
     assert.equal(items[1].key, 'oauth:antigravity')
@@ -123,9 +126,9 @@ describe('providerDisplay', () => {
     const alerts = summarizeSubscriptionAlerts(accounts, NOW)
     assert.equal(alerts.reauthCount, 1)
     assert.equal(alerts.coolingCount, 1)
-    assert.equal(alerts.quotaBlockedCount, 0)
+    assert.equal(alerts.quotaBlockedCount, 1)
     assert.equal(alerts.firstReauthProviderId, 'chatgpt')
     assert.equal(alerts.firstCoolingProviderId, 'chatgpt')
-    assert.equal(alerts.firstQuotaBlockedProviderId, null)
+    assert.equal(alerts.firstQuotaBlockedProviderId, 'chatgpt')
   })
 })
