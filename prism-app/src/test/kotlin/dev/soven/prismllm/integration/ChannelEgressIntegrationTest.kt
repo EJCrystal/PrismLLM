@@ -2,6 +2,7 @@ package dev.soven.prismllm.integration
 
 import com.sun.net.httpserver.HttpServer
 import dev.soven.prismllm.admin.domain.WebSearchSettingsRecord
+import dev.soven.prismllm.api.ChannelProxyHostAllowlist
 import dev.soven.prismllm.api.parseChannelProxy
 import dev.soven.prismllm.api.withUpstreamClient
 import dev.soven.prismllm.api.normalizeChannelProxies
@@ -613,6 +614,10 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
         val session = app.sessions.create("admin")
         testApplication {
             application { app.install(this) }
+            // 模拟另一个实例：未刷新前持有旧快照，周期刷新后收敛。
+            val replica = ChannelProxyHostAllowlist(app.config.channelProxyAllowedHosts, app.channelEgressSettingsRepository)
+            replica.refresh()
+            assertFalse(replica.allows("egress.example.com"))
             val body = """{"name":"allowlist-channel","baseUrl":"${fake.baseUrl}/ok/v1","modelMappings":[{"upstreamModel":"m1"}],"egressProxies":[{"id":"us","name":"美国","url":"http://egress.example.com:8080"}],"keys":[{"name":"key","credential":"secret","models":["m1"],"egressProxyId":"us"}]}"""
 
             val rejected = client.post("/admin/api/channels") {
@@ -641,6 +646,11 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
                 settingsBody.getValue("effectiveHosts").jsonArray.map { it.jsonPrimitive.content },
             )
             assertEquals(1, settingsBody.getValue("revision").jsonPrimitive.content.toLong())
+
+            // 另一个实例在刷新前仍使用旧快照，刷新后看到新放行结果。
+            assertFalse(replica.allows("egress.example.com"))
+            replica.refresh()
+            assertTrue(replica.allows("egress.example.com"))
 
             val accepted = client.post("/admin/api/channels") {
                 header(HttpHeaders.Cookie, "gw_session=${session.token}")

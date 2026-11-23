@@ -4,11 +4,13 @@ import dev.soven.prismllm.admin.domain.ChannelEgressSettingsRecord
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.Database
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
-import org.jetbrains.exposed.v1.jdbc.upsert
+import org.jetbrains.exposed.v1.jdbc.update
 import org.slf4j.LoggerFactory
 
 /**
@@ -37,18 +39,57 @@ class ChannelEgressSettingsRepository(
             }
     }
 
-    suspend fun save(allowedHosts: List<String>, revision: Long): ChannelEgressSettingsRecord =
+    /**
+     * 按版本条件保存。返回 null 表示 `expectedRevision` 与数据库当前版本不一致，
+     * 调用方应提示重新读取；版本校验与写入在同一个事务和行锁内完成，跨实例也安全。
+     */
+    suspend fun save(allowedHosts: List<String>, expectedRevision: Long?): ChannelEgressSettingsRecord? =
         suspendTransaction(database) {
-            val updatedAt = nowMs()
             val encoded = Json.encodeToString(allowedHosts)
-            ChannelEgressSettings.upsert(ChannelEgressSettings.id) {
+            val updatedAt = nowMs()
+            val current = ChannelEgressSettings.selectAll()
+                .where { ChannelEgressSettings.id eq SINGLETON_ID }
+                .forUpdate()
+                .singleOrNull()
+            if (current != null) {
+                return@suspendTransaction updateLocked(current, allowedHosts, encoded, expectedRevision, updatedAt)
+            }
+            if (expectedRevision != null && expectedRevision != 0L) return@suspendTransaction null
+            val inserted = ChannelEgressSettings.insertIgnore {
                 it[id] = SINGLETON_ID
                 it[ChannelEgressSettings.allowedHosts] = encoded
-                it[ChannelEgressSettings.revision] = revision
+                it[ChannelEgressSettings.revision] = 1
                 it[ChannelEgressSettings.updatedAt] = updatedAt
             }
-            ChannelEgressSettingsRecord(allowedHosts, revision, updatedAt)
+            if (inserted.insertedCount > 0) {
+                return@suspendTransaction ChannelEgressSettingsRecord(allowedHosts, 1, updatedAt)
+            }
+            // 另一个实例刚插入单行配置；重新加锁后按当前版本更新。
+            val existing = ChannelEgressSettings.selectAll()
+                .where { ChannelEgressSettings.id eq SINGLETON_ID }
+                .forUpdate()
+                .singleOrNull()
+                ?: return@suspendTransaction null
+            updateLocked(existing, allowedHosts, encoded, expectedRevision, updatedAt)
         }
+
+    private fun updateLocked(
+        current: ResultRow,
+        allowedHosts: List<String>,
+        encoded: String,
+        expectedRevision: Long?,
+        updatedAt: Long,
+    ): ChannelEgressSettingsRecord? {
+        val currentRevision = current[ChannelEgressSettings.revision]
+        if (expectedRevision != null && expectedRevision != currentRevision) return null
+        val revision = currentRevision + 1
+        ChannelEgressSettings.update({ ChannelEgressSettings.id eq SINGLETON_ID }) {
+            it[ChannelEgressSettings.allowedHosts] = encoded
+            it[ChannelEgressSettings.revision] = revision
+            it[ChannelEgressSettings.updatedAt] = updatedAt
+        }
+        return ChannelEgressSettingsRecord(allowedHosts, revision, updatedAt)
+    }
 
     private fun decodeHosts(raw: String): List<String> = runCatching {
         Json.decodeFromString<List<String>>(raw)

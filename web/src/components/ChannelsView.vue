@@ -1221,8 +1221,12 @@ async function probeProtocols(): Promise<void> {
   }
 }
 
-/** 保存被主机白名单拒绝时，列出缺失主机并询问是否放行；放行成功后由调用方重试保存。 */
-async function allowBlockedProxyHosts(): Promise<boolean> {
+/**
+ * 保存被主机白名单拒绝时，列出缺失主机并询问是否放行；放行成功后由调用方重试保存。
+ * 只使用发起保存时捕获的代理地址，异步返回后再确认草稿会话仍有效，避免为切换后的新草稿放行。
+ */
+async function allowBlockedProxyHosts(draftSession: number, proxyUrls: string[]): Promise<boolean> {
+  if (draftSession !== channelDraftSession) return false
   let settings
   try {
     settings = await api.getChannelEgressSettings()
@@ -1230,12 +1234,11 @@ async function allowBlockedProxyHosts(): Promise<boolean> {
     notify(errorMessage(cause), 'error')
     return false
   }
-  const blocked = blockedChannelProxyHosts(
-    form.egressProxies.map((proxy) => proxy.url),
-    settings.effectiveHosts,
-  )
+  if (draftSession !== channelDraftSession) return false
+  const blocked = blockedChannelProxyHosts(proxyUrls, settings.effectiveHosts)
   if (!blocked.length) return false
   if (!window.confirm(`以下出口代理主机不在白名单：\n${blocked.join('\n')}\n\n是否放行并重试保存？`)) return false
+  if (draftSession !== channelDraftSession) return false
   try {
     await api.updateChannelEgressSettings({
       hosts: [...settings.hosts, ...blocked],
@@ -1257,6 +1260,7 @@ async function allowBlockedProxyHosts(): Promise<boolean> {
 async function save(): Promise<void> {
   if (saving.value) return
   const draftSession = channelDraftSession
+  const draftProxyUrls = form.egressProxies.map((proxy) => proxy.url)
   if (!form.name.trim() || !form.baseUrl.trim()) {
     focusFormSection('basic')
     notify('请填写渠道名称和基础地址', 'error')
@@ -1353,7 +1357,7 @@ async function save(): Promise<void> {
       notify(wasEditing ? '渠道已更新' : '渠道已创建')
     }
   } catch (cause) {
-    if (cause instanceof ApiError && cause.code === 'channel_proxy_host_not_allowed' && await allowBlockedProxyHosts()) {
+    if (cause instanceof ApiError && cause.code === 'channel_proxy_host_not_allowed' && await allowBlockedProxyHosts(draftSession, draftProxyUrls)) {
       retryAfterAllow = true
     } else {
       notify(errorMessage(cause), 'error')

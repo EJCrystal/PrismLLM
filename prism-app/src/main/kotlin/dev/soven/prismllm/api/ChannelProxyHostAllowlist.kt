@@ -17,7 +17,6 @@ data class ChannelProxyHostState(
 
 class ChannelEgressSettingsConflictException(
     val expectedRevision: Long?,
-    val actualRevision: Long,
 ) : IllegalStateException("出口代理白名单已被其他管理员修改，请重新读取后再保存")
 
 /**
@@ -58,12 +57,10 @@ class ChannelProxyHostAllowlist(
 
     suspend fun replace(hosts: List<String>, expectedRevision: Long? = null): ChannelEgressSettingsRecord =
         mutex.withLock {
-            val current = repository.load()
-            val actualRevision = current?.revision ?: 0
-            if (expectedRevision != null && expectedRevision != actualRevision) {
-                throw ChannelEgressSettingsConflictException(expectedRevision, actualRevision)
-            }
-            repository.save(hosts, actualRevision + 1).also(::apply)
+            val record = repository.save(hosts, expectedRevision)
+                ?: throw ChannelEgressSettingsConflictException(expectedRevision)
+            apply(record)
+            record
         }
 
     private fun apply(record: ChannelEgressSettingsRecord) {

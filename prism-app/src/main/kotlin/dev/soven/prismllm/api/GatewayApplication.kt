@@ -140,6 +140,8 @@ private const val FORWARDED_FOR_HEADER = "X-Forwarded-For"
 private const val REAL_IP_HEADER = "X-Real-IP"
 private const val FORWARDED_HEADER = "Forwarded"
 private const val MAX_USER_AGENT_LOG_LENGTH = 512
+/** 多实例部署时，其他实例保存的白名单最多 30 秒内收敛到本实例。 */
+private const val CHANNEL_PROXY_ALLOWLIST_REFRESH_INTERVAL_MS = 30_000L
 
 internal data class RequestAccessLogMetadata(
     val requestId: String,
@@ -797,6 +799,7 @@ class GatewayApplication(
         modelPriceReferenceService.start(scope)
         if (config.upstreamHeaderRefreshEnabled) upstreamHeaderCatalogService.start(scope)
         startKeyAutoRecovery()
+        startChannelProxyAllowlistRefresh()
         runBlocking { notificationRuntime.start() }
         oauthTokenService.start(scope)
         oauthQuotaService.start(scope)
@@ -870,6 +873,25 @@ class GatewayApplication(
                 delay(intervalMs)
             }
         })
+    }
+
+    /**
+     * 其他实例保存白名单后，本实例通过周期性刷新收敛；30 秒是跨实例撤销/放行的最大延迟。
+     * 数据面仍读取内存快照，不增加请求路径的数据库访问。
+     */
+    private fun startChannelProxyAllowlistRefresh() {
+        scope.launch {
+            while (isActive) {
+                delay(CHANNEL_PROXY_ALLOWLIST_REFRESH_INTERVAL_MS)
+                try {
+                    channelProxyHostAllowlist.refresh()
+                } catch (cause: CancellationException) {
+                    throw cause
+                } catch (cause: Throwable) {
+                    logger.warn("channel egress allowlist refresh failed", cause)
+                }
+            }
+        }
     }
 
     private suspend fun seedAdmin() {
