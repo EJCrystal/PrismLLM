@@ -75,8 +75,13 @@ internal fun geminiToChatRequest(request: JsonObject, upstreamModel: String): Js
     geminiThinkingToEffort(config)?.let { put("reasoning_effort", it) }
 }.asChatUpstream(upstreamModel)
 
-internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
+internal fun chatToGeminiRequest(
+    chat: JsonObject,
+    upstreamModel: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject = buildJsonObject {
     rejectUnknownFields(chat, chatRequestFields, "request")
+    val allowDummyThought = allowsDummyThoughtSignature(upstreamModel)
     val system = mutableListOf<String>()
     val contents = mutableListOf<JsonObject>()
     val callNames = mutableMapOf<String, String>()
@@ -98,21 +103,28 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
                 (message["tool_calls"] as? JsonArray)?.forEachIndexed { callIndex, callElement ->
                     val call = callElement as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex]", "工具调用必须是对象")
                     val function = call["function"] as? JsonObject ?: unsupported("messages[$index].tool_calls[$callIndex].function", "缺少 function")
-                    val callId = call.string("id") ?: unsupported("messages[$index].tool_calls[$callIndex].id", "工具调用缺少 id")
+                    val rawCallId = call.string("id") ?: unsupported("messages[$index].tool_calls[$callIndex].id", "工具调用缺少 id")
+                    val (ownCallId, carriedSignature) = ReasoningCarry.splitThoughtSignature(rawCallId, carry)
                     val callName = function.string("name") ?: unsupported("messages[$index].tool_calls[$callIndex].function.name", "工具调用缺少 name")
-                    callNames[callId] = callName
+                    callNames[rawCallId] = callName
+                    callNames[ownCallId] = callName
                     parts += buildJsonObject {
                         putJsonObject("functionCall") {
                             put("name", callName)
                             put("args", parseJsonObjectOrEmpty(function.string("arguments")))
+                        }
+                        if (carriedSignature != null && (allowDummyThought || carriedSignature != GEMINI_SKIP_THOUGHT_SIGNATURE)) {
+                            put("thoughtSignature", carriedSignature)
                         }
                     }
                 }
                 if (parts.isNotEmpty()) contents += buildJsonObject { put("role", "model"); put("parts", JsonArray(parts)) }
             }
             "tool" -> {
-                val callId = message.string("tool_call_id") ?: unsupported("messages[$index].tool_call_id", "tool 消息缺少 tool_call_id")
-                val callName = callNames[callId] ?: unsupported("messages[$index].tool_call_id", "找不到对应的工具调用")
+                val rawCallId = message.string("tool_call_id") ?: unsupported("messages[$index].tool_call_id", "tool 消息缺少 tool_call_id")
+                val (ownCallId, _) = ReasoningCarry.splitThoughtSignature(rawCallId, carry)
+                val callName = callNames[rawCallId] ?: callNames[ownCallId]
+                    ?: unsupported("messages[$index].tool_call_id", "找不到对应的工具调用")
                 val result = chatContentToToolResultContent(message["content"], "messages[$index].content")
                 contents += buildJsonObject {
                     put("role", "user")
@@ -133,7 +145,7 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
     if (system.isNotEmpty()) put("systemInstruction", buildJsonObject {
         put("parts", buildJsonArray { add(buildJsonObject { put("text", system.joinToString("\n")) }) })
     })
-    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents)))
+    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents), allowDummyThought))
     val generation = buildJsonObject {
         (chat.long("max_tokens") ?: chat.long("max_completion_tokens"))?.let { put("maxOutputTokens", it) }
         chat.number("temperature")?.let { put("temperature", it) }
@@ -183,7 +195,11 @@ internal fun chatToGeminiRequest(chat: JsonObject, upstreamModel: String): JsonO
     chatToolChoiceToGemini(chat["tool_choice"], chat.boolean("parallel_tool_calls") == false)?.let { put("toolConfig", it) }
 }
 
-internal fun geminiToChatResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
+internal fun geminiToChatResponse(
+    response: JsonObject,
+    model: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject = buildJsonObject {
     val responseId = response.string("responseId") ?: "chatcmpl-${System.currentTimeMillis()}"
     put("id", responseId)
     put("object", "chat.completion")
@@ -202,7 +218,8 @@ internal fun geminiToChatResponse(response: JsonObject, model: String): JsonObje
     val toolCalls = parts.mapIndexedNotNull { index, part ->
         val obj = part as? JsonObject ?: return@mapIndexedNotNull null
         val call = obj["functionCall"] as? JsonObject ?: return@mapIndexedNotNull null
-        val callId = call.string("id") ?: "call_${responseId}_$index"
+        val rawId = call.string("id") ?: "call_${responseId}_$index"
+        val callId = ReasoningCarry.attachThoughtSignature(rawId, obj.string("thoughtSignature"), carry)
         buildJsonObject {
             put("id", callId)
             put("type", "function")
@@ -290,10 +307,16 @@ internal fun geminiToMessagesRequest(request: JsonObject, upstreamModel: String)
     }
 }
 
-internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String): JsonObject = buildJsonObject {
+internal fun messagesToGeminiRequest(
+    messages: JsonObject,
+    upstreamModel: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject = buildJsonObject {
     validateMessagesRequest(messages)
+    val allowDummyThought = allowsDummyThoughtSignature(upstreamModel)
     val contents = mutableListOf<JsonObject>()
     val callNames = mutableMapOf<String, String>()
+    var strippedThinking = false
     messages.textContentStrict("system", "system").takeIf { it.isNotBlank() }?.let { system ->
         put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system) }) }) })
     }
@@ -309,21 +332,54 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
                     "text" -> block.string("text")?.takeIf { it.isNotEmpty() }?.let { text ->
                         parts += buildJsonObject { put("text", text) }
                     }
-                    "thinking" -> parts += buildJsonObject { put("text", block.string("thinking").orEmpty()); put("thought", true) }
+                    "thinking" -> {
+                        val thinkingText = block.string("thinking").orEmpty()
+                        val signature = block.string("signature")?.takeIf { it.isNotEmpty() }
+                        val validSignature = signature?.takeIf { allowDummyThought || it != GEMINI_SKIP_THOUGHT_SIGNATURE }
+                        if (validSignature != null) {
+                            parts += buildJsonObject {
+                                put("text", thinkingText)
+                                put("thought", true)
+                                put("thoughtSignature", validSignature)
+                            }
+                        } else if (allowDummyThought) {
+                            parts += buildJsonObject {
+                                put("text", thinkingText)
+                                put("thought", true)
+                            }
+                        } else {
+                            // Antigravity/Vertex 上的 Claude 模型要求 thinking 块必须带上游签发的真实签名，
+                            // 缺失签名时降级为普通文本并关闭本轮 thinkingConfig（对齐 sub2api）。
+                            if (thinkingText.isNotBlank()) {
+                                parts += buildJsonObject { put("text", thinkingText) }
+                            }
+                            strippedThinking = true
+                        }
+                    }
                     "tool_use" -> {
-                        val callId = block.string("id") ?: unsupported("messages[$index].content[$blockIndex].id", "tool_use 缺少 id")
+                        val rawCallId = block.string("id") ?: unsupported("messages[$index].content[$blockIndex].id", "tool_use 缺少 id")
+                        val (ownCallId, carriedSignature) = ReasoningCarry.splitThoughtSignature(rawCallId, carry)
                         val callName = block.string("name") ?: unsupported("messages[$index].content[$blockIndex].name", "tool_use 缺少 name")
-                        callNames[callId] = callName
+                        callNames[rawCallId] = callName
+                        callNames[ownCallId] = callName
+                        val blockSignature = block.string("signature")?.takeIf { it.isNotEmpty() }
+                        val resolvedSignature = (carriedSignature ?: blockSignature)
+                            ?.takeIf { allowDummyThought || it != GEMINI_SKIP_THOUGHT_SIGNATURE }
                         parts += buildJsonObject {
                             putJsonObject("functionCall") {
                                 put("name", callName)
                                 put("args", block["input"] ?: buildJsonObject { })
                             }
+                            if (resolvedSignature != null) {
+                                put("thoughtSignature", resolvedSignature)
+                            }
                         }
                     }
                     "tool_result" -> {
-                        val callId = block.string("tool_use_id") ?: unsupported("messages[$index].content[$blockIndex].tool_use_id", "tool_result 缺少 tool_use_id")
-                        val callName = callNames[callId] ?: unsupported("messages[$index].content[$blockIndex].tool_use_id", "找不到对应的工具调用")
+                        val rawCallId = block.string("tool_use_id") ?: unsupported("messages[$index].content[$blockIndex].tool_use_id", "tool_result 缺少 tool_use_id")
+                        val (ownCallId, _) = ReasoningCarry.splitThoughtSignature(rawCallId, carry)
+                        val callName = callNames[rawCallId] ?: callNames[ownCallId]
+                            ?: unsupported("messages[$index].content[$blockIndex].tool_use_id", "找不到对应的工具调用")
                         val result = block.toolResultContent("messages[$index].content[$blockIndex].content")
                         parts += buildJsonObject {
                             putJsonObject("functionResponse") {
@@ -349,14 +405,14 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
             put("parts", JsonArray(parts))
         }
     }
-    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents)))
+    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents), allowDummyThought))
     val generation = buildJsonObject {
         messages.long("max_tokens")?.let { put("maxOutputTokens", it) }
         messages.number("temperature")?.let { put("temperature", it) }
         messages.number("top_p")?.let { put("topP", it) }
         (messages["stop_sequences"] as? JsonArray)?.let { put("stopSequences", it) }
     }
-    val thinking = messages.thinkingEffort()?.let { effort ->
+    val thinking = if (strippedThinking) null else messages.thinkingEffort()?.let { effort ->
         buildJsonObject { put("thinkingBudget", thinkingBudget(effort)); put("includeThoughts", effort != "none") }
     }
     val generationWithThinking = if (thinking != null) JsonObject(generation + ("thinkingConfig" to thinking)) else generation
@@ -381,7 +437,11 @@ internal fun messagesToGeminiRequest(messages: JsonObject, upstreamModel: String
     messagesToolChoiceToGemini(messages["tool_choice"] as? JsonObject)?.let { put("toolConfig", it) }
 }
 
-internal fun geminiToMessagesResponse(response: JsonObject, model: String): JsonObject = buildJsonObject {
+internal fun geminiToMessagesResponse(
+    response: JsonObject,
+    model: String,
+    carry: ReasoningCarryStore? = null,
+): JsonObject = buildJsonObject {
     val responseId = response.string("responseId") ?: "msg_${System.currentTimeMillis()}"
     put("id", responseId)
     put("type", "message")
@@ -392,17 +452,42 @@ internal fun geminiToMessagesResponse(response: JsonObject, model: String): Json
     put("content", buildJsonArray {
         parts.forEachIndexed { index, part ->
             val obj = part as? JsonObject ?: return@forEachIndexed
+            val signature = obj.string("thoughtSignature")?.takeIf { it.isNotEmpty() }
             when {
                 obj["functionCall"] is JsonObject -> add(buildJsonObject {
                     val call = obj["functionCall"] as JsonObject
-                    val callId = call.string("id") ?: "toolu_${responseId}_$index"
+                    val rawId = call.string("id") ?: "toolu_${responseId}_$index"
+                    val callId = ReasoningCarry.attachThoughtSignature(rawId, signature, carry)
                     put("type", "tool_use")
                     put("id", callId)
                     put("name", call.string("name").orEmpty())
                     put("input", call["args"] ?: buildJsonObject { })
                 })
-                obj.boolean("thought") == true -> Unit
-                obj.string("text") != null -> add(messageTextBlock(obj.string("text").orEmpty()))
+                obj.boolean("thought") == true -> {
+                    val text = obj.string("text").orEmpty()
+                    if (text.isNotEmpty() || signature != null) {
+                        add(buildJsonObject {
+                            put("type", "thinking")
+                            put("thinking", text)
+                            put("signature", signature.orEmpty())
+                        })
+                    }
+                }
+                else -> {
+                    val text = obj.string("text")
+                    if (!text.isNullOrEmpty()) {
+                        add(messageTextBlock(text))
+                    } else if (text != null && signature == null) {
+                        add(messageTextBlock(text))
+                    }
+                    if (signature != null) {
+                        add(buildJsonObject {
+                            put("type", "thinking")
+                            put("thinking", "")
+                            put("signature", signature)
+                        })
+                    }
+                }
             }
         }
     })
@@ -537,7 +622,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
         JsonNull, null -> Unit
         else -> unsupported("input", "input 必须是字符串或数组")
     }
-    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents)))
+    put("contents", withGeminiThoughtSignatures(mergeGeminiToolContents(contents), allowsDummyThoughtSignature(upstreamModel)))
     if (system.isNotEmpty()) put("systemInstruction", buildJsonObject { put("parts", buildJsonArray { add(buildJsonObject { put("text", system.joinToString("\n")) }) }) })
     val generation = buildJsonObject {
         responses.long("max_output_tokens")?.let { put("maxOutputTokens", it) }
@@ -668,7 +753,17 @@ internal fun responsesToGeminiResponse(responses: JsonObject, model: String): Js
 
 private const val GEMINI_SKIP_THOUGHT_SIGNATURE = "skip_thought_signature_validator"
 
-private fun withGeminiThoughtSignatures(contents: JsonArray): JsonArray = JsonArray(contents.map { element ->
+/**
+ * Antigravity 等 Gemini 协议端点也可能承载 Claude 模型：
+ * Claude 模型要求真实签发签名，不能注入 Google 官方的 dummy 占位签名（对齐 sub2api）。
+ */
+private fun allowsDummyThoughtSignature(upstreamModel: String): Boolean =
+    !upstreamModel.lowercase().startsWith("claude")
+
+private fun withGeminiThoughtSignatures(
+    contents: JsonArray,
+    allowDummy: Boolean = true,
+): JsonArray = if (!allowDummy) contents else JsonArray(contents.map { element ->
     val content = element as? JsonObject ?: return@map element
     if (content.string("role") != "model") return@map content
     val parts = content.array("parts")

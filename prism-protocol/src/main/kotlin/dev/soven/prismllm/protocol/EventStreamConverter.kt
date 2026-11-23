@@ -68,10 +68,10 @@ internal class EventStreamConverter(
                 event.done -> complete(pendingFinish ?: event)
                 event.finishReason != null -> {
                     pendingFinish = event.copy(
-                        content = null, refusal = null, thinking = null, thinkingStart = false,
+                        content = null, refusal = null, thinking = null, thinkingSignature = null, thinkingStart = false,
                         sealedReasoning = null, toolCalls = emptyList(),
                     )
-                    if (event.content != null || event.thinking != null || event.refusal != null || event.toolCalls.isNotEmpty()) {
+                    if (event.content != null || event.thinking != null || event.thinkingSignature != null || event.refusal != null || event.toolCalls.isNotEmpty()) {
                         encoder.emit(event.copy(finishReason = null), decoder.usage)
                     }
                     else emptyList()
@@ -81,23 +81,39 @@ internal class EventStreamConverter(
         }
     }
 
-    /** 密封推理先攒着，等下一个带 ID 的工具调用出现时挂到它的 ID 上（对齐 magpie 的 carryReasoning）。 */
+    /**
+     * 密封推理与 Gemini thoughtSignature 的跨轮携带：
+     * - Responses 密封推理先攒着，等下一个带 ID 的工具调用出现时挂到它的 ID 上（对齐 magpie 的 carryReasoning）；
+     * - Gemini functionCall 自带的 thoughtSignature 单独挂在对应 tool call 的 ID 上，避免 Anthropic/Chat 协议丢失。
+     */
     private fun carrySealedReasoning(event: StreamEvent): StreamEvent {
         event.sealedReasoning?.let { pendingSealed += it }
-        if (pendingSealed.isEmpty() || event.toolCalls.isEmpty()) return event
-        val items = pendingSealed.toList()
-        var attached = false
+        if (event.toolCalls.isEmpty()) return event
+        val hasPendingSealed = pendingSealed.isNotEmpty()
+        val hasToolSignature = event.toolCalls.any { !it.thoughtSignature.isNullOrEmpty() }
+        if (!hasPendingSealed && !hasToolSignature) return event
+        val items = if (hasPendingSealed) pendingSealed.toList() else emptyList()
+        var attachedSealed = false
+        var changed = false
         val calls = event.toolCalls.map { call ->
-            val id = call.id
-            if (!attached && !id.isNullOrEmpty()) {
-                attached = true
+            var nextId = call.id
+            if (hasPendingSealed && !attachedSealed && !nextId.isNullOrEmpty()) {
+                attachedSealed = true
                 pendingSealed.clear()
-                call.copy(id = ReasoningCarry.attach(id, items, carry))
+                nextId = ReasoningCarry.attach(nextId, items, carry)
+            }
+            val sig = call.thoughtSignature
+            if (!sig.isNullOrEmpty() && !nextId.isNullOrEmpty()) {
+                nextId = ReasoningCarry.attachThoughtSignature(nextId, sig, carry)
+            }
+            if (nextId != call.id) {
+                changed = true
+                call.copy(id = nextId)
             } else {
                 call
             }
         }
-        return if (attached) event.copy(toolCalls = calls) else event
+        return if (changed) event.copy(toolCalls = calls) else event
     }
 
     private fun complete(event: StreamEvent): List<String> {
