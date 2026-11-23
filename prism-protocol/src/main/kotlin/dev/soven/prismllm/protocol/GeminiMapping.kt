@@ -450,46 +450,64 @@ internal fun geminiToMessagesResponse(
     val candidate = response.array("candidates").firstOrNull() as? JsonObject
     val parts = ((candidate?.get("content") as? JsonObject)?.get("parts") as? JsonArray).orEmpty()
     put("content", buildJsonArray {
+        val pendingThinking = StringBuilder()
+        var hasPendingThinking = false
+        fun flushPendingThinking(signature: String = "") {
+            if (!hasPendingThinking && signature.isEmpty()) return
+            add(buildJsonObject {
+                put("type", "thinking")
+                put("thinking", pendingThinking.toString())
+                put("signature", signature)
+            })
+            pendingThinking.clear()
+            hasPendingThinking = false
+        }
         parts.forEachIndexed { index, part ->
             val obj = part as? JsonObject ?: return@forEachIndexed
             val signature = obj.string("thoughtSignature")?.takeIf { it.isNotEmpty() }
             when {
-                obj["functionCall"] is JsonObject -> add(buildJsonObject {
-                    val call = obj["functionCall"] as JsonObject
-                    val rawId = call.string("id") ?: "toolu_${responseId}_$index"
-                    val callId = ReasoningCarry.attachThoughtSignature(rawId, signature, carry)
-                    put("type", "tool_use")
-                    put("id", callId)
-                    put("name", call.string("name").orEmpty())
-                    put("input", call["args"] ?: buildJsonObject { })
-                })
+                obj["functionCall"] is JsonObject -> {
+                    flushPendingThinking()
+                    add(buildJsonObject {
+                        val call = obj["functionCall"] as JsonObject
+                        val rawId = call.string("id") ?: "toolu_${responseId}_$index"
+                        val callId = ReasoningCarry.attachThoughtSignature(rawId, signature, carry)
+                        put("type", "tool_use")
+                        put("id", callId)
+                        put("name", call.string("name").orEmpty())
+                        put("input", call["args"] ?: buildJsonObject { })
+                    })
+                }
                 obj.boolean("thought") == true -> {
                     val text = obj.string("text").orEmpty()
-                    if (text.isNotEmpty() || signature != null) {
-                        add(buildJsonObject {
-                            put("type", "thinking")
-                            put("thinking", text)
-                            put("signature", signature.orEmpty())
-                        })
+                    if (text.isNotEmpty()) {
+                        pendingThinking.append(text)
+                        hasPendingThinking = true
+                    }
+                    // 签名封口当前累积的思考内容；后续若再出现新的思考 part 会开启独立的 thinking 块。
+                    if (signature != null) {
+                        flushPendingThinking(signature)
                     }
                 }
                 else -> {
                     val text = obj.string("text")
                     if (!text.isNullOrEmpty()) {
+                        flushPendingThinking()
                         add(messageTextBlock(text))
-                    } else if (text != null && signature == null) {
+                        if (signature != null) {
+                            flushPendingThinking(signature)
+                        }
+                    } else if (signature != null) {
+                        // 空 text part 附带尾签名时，优先关联到前面尚未签名的 thinking 内容。
+                        flushPendingThinking(signature)
+                    } else if (text != null) {
+                        flushPendingThinking()
                         add(messageTextBlock(text))
-                    }
-                    if (signature != null) {
-                        add(buildJsonObject {
-                            put("type", "thinking")
-                            put("thinking", "")
-                            put("signature", signature)
-                        })
                     }
                 }
             }
         }
+        flushPendingThinking()
     })
     val hasToolUse = parts.any { (it as? JsonObject)?.get("functionCall") is JsonObject }
     put("stop_reason", geminiFinishToMessages(candidate?.string("finishReason"), hasToolUse))

@@ -322,5 +322,84 @@ class ReasoningCarryTest {
         assertTrue(nextReq["generationConfig"]!!.jsonObject.containsKey("thinkingConfig"))
     }
 
+    @Test
+    fun `gemini stream splits consecutive independently signed thought parts without overwriting first signature`() {
+        val converter = ProtocolConversion.streamConverter(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            "gemini-4-hydrogen",
+        )!!
+        val frames = listOf(
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"part 1a "}]}}]}""",
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"part 1b","thoughtSignature":"sig_1"}]}}]}""",
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"thought":true,"text":"part 2","thoughtSignature":"sig_2"}]}}]}""",
+            """{"responseId":"resp_multi_sig","candidates":[{"content":{"role":"model","parts":[{"text":"answer"}]},"finishReason":"STOP"}]}""",
+        ).flatMap { converter.feed("data: $it") + converter.feed("") } + converter.finish()
+        val events = frames.filter { it.startsWith("data: {") }.map { json(it.removePrefix("data: ")) }
+
+        val starts = events.filter { it.string("type") == "content_block_start" }
+        assertEquals(listOf("thinking", "thinking", "text"), starts.map { it["content_block"]!!.jsonObject.string("type") })
+
+        fun thinkingOf(blockIndex: Long): String = events
+            .filter { it.string("type") == "content_block_delta" && it.long("index") == blockIndex }
+            .mapNotNull { (it["delta"] as? JsonObject)?.takeIf { d -> d.string("type") == "thinking_delta" }?.string("thinking") }
+            .joinToString("")
+        fun signaturesOf(blockIndex: Long): List<String> = events
+            .filter { it.string("type") == "content_block_delta" && it.long("index") == blockIndex }
+            .mapNotNull { (it["delta"] as? JsonObject)?.takeIf { d -> d.string("type") == "signature_delta" }?.string("signature") }
+
+        assertEquals("part 1a part 1b", thinkingOf(0L))
+        assertEquals(listOf("sig_1"), signaturesOf(0L))
+        assertEquals("part 2", thinkingOf(1L))
+        assertEquals(listOf("sig_2"), signaturesOf(1L))
+    }
+
+    @Test
+    fun `gemini non-stream merges trailing signature into preceding thought block and round-trips to claude`() {
+        val store = MemoryStore()
+        val resp = ProtocolConversion.convertResponse(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{"responseId":"r_trail","candidates":[{"content":{"role":"model","parts":[
+                {"thought":true,"text":"step A "},
+                {"thought":true,"text":"step B"},
+                {"thought":true,"text":"","thoughtSignature":"sig_trailing_thought"},
+                {"text":"done"}
+            ]},"finishReason":"STOP"}]}"""),
+            "claude-sonnet-5-5",
+            carry = store,
+        )
+        val content = resp["content"]!!.jsonArray
+        assertEquals(listOf("thinking", "text"), content.map { it.jsonObject.string("type") })
+        assertEquals("step A step B", content[0].jsonObject.string("thinking"))
+        assertEquals("sig_trailing_thought", content[0].jsonObject.string("signature"))
+        assertEquals("done", content[1].jsonObject.string("text"))
+
+        // 将非流式转换结果回传给 Antigravity Claude，应完整保留 thought 与 thinkingConfig，不被误降级。
+        val nextReq = ProtocolConversion.convertRequest(
+            GatewayProtocol.MESSAGES,
+            GatewayProtocol.GEMINI,
+            json("""{
+                "model":"claude-sonnet-5-5",
+                "max_tokens":4096,
+                "thinking":{"type":"enabled","budget_tokens":2048},
+                "messages":[
+                    {"role":"user","content":"hi"},
+                    {"role":"assistant","content":$content},
+                    {"role":"user","content":"continue"}
+                ]
+            }"""),
+            "claude-sonnet-5-5-high",
+            carry = store,
+        )
+        val modelParts = nextReq["contents"]!!.jsonArray[1].jsonObject["parts"]!!.jsonArray
+        assertEquals(2, modelParts.size)
+        assertEquals(true, modelParts[0].jsonObject.boolean("thought"))
+        assertEquals("step A step B", modelParts[0].jsonObject.string("text"))
+        assertEquals("sig_trailing_thought", modelParts[0].jsonObject.string("thoughtSignature"))
+        assertEquals("done", modelParts[1].jsonObject.string("text"))
+        assertTrue(nextReq["generationConfig"]!!.jsonObject.containsKey("thinkingConfig"))
+    }
+
     private fun json(value: String): JsonObject = Json.parseToJsonElement(value).jsonObject
 }
