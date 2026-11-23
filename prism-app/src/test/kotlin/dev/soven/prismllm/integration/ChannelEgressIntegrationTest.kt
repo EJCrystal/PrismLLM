@@ -607,4 +607,49 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
             }
         }
     }
+
+    @Test
+    fun `admin managed allowlist admits wildcard proxy hosts immediately without restart`() = runBlocking {
+        val session = app.sessions.create("admin")
+        testApplication {
+            application { app.install(this) }
+            val body = """{"name":"allowlist-channel","baseUrl":"${fake.baseUrl}/ok/v1","modelMappings":[{"upstreamModel":"m1"}],"egressProxies":[{"id":"us","name":"美国","url":"http://egress.example.com:8080"}],"keys":[{"name":"key","credential":"secret","models":["m1"],"egressProxyId":"us"}]}"""
+
+            val rejected = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            assertEquals(HttpStatusCode.BadRequest, rejected.status)
+            assertTrue(rejected.bodyAsText().contains("channel_proxy_host_not_allowed"), rejected.bodyAsText())
+
+            val settings = client.put("/admin/api/channel-egress-settings") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"hosts":["*.example.com"]}""")
+            }
+            assertEquals(HttpStatusCode.OK, settings.status, settings.bodyAsText())
+            val settingsBody = Json.parseToJsonElement(settings.bodyAsText()).jsonObject
+            assertEquals(
+                listOf("*.example.com"),
+                settingsBody.getValue("hosts").jsonArray.map { it.jsonPrimitive.content },
+            )
+            assertEquals(
+                listOf("*.example.com"),
+                settingsBody.getValue("effectiveHosts").jsonArray.map { it.jsonPrimitive.content },
+            )
+
+            val accepted = client.post("/admin/api/channels") {
+                header(HttpHeaders.Cookie, "gw_session=${session.token}")
+                header("X-CSRF-Token", session.session.csrf)
+                contentType(ContentType.Application.Json)
+                setBody(body)
+            }
+            assertEquals(HttpStatusCode.Created, accepted.status, accepted.bodyAsText())
+            val id = Json.parseToJsonElement(accepted.bodyAsText()).jsonObject.getValue("id").jsonPrimitive.content
+            assertEquals("us", app.channelRepository.find(id)!!.keys.single().egressProxyId)
+        }
+    }
 }

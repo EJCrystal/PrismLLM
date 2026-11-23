@@ -28,6 +28,7 @@ import ChannelKeyEditor from './ChannelKeyEditor.vue'
 import ChannelEgressProxyEditor from './ChannelEgressProxyEditor.vue'
 import type { ChannelEgressProxyDraft } from '../utils/channelForm'
 import { buildChannelProxyPayload, channelProxyConfigurationSnapshot } from '../utils/channelForm'
+import { blockedChannelProxyHosts } from '../utils/channelEgress'
 import { cooldownSummaryText } from '../utils/cooldown'
 import TablePlaceholder from './TablePlaceholder.vue'
 import ErrorState from './ErrorState.vue'
@@ -1215,6 +1216,31 @@ async function probeProtocols(): Promise<void> {
   }
 }
 
+/** 保存被主机白名单拒绝时，列出缺失主机并询问是否放行；放行成功后由调用方重试保存。 */
+async function allowBlockedProxyHosts(): Promise<boolean> {
+  let settings
+  try {
+    settings = await api.getChannelEgressSettings()
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+    return false
+  }
+  const blocked = blockedChannelProxyHosts(
+    form.egressProxies.map((proxy) => proxy.url),
+    settings.effectiveHosts,
+  )
+  if (!blocked.length) return false
+  if (!window.confirm(`以下出口代理主机不在白名单：\n${blocked.join('\n')}\n\n是否放行并重试保存？`)) return false
+  try {
+    await api.updateChannelEgressSettings({ hosts: [...settings.hosts, ...blocked] })
+    notify(`已放行 ${blocked.length} 个出口代理主机`)
+    return true
+  } catch (cause) {
+    notify(errorMessage(cause), 'error')
+    return false
+  }
+}
+
 async function save(): Promise<void> {
   if (saving.value) return
   if (!form.name.trim() || !form.baseUrl.trim()) {
@@ -1278,6 +1304,7 @@ async function save(): Promise<void> {
   }
 
   saving.value = true
+  let retryAfterAllow = false
   try {
     if (!overrideEditor.value) {
       notify('请求配置尚未加载完成，请稍后重试', 'error')
@@ -1312,11 +1339,17 @@ async function save(): Promise<void> {
       notify(wasEditing ? '渠道已更新' : '渠道已创建')
     }
   } catch (cause) {
-    notify(errorMessage(cause), 'error')
-    if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await refreshUntilCurrent(load, () => listDisposed)
+    if (cause instanceof ApiError && cause.code === 'channel_proxy_host_not_allowed' && await allowBlockedProxyHosts()) {
+      retryAfterAllow = true
+    } else {
+      notify(errorMessage(cause), 'error')
+      if (cause instanceof ApiError && cause.code === 'channel_key_state_changed') await refreshUntilCurrent(load, () => listDisposed)
+    }
   } finally {
     saving.value = false
   }
+  // 放行主机后重试一次；如果仍被拒绝，allowBlockedProxyHosts 会发现没有新的缺失主机而停止。
+  if (retryAfterAllow) await save()
 }
 
 async function remove(channel: Channel): Promise<void> {

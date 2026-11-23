@@ -2,6 +2,7 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import type {
+  ChannelEgressSettings,
   KeyAutoDisableSettingsResponse,
   ModelTestSettings,
   SystemPromptSettings,
@@ -15,6 +16,7 @@ import { formatTime } from '../utils/format'
 import { countUpstreamOverrides } from '../utils/systemConfig'
 import { clearAllUpstreamModelCache } from '../upstreamModelCache'
 import Icon from './Icon.vue'
+import ChannelEgressSettingsModal from './ChannelEgressSettingsModal.vue'
 import KeyAutoDisableSettingsModal from './KeyAutoDisableSettingsModal.vue'
 import ModelTestSettingsModal from './ModelTestSettingsModal.vue'
 import NotificationSettingsModal from './NotificationSettingsModal.vue'
@@ -30,6 +32,7 @@ const cards = reactive({
   upstream: { loading: true, error: '', data: null as UpstreamRequestSettings | null },
   systemPrompt: { loading: true, error: '', data: null as SystemPromptSettings | null },
   webSearch: { loading: true, error: '', data: null as WebSearchSettings | null },
+  channelEgress: { loading: true, error: '', data: null as ChannelEgressSettings | null },
   autoDisable: { loading: true, error: '', data: null as KeyAutoDisableSettingsResponse | null },
   notification: { loading: true, error: '', data: null as NotificationSettings | null },
   retention: { loading: true, error: '', data: null as RetentionPolicy | null },
@@ -39,6 +42,7 @@ const showModelTest = ref(false)
 const showUpstream = ref(false)
 const showSystemPrompt = ref(false)
 const showWebSearch = ref(false)
+const showChannelEgress = ref(false)
 const showAutoDisable = ref(false)
 const showNotification = ref(false)
 const showRetention = ref(false)
@@ -98,6 +102,18 @@ async function loadWebSearch() {
   }
 }
 
+async function loadChannelEgress() {
+  cards.channelEgress.loading = true
+  cards.channelEgress.error = ''
+  try {
+    cards.channelEgress.data = await api.getChannelEgressSettings()
+  } catch (cause) {
+    cards.channelEgress.error = errorMessage(cause)
+  } finally {
+    cards.channelEgress.loading = false
+  }
+}
+
 async function loadSystemPrompt() {
   cards.systemPrompt.loading = true
   cards.systemPrompt.error = ''
@@ -153,6 +169,7 @@ async function loadAll(refresh = false) {
     loadUpstream(),
     loadSystemPrompt(),
     loadWebSearch(),
+    loadChannelEgress(),
     loadAutoDisable(),
     loadNotification(),
     loadRetention(),
@@ -181,6 +198,7 @@ const settingRows = computed<SettingRow[]>(() => {
   const upstream = cards.upstream
   const systemPrompt = cards.systemPrompt
   const webSearch = cards.webSearch
+  const channelEgress = cards.channelEgress
   const autoDisable = cards.autoDisable
   const notification = cards.notification
   const retention = cards.retention
@@ -257,6 +275,24 @@ const settingRows = computed<SettingRow[]>(() => {
       alert: '',
       onAction: () => { showWebSearch.value = true },
       onRetry: loadWebSearch,
+    },
+    {
+      id: 'channel-egress',
+      title: '渠道出口代理',
+      description: '非回环代理主机的放行名单，保存后立即生效',
+      icon: 'layers',
+      loading: channelEgress.loading,
+      error: channelEgress.error,
+      value: channelEgress.data
+        ? `${channelEgress.data.hosts.length} 个管理台主机 · ${channelEgress.data.effectiveHosts.length} 个生效`
+        : '',
+      valueTitle: channelEgress.data?.effectiveHosts.join('\n') || '',
+      meta: channelEgress.data?.updatedAt
+        ? updatedLabel(channelEgress.data.updatedAt)
+        : (channelEgress.data?.deploymentHosts.length ? '仅使用环境变量默认值' : '尚未放行非回环主机'),
+      alert: '',
+      onAction: () => { showChannelEgress.value = true },
+      onRetry: loadChannelEgress,
     },
     {
       id: 'auto-disable',
@@ -374,6 +410,11 @@ onMounted(() => { void loadAll() })
     <UpstreamRequestSettingsModal v-if="showUpstream" @close="showUpstream = false" @saved="onUpstreamSaved" />
     <SystemPromptSettingsModal v-if="showSystemPrompt" @close="showSystemPrompt = false" @saved="loadSystemPrompt" />
     <WebSearchSettingsModal v-if="showWebSearch" @close="showWebSearch = false" @saved="loadWebSearch" />
+    <ChannelEgressSettingsModal
+      v-if="showChannelEgress"
+      @close="showChannelEgress = false"
+      @saved="loadChannelEgress"
+    />
     <KeyAutoDisableSettingsModal v-if="showAutoDisable" @close="showAutoDisable = false" @saved="loadAutoDisable" />
     <NotificationSettingsModal
       v-if="showNotification"

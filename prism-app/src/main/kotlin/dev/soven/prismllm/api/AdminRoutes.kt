@@ -19,6 +19,7 @@ import dev.soven.prismllm.channel.domain.ChannelKeyRateLimitPolicy
 import dev.soven.prismllm.shared.domain.UpstreamCredential
 import dev.soven.prismllm.shared.domain.Usage
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
+import dev.soven.prismllm.channel.domain.ChannelProxyHosts
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.SUPPORTED_UPSTREAM_AUTH_TYPES
 import dev.soven.prismllm.shared.domain.effectiveAuthType
@@ -296,6 +297,27 @@ fun Route.adminRoutes(app: GatewayApplication) {
             app.webSearchSettingsRepository.save(record, preserveApiKey)
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(webSearchSettingsResponse(app.webSearchSettingsRepository.load(), app.config.webSearch))
+        }
+
+        get("/channel-egress-settings") {
+            call.requireAdmin(app)
+            app.channelProxyHostAllowlist.refresh()
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.channelProxyHostAllowlist.toResponse())
+        }
+
+        put("/channel-egress-settings") {
+            call.requireAdmin(app)
+            val request = call.receive<ChannelEgressSettingsRequest>()
+            val hosts = try {
+                ChannelProxyHosts.parse(request.hosts, "渠道出口代理白名单")
+            } catch (cause: IllegalArgumentException) {
+                throw badRequest("invalid_channel_egress_settings", cause.message ?: "渠道出口代理白名单无效")
+            }
+            app.channelProxyHostAllowlist.replace(hosts)
+            call.markAdminAuditDetails(buildJsonObject { put("hosts", hosts.size) })
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(app.channelProxyHostAllowlist.toResponse())
         }
 
         post("/model-suggestions") {

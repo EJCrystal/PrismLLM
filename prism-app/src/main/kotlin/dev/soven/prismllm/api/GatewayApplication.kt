@@ -57,6 +57,7 @@ import dev.soven.prismllm.oauth.infra.OAuthWindowStateWriter
 import dev.soven.prismllm.oauth.buildOAuthTokenProviders
 import dev.soven.prismllm.channel.persistence.ModelTestSettingsRepository
 import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
+import dev.soven.prismllm.admin.persistence.ChannelEgressSettingsRepository
 import dev.soven.prismllm.admin.persistence.SystemPromptSettingsRepository
 import dev.soven.prismllm.admin.persistence.NotificationRepository
 import dev.soven.prismllm.channel.persistence.KeyStateObserver
@@ -73,6 +74,7 @@ import dev.soven.prismllm.channel.persistence.KeyAutoDisableRepository
 import dev.soven.prismllm.channel.persistence.KeyStateAudit
 import dev.soven.prismllm.channel.persistence.ChannelKeyStateChangedException
 import dev.soven.prismllm.channel.domain.ChannelEgressConfigurationException
+import dev.soven.prismllm.channel.domain.ChannelProxyHostNotAllowedException
 import dev.soven.prismllm.requestlog.infra.LogRetentionService
 import dev.soven.prismllm.quota.infra.ClientKeyQuotaService
 import dev.soven.prismllm.channel.domain.key.ChannelKeyRateLimiter
@@ -357,6 +359,11 @@ class GatewayApplication(
     val retentionSettingsRepository = RetentionSettingsRepository(databaseFactory.database)
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
+    val channelEgressSettingsRepository = ChannelEgressSettingsRepository(databaseFactory.database)
+    val channelProxyHostAllowlist = ChannelProxyHostAllowlist(
+        config.channelProxyAllowedHosts,
+        channelEgressSettingsRepository,
+    )
     val systemPromptSettingsRepository = SystemPromptSettingsRepository(databaseFactory.database)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
@@ -591,6 +598,7 @@ class GatewayApplication(
             scope,
         )
         runBlocking { upstreamRequestSettingsRepository.load() }
+        runBlocking { channelProxyHostAllowlist.refresh() }
         runBlocking { upstreamHeaderCatalogService.initialize() }
         runBlocking { seedAdmin() }
         // 每次启动都处理 V54 留下的待搬迁账号；逐账号清除标记，上次失败的重启后继续。
@@ -622,8 +630,18 @@ class GatewayApplication(
         }
         app.install(StatusPages) {
             exception<ChannelEgressConfigurationException> { call, cause ->
-                call.markAdminAuditError("invalid_channel_proxy")
-                call.respondGatewayError(HttpStatusCode.BadRequest, "invalid_channel_proxy", cause.message ?: "渠道出口代理配置无效", "invalid_request_error")
+                if (cause is ChannelProxyHostNotAllowedException) {
+                    call.markAdminAuditError("channel_proxy_host_not_allowed")
+                    call.respondGatewayError(
+                        HttpStatusCode.BadRequest,
+                        "channel_proxy_host_not_allowed",
+                        cause.message ?: "渠道代理主机不在允许列表内",
+                        "invalid_request_error",
+                    )
+                } else {
+                    call.markAdminAuditError("invalid_channel_proxy")
+                    call.respondGatewayError(HttpStatusCode.BadRequest, "invalid_channel_proxy", cause.message ?: "渠道出口代理配置无效", "invalid_request_error")
+                }
             }
             exception<ChannelKeyStateChangedException> { call, cause ->
                 call.markAdminAuditError("channel_key_state_changed")
