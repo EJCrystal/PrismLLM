@@ -58,17 +58,21 @@ const dirtyCount = computed(() => dirtyModels.size)
 
 const displayTitle = computed(() => props.providerLabel || oauthProviderLabel(props.provider))
 
-/** 服务端已没有对应共享行的草稿：保留在界面上，但不允许提交。 */
-const invalidDrafts = computed(() =>
+/** 新增草稿：服务端尚没有对应共享行，保存时按人工映射创建。 */
+const newDraftModels = computed(() =>
   [...dirtyModels].filter((model) => !baselineByModel.value.has(model)),
 )
-/** 可随本次保存提交的草稿（仍存在共享行）。 */
+/** 新增草稿没有可继承的目录默认值，因此不允许使用「自动」模式。 */
+const uncreatableDrafts = computed(() =>
+  newDraftModels.value.filter((model) => mappingDraftFor(model).mode === 'auto'),
+)
+/** 可随本次保存提交的草稿：已有共享行，或新增且选择了手工/上游模式。 */
 const savableDraftModels = computed(() =>
-  [...dirtyModels].filter((model) => baselineByModel.value.has(model)),
+  [...dirtyModels].filter((model) => baselineByModel.value.has(model) || mappingDraftFor(model).mode !== 'auto'),
 )
 const savableDraftCount = computed(() => savableDraftModels.value.length)
 
-function invalidDraftRow(model: string) {
+function newDraftRow(model: string) {
   return {
     upstreamModel: model,
     canonicalModelId: null,
@@ -82,13 +86,16 @@ function invalidDraftRow(model: string) {
 
 const allModels = computed(() => {
   const rows = baseline.value?.mappings ?? []
-  const filtered = showInactive.value ? rows : rows.filter((row) => row.catalogActive || dirtyModels.has(row.upstreamModel))
-  return [...filtered, ...invalidDrafts.value.map(invalidDraftRow)]
+  // 人工映射即使休眠也常驻可见；只有目录自动生成的休眠行默认折叠。
+  const filtered = showInactive.value
+    ? rows
+    : rows.filter((row) => row.catalogActive || row.mappingSource != null || dirtyModels.has(row.upstreamModel))
+  return [...filtered, ...newDraftModels.value.map(newDraftRow)]
     .sort((a, b) => a.upstreamModel.localeCompare(b.upstreamModel))
 })
 
-const inactiveCount = computed(() =>
-  (baseline.value?.mappings ?? []).filter((row) => !row.catalogActive).length,
+const hiddenDormantCount = computed(() =>
+  (baseline.value?.mappings ?? []).filter((row) => !row.catalogActive && row.mappingSource == null).length,
 )
 
 const filteredRows = computed(() =>
@@ -168,13 +175,42 @@ function changeManual(model: string, canonicalModelId: string) {
 function discardDraft(model: string) {
   dirtyModels.delete(model)
   conflictingModels.delete(model)
-  drafts[model] = oauthMappingDraft(baselineByModel.value.get(model))
+  const base = baselineByModel.value.get(model)
+  if (base) {
+    drafts[model] = oauthMappingDraft(base)
+  } else {
+    // 新增草稿没有基线行，撤销后直接移除，避免阻挡同名模型再次添加。
+    delete drafts[model]
+  }
   conflictConfirmed.value = false
 }
 
 function discardAllDrafts() {
   for (const model of [...dirtyModels]) discardDraft(model)
   notice.value = ''
+}
+
+const newModel = ref('')
+const newModelMode = ref<'manual' | 'upstream'>('manual')
+
+/** 新增一行手工映射草稿；保存时由后端创建共享行（先休眠，目录出现后自动激活）。 */
+function addDraft() {
+  if (busy.value) return
+  const model = newModel.value.trim()
+  if (!model) return
+  if ([...model].length > 200) {
+    notify('上游模型名不能超过 200 个字符', 'error')
+    return
+  }
+  if (baselineByModel.value.has(model) || dirtyModels.has(model)) {
+    notify(`共享映射中已存在模型「${model}」`, 'warning')
+    return
+  }
+  drafts[model] = { mode: newModelMode.value, canonicalModelId: model }
+  dirtyModels.add(model)
+  conflictingModels.delete(model)
+  conflictConfirmed.value = false
+  newModel.value = ''
 }
 
 function mappingPublicId(model: string): string {
@@ -188,7 +224,8 @@ function mappingPublicId(model: string): string {
 
 function mappingSource(model: string): string {
   const base = baselineByModel.value.get(model)
-  if (dirtyModels.has(model)) return '待保存；当前来源：' + (base?.mappingSource ?? '无')
+  if (!base) return dirtyModels.has(model) ? '新增草稿（保存后写入共享目录）' : '无'
+  if (dirtyModels.has(model)) return '待保存；当前来源：' + (base.mappingSource ?? '无')
   return base?.mappingSource ?? '无'
 }
 
@@ -266,6 +303,10 @@ async function load(): Promise<boolean> {
       }
     }
     baseline.value = mapping
+    // 清掉已不在共享目录且没有待保存修改的残留草稿，避免阻挡同名模型重新添加。
+    for (const model of Object.keys(drafts)) {
+      if (!nextRows.has(model) && !dirtyModels.has(model)) delete drafts[model]
+    }
     for (const row of mapping.mappings) {
       if (!dirtyModels.has(row.upstreamModel)) {
         drafts[row.upstreamModel] = oauthMappingDraft(row)
@@ -304,17 +345,17 @@ async function save() {
       changes,
     })
     baseline.value = updated
-    // 无共享行的草稿不属于本次提交，保存成功后仍需保留。
-    const remainingInvalid = [...invalidDrafts.value]
+    // 新增但选了「自动」的草稿无法创建，保存成功后仍需保留。
+    const remainingUncreatable = [...uncreatableDrafts.value]
     dirtyModels.clear()
     conflictingModels.clear()
     conflictConfirmed.value = false
-    for (const model of remainingInvalid) dirtyModels.add(model)
+    for (const model of remainingUncreatable) dirtyModels.add(model)
     for (const row of updated.mappings) {
       drafts[row.upstreamModel] = oauthMappingDraft(row)
     }
-    if (remainingInvalid.length) {
-      notice.value = `已保存其余映射；${remainingInvalid.length} 个草稿没有对应的共享映射行，未提交，已保留。请丢弃草稿或同步模型恢复共享行。`
+    if (remainingUncreatable.length) {
+      notice.value = `已保存其余映射；${remainingUncreatable.length} 个新增草稿使用「自动」模式，未提交，已保留。请选择「手工」或「使用上游 ID」后再保存。`
       notify(notice.value, 'warning')
     } else {
       notify(`${displayTitle.value} 共享模型映射已保存`)
@@ -374,8 +415,8 @@ defineExpose({
       <button type="button" class="link-button" :disabled="busy" @click="load">重试</button>
     </div>
     <p v-if="candidateError" class="muted small" role="status">{{ candidateError }}</p>
-    <p v-if="invalidDrafts.length" class="callout warning small" role="alert">
-      {{ invalidDrafts.length }} 个草稿没有对应的共享映射行，不会提交；请逐行撤销草稿，或在账号池同步模型后刷新映射恢复共享行。
+    <p v-if="uncreatableDrafts.length" class="callout warning small" role="alert">
+      {{ uncreatableDrafts.length }} 个新增草稿使用了「自动」模式，无法提交；请为它们选择「手工」或「使用上游 ID」。
     </p>
     <div v-if="notice || hasConflict" class="callout warning small" role="alert">
       <div>{{ notice }}</div>
@@ -397,16 +438,37 @@ defineExpose({
             placeholder="搜索上游模型或对外 ID"
           />
         </label>
-        <label v-if="inactiveCount > 0" class="checkbox-row small">
+        <label v-if="hiddenDormantCount > 0" class="checkbox-row small">
           <input v-model="showInactive" type="checkbox" />
-          <span>显示休眠模型（{{ inactiveCount }}）</span>
+          <span>显示休眠的自动模型（{{ hiddenDormantCount }}）</span>
         </label>
         <span class="muted small">共 {{ allModels.length }} 项<template v-if="dirtyCount > 0"> · {{ dirtyCount }} 项待保存</template></span>
       </div>
 
+      <div class="provider-mapping-add">
+        <label class="oauth-model-search">
+          <Icon name="plus" :size="15" />
+          <input
+            v-model="newModel"
+            autocomplete="off"
+            aria-label="新增上游模型映射"
+            placeholder="新增上游模型 ID"
+            :disabled="busy"
+            @keydown.enter.prevent="addDraft"
+          />
+        </label>
+        <select v-model="newModelMode" aria-label="新增映射模式" :disabled="busy">
+          <option value="manual">手工指定对外 ID</option>
+          <option value="upstream">使用上游 ID</option>
+        </select>
+        <button type="button" class="button ghost mini" :disabled="busy || !newModel.trim()" @click="addDraft">
+          添加映射
+        </button>
+      </div>
+
       <div v-if="loading && !baseline" class="muted small provider-mappings-empty" role="status">正在读取共享模型映射…</div>
       <div v-else-if="allModels.length === 0" class="muted small provider-mappings-empty">
-        当前提供商还没有已同步的上游模型目录。请先在「账号池」中添加账号并同步模型目录。
+        当前提供商还没有共享模型。可在上方手工新增映射，或先在「账号池」中添加账号并同步模型目录。
       </div>
       <div v-else class="oauth-model-list oauth-mapping-list provider-mappings-list">
         <div class="oauth-mapping-head small" aria-hidden="true">
@@ -415,7 +477,7 @@ defineExpose({
         <div v-for="row in filteredRows" :key="row.upstreamModel" class="oauth-mapping-row" :data-provider-mapping-model="row.upstreamModel">
           <div class="oauth-mapping-upstream">
             <span class="mono">{{ row.upstreamModel }}</span>
-            <span v-if="!baselineByModel.has(row.upstreamModel)" class="badge danger small" title="服务端暂无该共享映射行；草稿不会提交，请撤销或同步模型恢复">无共享映射</span>
+            <span v-if="!baselineByModel.has(row.upstreamModel)" class="badge info small" title="新增映射草稿；保存后写入共享目录，账号目录出现该模型时自动激活">新增</span>
             <span v-else-if="!row.catalogActive" class="badge neutral small" title="当前所有账号目录均未包含该模型，保留历史人工映射">休眠</span>
           </div>
           <div class="oauth-mapping-public">
@@ -516,6 +578,18 @@ defineExpose({
 
 .provider-mappings-list {
   max-height: 460px;
+}
+
+.provider-mapping-add {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0 2px;
+}
+
+.provider-mapping-add select {
+  min-height: 34px;
 }
 
 .provider-mappings-footer {

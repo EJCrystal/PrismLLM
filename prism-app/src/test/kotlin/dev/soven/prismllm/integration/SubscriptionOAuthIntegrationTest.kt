@@ -162,6 +162,29 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
                 setBody("""{"expectedRevision":${revision + 1},"changes":[{"upstreamModel":"m","mode":"upstream","canonicalModelId":null}]}""")
             }
             assertEquals(HttpStatusCode.BadRequest, invalidNull.status)
+
+            // 人工新增共享行：允许通过 API 创建，先以休眠手工映射保存。
+            val addedRes = client.put("/admin/api/oauth-providers/chatgpt/model-mappings") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"expectedRevision":${revision + 1},"changes":[{"upstreamModel":"brand-new","mode":"upstream"}]}""")
+            }
+            assertEquals(HttpStatusCode.OK, addedRes.status)
+            val added = Json.parseToJsonElement(addedRes.bodyAsText()).jsonObject
+            val addedRow = added["mappings"]!!.jsonArray
+                .first { it.jsonObject["upstreamModel"]!!.jsonPrimitive.content == "brand-new" }.jsonObject
+            assertEquals("manual", addedRow["mappingSource"]!!.jsonPrimitive.content)
+            assertFalse(addedRow["catalogActive"]!!.jsonPrimitive.boolean)
+            assertEquals(revision + 2, added["revision"]!!.jsonPrimitive.long)
+
+            val autoNew = client.put("/admin/api/oauth-providers/chatgpt/model-mappings") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("""{"expectedRevision":${revision + 2},"changes":[{"upstreamModel":"auto-new","mode":"auto"}]}""")
+            }
+            assertEquals(HttpStatusCode.BadRequest, autoNew.status)
         }
     }
 
