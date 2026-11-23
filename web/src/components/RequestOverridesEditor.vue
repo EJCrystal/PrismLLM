@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import type { UpstreamHeaderProfile, UpstreamRequestOverrides } from '../types/api'
 import {
@@ -30,14 +30,21 @@ const drafts = reactive<RequestOverrideDrafts>(createRequestOverrideDrafts(props
 const availableProfiles = ref<UpstreamHeaderProfile[]>(props.profiles || [])
 const profileError = ref('')
 
+// 父组件在保存前会把 getValue() 回写到 value，即使内容没有变化也是新对象。
+// 这次同步不是用户修改，不能触发 changed，否则父级会误判输入变化并清空密钥模型授权。
+let syncingValue = false
 watch(() => props.value, (value) => {
+  syncingValue = true
   Object.assign(drafts, createRequestOverrideDrafts(value))
   inheritGlobal.value = value.inheritGlobal !== false
+  void nextTick(() => { syncingValue = false })
 }, { immediate: true })
 watch(() => props.profiles, (profiles) => {
   if (profiles) availableProfiles.value = profiles
 }, { deep: true })
-watch([drafts, inheritGlobal], () => emit('changed'), { deep: true })
+watch([drafts, inheritGlobal], () => {
+  if (!syncingValue) emit('changed')
+}, { deep: true })
 
 if (props.profiles === null) {
   api.getUpstreamRequestSettings().then((settings) => {
