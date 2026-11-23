@@ -63,6 +63,7 @@ const view = ref<keyof typeof meta>('channels')
 const navOpen = ref(false)
 const accountOpen = ref(false)
 const modelRoutesView = ref<InstanceType<typeof ModelRoutesView> | null>(null)
+const channelsView = ref<InstanceType<typeof ChannelsView> | null>(null)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
 const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
 /** 列表型页面：手机上统一成「工具条钉住 + 表格内部滚动」，避免列表末尾留下空白。 */
@@ -83,7 +84,9 @@ async function restoreSession() {
 }
 
 function canLeaveCurrentView(): boolean {
-  return view.value !== 'model-routes' || modelRoutesView.value?.canLeave() !== false
+  if (view.value === 'model-routes' && modelRoutesView.value?.canLeave() === false) return false
+  if (view.value === 'channels' && channelsView.value?.canLeave() === false) return false
+  return true
 }
 
 function onAuthenticated(authenticatedUser: MeResponse) {
@@ -232,7 +235,7 @@ onBeforeUnmount(() => {
       </header>
 
       <main class="content" :class="{ 'content-data': isDataView, 'content-fill': isListView }">
-        <ChannelsView v-if="view === 'channels'" />
+        <ChannelsView v-if="view === 'channels'" ref="channelsView" />
         <ModelRoutesView v-else-if="view === 'model-routes'" ref="modelRoutesView" />
         <ClientKeysView v-else-if="view === 'client-keys'" />
         <LogsView v-else-if="view === 'logs'" />

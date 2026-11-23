@@ -80,6 +80,7 @@ describe('App navigation protects model route drafts', () => {
   let confirmResult
   let confirmCalls
   let fetchMock
+  let channelsCanLeave = true
   const button = (scope, label) => {
     const found = [...scope.querySelectorAll('button')].find(node => text(node) === label)
     assert.ok(found, `Expected button ${label}`)
@@ -89,6 +90,7 @@ describe('App navigation protects model route drafts', () => {
     fixture = makeFixture()
     confirmResult = false
     confirmCalls = []
+    channelsCanLeave = true
     window.confirm = message => { confirmCalls.push(message); return confirmResult }
     fetchMock = createFetch(fixture)
     globalThis.fetch = window.fetch = fetchMock
@@ -114,11 +116,17 @@ describe('App navigation protects model route drafts', () => {
     const errorState = await loadClientComponent(server, 'ErrorState', { Icon: icon })
     routeComponent = await loadClientComponent(server, 'ModelRoutesView', { Icon: icon, ErrorState: errorState })
     const inert = { render: () => h('div') }
+    const channelsStub = {
+      render: () => h('div'),
+      setup(_, { expose }) {
+        expose({ canLeave: () => channelsCanLeave })
+      },
+    }
     const components = {
       Icon: icon,
       ToastStack: inert,
       LoginView: inert,
-      ChannelsView: inert,
+      ChannelsView: channelsStub,
       ModelRoutesView: routeComponent,
       ClientKeysView: inert,
       LogsView: inert,
@@ -158,6 +166,26 @@ describe('App navigation protects model route drafts', () => {
     assert.equal(text(host.querySelector('h1')), '提供商')
     assert.equal(host.querySelector('.route-editor'), null)
     assert.equal(confirmCalls.length, 2)
+  })
+
+  it('keeps the providers view while its mapping drafts refuse to leave', async () => {
+    await mount()
+    button(host.querySelector('nav'), '提供商').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '提供商')
+
+    channelsCanLeave = false
+    button(host.querySelector('nav'), '模型路由').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '提供商', 'dirty provider drafts block sidebar navigation')
+    button(host, '退出登录').click()
+    await settle()
+    assert.ok(host.querySelector('.app-shell'), 'dirty provider drafts block logout')
+
+    channelsCanLeave = true
+    button(host.querySelector('nav'), '模型路由').click()
+    await settle()
+    assert.equal(text(host.querySelector('h1')), '模型路由')
   })
 
   it('protects dirty drafts on explicit logout with the same confirmation', async () => {

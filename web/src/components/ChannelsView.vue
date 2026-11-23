@@ -108,6 +108,7 @@ interface RateLimitTarget {
 }
 
 const channels = ref<Channel[]>([])
+const oauthDrawer = ref<InstanceType<typeof OAuthProviderDrawer> | null>(null)
 const oauthProviders = ref<OAuthProviderInfo[]>([])
 const oauthAccounts = ref<OAuthAccount[]>([])
 const oauthLoadError = ref('')
@@ -1375,6 +1376,14 @@ function channelAction(id: string, channel: Channel) {
   if (id === 'delete') remove(channel)
 }
 
+/** 侧边栏切换/退出登录前的离开确认：映射抽屉有未保存草稿时先征询用户。 */
+function canLeave(): boolean {
+  if (oauthDrawer.value?.hasDirty() !== true) return true
+  return window.confirm('共享模型映射还有未保存的修改，离开页面将丢弃这些草稿。确定离开吗？')
+}
+
+defineExpose({ canLeave })
+
 useAutoRefresh(healthRefreshMs, () => { void loadHealth() }, () => loading.value || healthLoading.value || document.hidden, { refreshOnVisible: true })
 useAutoRefresh(occupancyRefreshMs, () => { void loadOccupancy() }, () => document.hidden, { refreshOnVisible: true })
 useAutoRefresh(relativeRefreshMs, () => { relativeNow.value = Date.now() }, () => document.hidden, { refreshOnVisible: true })
@@ -1931,6 +1940,7 @@ onMounted(() => {
 
     <OAuthProviderDrawer
       v-if="activeOAuthDrawer && activeOAuthDrawerItem"
+      ref="oauthDrawer"
       :key="activeOAuthDrawer.providerId"
       :item="activeOAuthDrawerItem"
       :channels="channels"

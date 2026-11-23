@@ -79,6 +79,13 @@ function onAccountsChanged() {
 function onMappingsSaved() {
   emit('changed')
 }
+
+/** 供页面级导航保护判断是否存在未保存的共享映射草稿。 */
+function hasDirty(): boolean {
+  return mappingsMounted.value && mappingsPanel.value?.hasDirty() === true
+}
+
+defineExpose({ hasDirty })
 </script>
 
 <template>
