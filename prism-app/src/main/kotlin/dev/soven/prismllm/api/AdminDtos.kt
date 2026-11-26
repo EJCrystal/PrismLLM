@@ -244,6 +244,8 @@ data class ChannelResponse(
     val keyDisableMode: String = "inherit",
     /** 渠道下订阅账号摘要，供访问范围树展示；不含任何凭据。 */
     val oauthAccounts: List<ChannelOAuthAccountResponse> = emptyList(),
+    /** 订阅渠道列表的展示范围；models/modelMappings 仍保留完整目录供账号设置使用。 */
+    val enabledModels: List<String>? = null,
 )
 
 /**
@@ -410,6 +412,7 @@ fun ChannelRecord.toResponse(oauthAccounts: List<UpstreamCredential> = emptyList
     keys = keys.map { it.toResponse() },
     egressProxies = egressProxies.map { it.toResponse() },
     oauthAccounts = oauthAccounts.map { it.toOAuthAccountResponse() },
+    enabledModels = if (isProviderChannel) modelsForEnabledCredentials(oauthAccounts) else null,
     requestOverrides = requestOverrides,
     quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
     kind = kind.value,
@@ -1724,6 +1727,8 @@ data class OAuthProviderModelMappingResponse(
     val mode: String,
     val mappingSource: String?,
     val catalogActive: Boolean,
+    /** 至少有一个启用账号授权且自身目录支持；与目录成员状态独立。 */
+    val enabled: Boolean = false,
 )
 
 @Serializable

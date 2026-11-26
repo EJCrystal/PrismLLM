@@ -21,6 +21,7 @@ data class ProviderModelMappingChange(
 data class ProviderModelMapping(
     val mapping: ChannelModelRecord,
     val automaticCanonicalModelId: String?,
+    val enabled: Boolean = false,
 ) {
     val mode: String get() = when {
         mapping.mappingSource == null -> "auto"
@@ -141,11 +142,16 @@ class ProviderChannelProvisioner(
         providerAccounts: List<OAuthAccountRecord>,
     ): ProviderModelMappings {
         val defaults = automaticDefaults(providerAccounts)
+        val enabledModels = channel?.modelsForEnabledCredentials(
+            providerAccounts.filter { channel.id in it.channelIds },
+        ).orEmpty().toSet()
         return ProviderModelMappings(
             provider = provider,
             revision = channel?.modelMappingRevision ?: 0,
             affectedAccountCount = providerAccounts.size,
-            mappings = channel?.modelMappings.orEmpty().map { ProviderModelMapping(it, defaults[it.upstreamModel]) },
+            mappings = channel?.modelMappings.orEmpty().map {
+                ProviderModelMapping(it, defaults[it.upstreamModel], it.upstreamModel in enabledModels)
+            },
         )
     }
 

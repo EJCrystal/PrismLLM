@@ -277,6 +277,37 @@ class ProviderChannelProvisionerTest {
     }
 
     @Test
+    fun `enabled mapping metadata distinguishes inherited unknown and known empty account catalogs`() = runBlocking {
+        val known = account()
+        provisioner.attachAccount(known.id)
+        sync(known, "a" to "family-a", "b" to "family-b")
+        change(known, "b", "manual", "saved-b")
+        provisioner.updateSettings(known.id, models = listOf("a"))
+        val unknown = account()
+        provisioner.attachAccount(unknown.id)
+        provisioner.updateSettings(unknown.id, models = listOf("b"))
+        suspend fun enabled() = shared().mappings.filter { it.enabled }.map { it.mapping.upstreamModel }.toSet()
+        assertEquals(setOf("a", "b"), enabled())
+        provisioner.updateSettings(unknown.id, enabled = false)
+        assertEquals(setOf("a"), enabled())
+        provisioner.updateSettings(known.id, enabled = false)
+        assertEquals(emptySet(), enabled())
+        // 未同步且授权为空表示继承渠道目录，而不是没有授权。
+        provisioner.updateSettings(unknown.id, enabled = true, models = emptyList())
+        assertNull(accounts.findDetailed(unknown.id)!!.modelCatalog)
+        assertEquals(setOf("a", "b"), enabled())
+        // 同步到已知空目录后，即使授权为空也不能继承其他账号的目录。
+        sync(unknown)
+        assertEquals(emptySet(), enabled())
+        provisioner.updateSettings(known.id, enabled = true)
+        assertEquals(setOf("a"), enabled())
+        val retained = shared().mappings.single { it.mapping.upstreamModel == "b" }
+        assertFalse(retained.enabled)
+        assertTrue(retained.mapping.catalogActive)
+        assertEquals("saved-b", retained.mapping.canonicalModelId)
+    }
+
+    @Test
     fun `default winner uses createdAt then id and preserves null as upstream default`() = runBlocking {
         val first = account(now = 1_000)
         val second = account(now = 2_000)

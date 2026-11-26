@@ -251,6 +251,79 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
+    fun `subscription display models follow enabled account authorization while all mappings remain editable`() = runBlocking {
+        val provider = OAuthProvider.ANTIGRAVITY
+        val first = mappingAccount("enabled-first", provider, models = listOf("claude-first"))
+        val second = mappingAccount("enabled-second", provider, models = listOf("claude-second"))
+        val disabled = (1..3).map { mappingAccount("disabled-$it", provider) }
+        app.providerChannelProvisioner.syncModelCatalog(first.id, listOf(
+            OAuthAccountModelCatalogEntry("claude-first", "claude-family"),
+            OAuthAccountModelCatalogEntry("gemini-3-flash"),
+            OAuthAccountModelCatalogEntry("gemini-3.1-flash-image"),
+        ))
+        app.providerChannelProvisioner.syncModelCatalog(second.id, listOf(OAuthAccountModelCatalogEntry("claude-second", "claude-family")))
+        for (account in disabled) {
+            app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry("disabled-only")))
+            app.providerChannelProvisioner.updateSettings(account.id, enabled = false)
+        }
+        val channelId = app.providerChannelProvisioner.ensure(provider)!!
+        val shared = app.providerChannelProvisioner.modelMappings(provider)
+        val saved = app.providerChannelProvisioner.updateModelMappings(provider, listOf(
+            ProviderModelMappingChange("gemini-3-flash", "manual", "saved-flash-alias"),
+            ProviderModelMappingChange("future-model", "manual", "saved-future-alias"),
+        ), shared.revision)
+        val originalMappings = app.channelRepository.find(channelId)!!.modelMappings
+
+        testApplication {
+            application { app.install(this) }
+            val (cookie, csrf) = client.loginAdmin()
+            suspend fun channel() = Json.parseToJsonElement(client.get("/admin/api/channels") {
+                header(HttpHeaders.Cookie, cookie)
+            }.bodyAsText()).jsonArray.map { it.jsonObject }.single { it["id"]!!.jsonPrimitive.content == channelId }
+            suspend fun mappings() = Json.parseToJsonElement(client.get("/admin/api/oauth-providers/antigravity/model-mappings") {
+                header(HttpHeaders.Cookie, cookie)
+            }.bodyAsText()).jsonObject
+            suspend fun settings(accountId: String, body: String) {
+                assertEquals(HttpStatusCode.OK, client.put("/admin/api/oauth-accounts/$accountId/settings") {
+                    header(HttpHeaders.Cookie, cookie); header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json); setBody(body)
+                }.status)
+            }
+            suspend fun assertEnabled(expected: Set<String>) {
+                val response = channel()
+                assertEquals(expected, response["enabledModels"]!!.jsonArray.map { it.jsonPrimitive.content }.toSet())
+                assertTrue(response["models"]!!.jsonArray.map { it.jsonPrimitive.content }.containsAll(
+                    listOf("gemini-3-flash", "gemini-3.1-flash-image", "disabled-only"),
+                ), "full channel catalog must remain available for account settings")
+                val sharedResponse = mappings()
+                assertEquals(saved.revision, sharedResponse["revision"]!!.jsonPrimitive.long)
+                val rows = sharedResponse["mappings"]!!.jsonArray.map { it.jsonObject }
+                assertEquals(expected, rows.filter { it["enabled"]!!.jsonPrimitive.boolean }.map { it["upstreamModel"]!!.jsonPrimitive.content }.toSet())
+                val manual = rows.single { it["upstreamModel"]!!.jsonPrimitive.content == "gemini-3-flash" }
+                assertEquals("saved-flash-alias", manual["canonicalModelId"]!!.jsonPrimitive.content)
+                assertTrue(manual["catalogActive"]!!.jsonPrimitive.boolean)
+                val dormant = rows.single { it["upstreamModel"]!!.jsonPrimitive.content == "future-model" }
+                assertFalse(dormant["catalogActive"]!!.jsonPrimitive.boolean)
+                assertFalse(dormant["enabled"]!!.jsonPrimitive.boolean)
+                assertEquals("saved-future-alias", dormant["canonicalModelId"]!!.jsonPrimitive.content)
+                assertEquals(originalMappings, app.channelRepository.find(channelId)!!.modelMappings)
+            }
+
+            assertEnabled(setOf("claude-first", "claude-second"))
+            // Empty authorization inherits only this account's own known catalog, not disabled accounts' models.
+            settings(first.id, """{"models":[]}""")
+            assertEnabled(setOf("claude-first", "claude-second", "gemini-3-flash", "gemini-3.1-flash-image"))
+            settings(first.id, """{"enabled":false}""")
+            settings(second.id, """{"enabled":false}""")
+            assertEnabled(emptySet())
+            settings(first.id, """{"enabled":true,"models":["gemini-3-flash"]}""")
+            assertEnabled(setOf("gemini-3-flash"))
+        }
+        assertTrue(fake.requests.isEmpty())
+        assertTrue(fake.modelRequests.isEmpty())
+    }
+
+    @Test
     fun `invalid settings noauth csrf and revision conflicts leave entire account and mappings unchanged`() = runBlocking {
         val account = mappingAccount("validation", models = listOf("m"))
         app.providerChannelProvisioner.syncModelCatalog(account.id, listOf(OAuthAccountModelCatalogEntry("m", "family")))
