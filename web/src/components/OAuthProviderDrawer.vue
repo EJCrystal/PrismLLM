@@ -92,7 +92,7 @@ defineExpose({ hasDirty })
   <Modal
     :title="item.displayName"
     eyebrow="官方订阅提供商"
-    roomy
+    full
     mobile-fullscreen
     @close="requestClose"
   >
@@ -242,7 +242,7 @@ defineExpose({ hasDirty })
 }
 
 .provider-tab.is-active {
-  background: var(--surface, #fff);
+  background: var(--glass-field-strong);
   color: var(--ink);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
 }
