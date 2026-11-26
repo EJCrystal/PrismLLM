@@ -142,7 +142,7 @@ jobs:
   #    CodeRabbit 也不响应机器人发起的指令。
   route_review:
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && inputs.tier != 'pr-agent') ||
       (github.event_name == 'pull_request' && github.event.pull_request.draft == false) ||
       (
         github.event_name == 'check_run' &&
@@ -646,10 +646,18 @@ jobs:
   # 4. 核心审查 Job：评论区 /review 等指令（含 job 3 代发的 /review）
   pr_agent_review:
     if: >-
-      github.event_name == 'issue_comment' &&
-      github.event.sender.type != 'Bot' &&
-      github.event.issue.pull_request != null &&
-      startsWith(github.event.comment.body, '/')
+      (github.event_name == 'workflow_dispatch' && inputs.tier == 'pr-agent') ||
+      (github.event_name == 'issue_comment' &&
+       github.event.sender.type != 'Bot' &&
+       github.event.issue.pull_request != null &&
+       startsWith(github.event.comment.body, '/'))
+    permissions:
+      actions: read
+      checks: read
+      issues: write
+      pull-requests: write
+      contents: read
+      statuses: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -705,11 +713,26 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           COMMENT_PR_URL: ${{ github.event.issue.pull_request.url }}
+          DISPATCH_PR: ${{ inputs.pr_number }}
+          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if ! [[ "$DISPATCH_PR" =~ ^[0-9]+$ ]]; then
+              echo "::error::pr_number 必须是数字"
+              exit 1
+            fi
+            COMMENT_PR_URL="repos/${REPO}/pulls/${DISPATCH_PR}"
+          fi
           HEAD_SHA=$(gh api "$COMMENT_PR_URL" -q .head.sha)
           PR_NUMBER="${COMMENT_PR_URL##*/}"
           echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
           echo "PR_NUMBER=$PR_NUMBER" >> "$GITHUB_ENV"
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            gh api "repos/${REPO}/statuses/${HEAD_SHA}" \
+              -f state="pending" -f context="AI Review Gate" \
+              -f description="PR-Agent 手动全量审查中..."
+          fi
 
       - name: Run PR Agent with LLM Gateway
         id: run_pr_agent
@@ -720,8 +743,13 @@ jobs:
         # 无错误日志、exit 0）。此 digest 为 2026-10-16 构建，已在本地完整复现
         # （apply_repo_settings 通过、review 正常发起），按上游建议用 digest pin。
         uses: docker://pragent/pr-agent@sha256:80edef71baa3df28c129d858d4b53784abfc14704c235efb32b6c461d5399a6d
+        with:
+          entrypoint: ${{ github.event_name == 'workflow_dispatch' && 'python' || '/entrypoint.sh' }}
+          args: ${{ github.event_name == 'workflow_dispatch' && format('-m pr_agent.cli --pr_url https://github.com/{0}/pull/{1} review', github.repository, env.PR_NUMBER) || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB.USER_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB.DEPLOYMENT_TYPE: user
           OPENAI_KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI.KEY: ${{ secrets.LLM_GATEWAY_KEY }}
           OPENAI.API_BASE: ${{ vars.LLM_GATEWAY_BASE_URL }}
