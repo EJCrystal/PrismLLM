@@ -84,7 +84,7 @@ def check_account(root, proxy, model):
             report = observe_official_status(root, proxy)
             if report["canContinueAcceptance"]:
                 report = merge_session_evidence(report, observe_official_session(root, proxy, model), model)
-        except (pilot.PilotError, OSError, ValueError):
+        except (pilot.PilotError, OSError, ValueError, KeyboardInterrupt):
             pilot.private_json(destination, {**pending, "status": "ACCOUNT_EVIDENCE_CHECK_STOPPED"})
             raise
         report["modelId"] = model
@@ -137,6 +137,32 @@ def merge_session_evidence(report, session, model):
     return result
 
 
+def stop_owned_process(process):
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        process.communicate()
+
+
+def communicate_owned_process(process, timeout, timeout_message):
+    try:
+        return process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        stop_owned_process(process)
+        raise pilot.PilotError(timeout_message) from None
+    except BaseException:
+        stop_owned_process(process)
+        raise
+
+
 def observe_official_session(root, proxy, model):
     java = shutil.which("java")
     jar = pilot.REPO / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
@@ -159,16 +185,8 @@ def observe_official_session(root, proxy, model):
                        *pilot.sandbox_command(root, runtime, True, agent)]
             with subprocess.Popen(command, cwd=pilot.REPO, env={}, start_new_session=True, stdin=subprocess.DEVNULL,
                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
-                try:
-                    output, _ = process.communicate(timeout=80)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGTERM)
-                    try:
-                        process.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        os.killpg(process.pid, signal.SIGKILL)
-                        process.communicate()
-                    raise pilot.PilotError("Official ACP account status timed out; no retry was made") from None
+                output, _ = communicate_owned_process(
+                    process, 80, "Official ACP account status timed out; no retry was made")
         if len(output) > 65_536:
             raise pilot.PilotError("Official ACP account status exceeded its limit")
         try:
@@ -196,14 +214,10 @@ def observe_official_status(root, proxy):
         (runtime / "workspace").mkdir(mode=0o700)
         with pilot.bridge(runtime, proxy, on_connect=observed):
             command = ["/opt/agy", "--log-file", "/dev/null", "--output-format", "json", "--print", "/usage"]
-            with subprocess.Popen(pilot.sandbox_command(root, runtime, True, command), env={},
+            with subprocess.Popen(pilot.sandbox_command(root, runtime, True, command), env={}, start_new_session=True,
                                   stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as process:
-                try:
-                    output, _ = process.communicate(timeout=45)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait()
-                    raise pilot.PilotError("Official read-only status timed out; no retry was made") from None
+                output, _ = communicate_owned_process(
+                    process, 45, "Official read-only status timed out; no retry was made")
         return summarize_status(output, process.returncode, connections)
 
 
@@ -214,15 +228,22 @@ def main():
     parser.add_argument("--model", required=True)
     args = parser.parse_args()
     os.umask(0o077)
+
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    previous_handler = signal.signal(signal.SIGTERM, interrupted)
     try:
         if not args.state.is_absolute():
             raise pilot.PilotError("State must be an absolute private directory")
         report = check_account(args.state, args.proxy, args.model)
         print(json.dumps(report))
         return 0 if report["canContinueAcceptance"] else 1
-    except (pilot.PilotError, OSError, ValueError):
+    except (pilot.PilotError, OSError, ValueError, KeyboardInterrupt):
         print(json.dumps({"status": "ACCOUNT_EVIDENCE_CHECK_STOPPED", "canContinueAcceptance": False}))
         return 1
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 if __name__ == "__main__":

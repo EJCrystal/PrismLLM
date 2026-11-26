@@ -148,14 +148,14 @@ class AntigravityAcpConfigTest {
     }
 
     @Test
-    fun `client key IDs are trimmed deduplicated and accept uppercase UUIDs`() {
+    fun `client key IDs are trimmed normalized to lowercase and deduplicated`() {
         val uppercaseKeyId = secondKeyId.uppercase()
         val config = assertNotNull(AntigravityAcpConfig.fromEnv(
-            requiredEnv + ("ANTIGRAVITY_ACP_CLIENT_KEY_IDS" to " $firstKeyId, $uppercaseKeyId ,$firstKeyId "),
+            requiredEnv + ("ANTIGRAVITY_ACP_CLIENT_KEY_IDS" to " $firstKeyId, $uppercaseKeyId ,$secondKeyId,$firstKeyId "),
         ))
 
-        assertEquals(setOf(firstKeyId, uppercaseKeyId), config.clientKeyIds)
-        assertEquals(setOf(uppercaseKeyId), createConfig(clientKeyIds = setOf(uppercaseKeyId)).clientKeyIds)
+        assertEquals(setOf(firstKeyId, secondKeyId), config.clientKeyIds)
+        assertEquals(setOf(secondKeyId), createConfig(clientKeyIds = setOf(uppercaseKeyId, secondKeyId)).clientKeyIds)
     }
 
     @Test
@@ -300,7 +300,7 @@ class AntigravityAcpConfigTest {
 
     @Test
     fun `validated client key IDs cannot be changed through mutable set aliases`() {
-        val clientKeyIds = mutableSetOf(firstKeyId)
+        val clientKeyIds = mutableSetOf(firstKeyId.uppercase())
         val config = createConfig(clientKeyIds = clientKeyIds)
 
         clientKeyIds.clear()

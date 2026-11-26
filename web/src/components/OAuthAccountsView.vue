@@ -26,6 +26,7 @@ import {
   formatCooldownRemaining,
   formatQuotaReset,
   formatUsedPercent,
+  formatWindowSeconds,
   isOAuthAccountCooling,
   isOAuthQuotaBlocked,
   oauthAccountModelOptions,
@@ -56,15 +57,19 @@ const props = withDefaults(defineProps<{
   embedded?: boolean
   /** 打开后立即弹出「新建账号」登录弹窗。 */
   autoOpenCreate?: boolean
+  createOnly?: boolean
 }>(), {
   fixedProvider: null,
   initialStatusFilter: 'all',
   embedded: false,
   autoOpenCreate: false,
+  createOnly: false,
 })
 
 const emit = defineEmits<{
   (event: 'changed'): void
+  (event: 'close'): void
+  (event: 'authorization-submitted', request: Promise<OAuthAccount>): void
   /** autoOpenCreate 触发过一次新建弹窗后通知父级清除标志，避免重挂载时重复弹出。 */
   (event: 'auto-create-consumed'): void
 }>()
@@ -476,6 +481,12 @@ function openImport() {
   showImport.value = true
 }
 
+function closeImport() {
+  showImport.value = false
+  resetLoginSession()
+  if (props.createOnly) emit('close')
+}
+
 function openReauth(account: OAuthAccount) {
   reauthTarget.value = account
   resetLoginSession()
@@ -504,7 +515,7 @@ async function beginLogin() {
     loginSession.value = session
     callbackUrl.value = ''
   } catch (cause) {
-    notify(errorMessage(cause), 'error')
+    if (generation === loginGeneration) notify(errorMessage(cause), 'error')
   } finally {
     if (generation === loginGeneration) loginStarting.value = false
   }
@@ -529,21 +540,35 @@ async function completeLogin() {
   const callback = callbackUrl.value.trim()
   const loginId = loginSession.value.loginId
   const generation = loginGeneration
+  const target = reauthTarget.value
+  const settings = {
+    name: importForm.name.trim() || null,
+    priority: Number(importForm.priority),
+  }
   loginCompleting.value = true
   try {
-    await api.completeOAuthLogin(loginId, { callbackUrl: callback })
-    if (reauthTarget.value) {
-      await api.updateOAuthAccountSettings(reauthTarget.value.id, {
-        name: importForm.name.trim() || null,
-        priority: Number(importForm.priority),
-      })
+    const request = api.completeOAuthLogin(loginId, { callbackUrl: callback })
+    emit('authorization-submitted', request)
+    await request
+    if (generation === loginGeneration && target) {
+      await api.updateOAuthAccountSettings(target.id, settings)
     }
-    notify(reauthTarget.value ? '订阅账号已重新授权' : '订阅账号已通过浏览器登录')
+    if (generation !== loginGeneration) {
+      if (!disposed) {
+        await load()
+        if (!disposed) emit('changed')
+      }
+      return
+    }
+    notify(target ? '订阅账号已重新授权' : '订阅账号已通过浏览器登录')
     showImport.value = false
-    await load()
+    resetLoginSession()
+    if (!props.createOnly) await load()
+    if (disposed) return
     emit('changed')
+    if (props.createOnly) emit('close')
   } catch (cause) {
-    notify(errorMessage(cause), 'error')
+    if (generation === loginGeneration) notify(errorMessage(cause), 'error')
   } finally {
     if (generation === loginGeneration) loginCompleting.value = false
   }
@@ -862,6 +887,11 @@ function accountAction(id: string, account: OAuthAccount) {
 let disposed = false
 
 onMounted(() => {
+  if (props.createOnly) {
+    openImport()
+    void load()
+    return
+  }
   // 计时器先于异步加载创建，保证加载期间卸载也能被 onBeforeUnmount 清理。
   clock = window.setInterval(() => {
     now.value = Date.now()
@@ -885,6 +915,7 @@ defineExpose({ openImport, reload: load })
 
 onBeforeUnmount(() => {
   disposed = true
+  resetLoginSession()
   settingsGeneration++
   mappingRequests.invalidate()
   listRequests.invalidate()
@@ -893,7 +924,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="page-stack page-compact oauth-accounts-page" :class="{ 'is-embedded': embedded }">
+  <section v-if="!createOnly" class="page-stack page-compact oauth-accounts-page" :class="{ 'is-embedded': embedded }">
     <div class="stat-row four oauth-account-stats" aria-label="订阅账号状态筛选">
       <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'all' }" :aria-pressed="statusFilter === 'all'" @click="toggleStatusFilter('all')">
         <span>订阅账号</span><strong>{{ scopedAccounts.length }}</strong><small>全部账号 · 独立凭据</small>
@@ -1070,8 +1101,9 @@ onBeforeUnmount(() => {
                 <div v-if="oauthQuotaErrorHint(account.quota?.error)" class="oauth-quota-notice small muted">{{ oauthQuotaErrorHint(account.quota?.error) }}</div>
                 <span v-if="!accountQuotaView(account).visible.length && !account.quota?.error" class="muted small">暂无读数</span>
               </td>
-              <td class="oauth-schedule-cell">
-                <div class="small oauth-schedule-line">{{ oauthPolicySummary(account.policy) }}</div>
+              <td class="oauth-schedule-cell" :title="oauthPolicySummary(account.policy)">
+                <div class="small oauth-schedule-line">{{ account.policy.windowLimit == null ? '不限窗口' : `${account.policy.windowLimit} 次 / ${formatWindowSeconds(account.policy.windowSeconds)}` }}</div>
+                <div class="small oauth-schedule-line">并发上限 {{ account.policy.maxConcurrentRequests }}</div>
                 <div v-if="account.policy.windowLimit != null" class="small muted oauth-schedule-line">窗口 {{ account.runtime.windowUsed }}/{{ account.policy.windowLimit }}</div>
                 <div class="small muted oauth-schedule-line">当前并发 {{ account.runtime.activeRequests }}/{{ account.policy.maxConcurrentRequests }}</div>
                 <div v-if="formatCooldownRemaining(account.runtime.cooldownUntil, now)" class="small text-warning">
@@ -1112,8 +1144,12 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <Modal v-if="showImport" :title="reauthTarget ? '重新授权订阅账号' : '新建订阅账号'" wide @close="showImport = false">
+  </section>
+
+    <Modal v-if="showImport" :title="reauthTarget ? '重新授权订阅账号' : '新建订阅账号'" wide @close="closeImport">
       <form class="form-grid" @submit.prevent="completeLogin">
+        <p v-if="createOnly && loading" class="muted small" role="status">正在读取订阅提供方…</p>
+        <ErrorState v-if="createOnly && error" :message="error" :busy="loading" @retry="load" />
         <label class="field">
           <span>账号名称</span>
           <input v-model="importForm.name" autocomplete="off" placeholder="可选，默认使用邮箱" />
@@ -1159,7 +1195,7 @@ onBeforeUnmount(() => {
             <CopyButton :text="loginSession.authorizeUrl" title="复制登录链接" />
           </div>
           <div v-else class="oauth-login-actions">
-            <button type="button" class="button" :disabled="loginStarting" @click="beginLogin">
+            <button type="button" class="button" :disabled="loginStarting || (createOnly && (loading || !!error))" @click="beginLogin">
               {{ loginStarting ? '生成中…' : '生成登录链接' }}
             </button>
             <small>生成后在新标签页完成登录；链接 10 分钟内有效，且只能使用一次。</small>
@@ -1173,7 +1209,7 @@ onBeforeUnmount(() => {
         </label>
 
         <div class="form-actions">
-          <button type="button" class="button" @click="showImport = false">取消</button>
+          <button type="button" class="button" @click="closeImport">取消</button>
           <button type="submit" class="button primary" :disabled="loginCompleting">
             {{ loginCompleting ? '提交中…' : reauthTarget ? '重新授权' : '创建账号' }}
           </button>
@@ -1356,7 +1392,6 @@ onBeforeUnmount(() => {
         </div>
       </form>
     </Modal>
-  </section>
 </template>
 
 <style scoped>

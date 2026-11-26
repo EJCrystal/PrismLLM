@@ -12,7 +12,7 @@ class AntigravityAcpConfig(
     clientKeyIds: Set<String>,
     val timeoutMs: Long = DEFAULT_TIMEOUT_MS,
 ) {
-    val clientKeyIds: Set<String> = Collections.unmodifiableSet(clientKeyIds.toSet())
+    val clientKeyIds: Set<String>
 
     init {
         validatePath("SCRIPT", script)
@@ -25,12 +25,14 @@ class AntigravityAcpConfig(
         require(MODEL_PATTERN.matches(modelId)) {
             "${ENV_PREFIX}MODEL must match [A-Za-z0-9._:/-]{1,160}"
         }
-        require(this.clientKeyIds.isNotEmpty() && this.clientKeyIds.all(UUID_PATTERN::matches)) {
+        val configuredClientKeyIds = clientKeyIds.toSet()
+        require(configuredClientKeyIds.isNotEmpty() && configuredClientKeyIds.all(UUID_PATTERN::matches)) {
             "${ENV_PREFIX}CLIENT_KEY_IDS must contain nonempty UUID strings"
         }
         require(timeoutMs in 1_000L..600_000L) {
             "${ENV_PREFIX}TIMEOUT_MS must be between 1000 and 600000"
         }
+        this.clientKeyIds = Collections.unmodifiableSet(configuredClientKeyIds.map { it.lowercase() }.toSet())
     }
 
     fun command(): List<String> = listOf(

@@ -57,6 +57,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.StandardOpenOption
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -116,6 +117,30 @@ class AntigravityAcpGatewayTest {
                 setBody(requestBody())
             }
             assertEquals(HttpStatusCode.Forbidden, response.status)
+        }
+        assertFalse(Files.exists(fixture.resolve("startups")))
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+        "abcdef01-2345-6789-abcd-0123456789ab",
+        "ABCDEF01-2345-6789-ABCD-0123456789AB",
+        "AbCdEf01-2345-6789-aBcD-0123456789aB",
+    ])
+    fun uppercaseWhitelistAuthorizesTheSameUuidRegardlessOfRecordCase(keyId: String) {
+        val gateway = gateway(clientKeyIds = setOf("ABCDEF01-2345-6789-ABCD-0123456789AB"))
+        val key = clientKey().copy(id = keyId)
+
+        gateway.authorize(key)
+
+        for (denied in listOf(
+            key.copy(id = "abcdef01-2345-6789-abcd-0123456789ac"),
+            key.copy(id = "1-1-1-1-1"),
+            key.copy(id = " $keyId "),
+            key.copy(accessPolicy = ClientKeyAccessPolicy(allowedModelIds = emptySet())),
+        )) {
+            val failure = assertFailsWith<GatewayError> { gateway.authorize(denied) }
+            assertEquals(HttpStatusCode.Forbidden, failure.status)
         }
         assertFalse(Files.exists(fixture.resolve("startups")))
     }
@@ -323,11 +348,15 @@ class AntigravityAcpGatewayTest {
         assertOnlyExpectedMethods()
     }
 
-    private fun gateway(scenario: String = "success", timeoutMs: Long = 8_000): AntigravityAcpGateway {
+    private fun gateway(
+        scenario: String = "success",
+        timeoutMs: Long = 8_000,
+        clientKeyIds: Set<String> = setOf(FIXTURE_KEY_ID),
+    ): AntigravityAcpGateway {
         val classpath = (System.getProperty("surefire.test.class.path") ?: System.getProperty("java.class.path"))
             .split(File.pathSeparatorChar).joinToString(File.pathSeparator) { Path.of(it).toAbsolutePath().toString() }
         val config = AntigravityAcpConfig(script = fixture.resolve("unused.py"), stateDir = fixture,
-            modelId = FIXTURE_MODEL, clientKeyIds = setOf(FIXTURE_KEY_ID), timeoutMs = timeoutMs)
+            modelId = FIXTURE_MODEL, clientKeyIds = clientKeyIds, timeoutMs = timeoutMs)
         return AntigravityAcpGateway(config, AntigravityAcpPilot(
             command = listOf(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Dstdout.encoding=UTF-8", "-cp", classpath, FakeAcpGatewayAgent::class.java.name, fixture.toString(), scenario),

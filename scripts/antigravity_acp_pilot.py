@@ -317,19 +317,39 @@ def verify_installed_release(root, release):
         raise PilotError("Installed CLI failed its pinned integrity check")
 
 
+def existing_private_file(path, executable=False):
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    require_private_path(path, executable=executable)
+    return True
+
+
 def install_release(root, proxy):
     release = pinned_release()
     binary = root / "bin/agy"
     receipt = root / "release.json"
-    if binary.exists() and receipt.exists():
+    require_private_path(root, directory=True)
+    require_private_path(binary.parent, directory=True)
+    has_binary = existing_private_file(binary, executable=True)
+    has_receipt = existing_private_file(receipt)
+    if has_binary and has_receipt:
         verify_installed_release(root, release)
         return
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy}))
+    stored = read_private_json(receipt) if has_receipt else None
+    if has_receipt and (not isinstance(stored, dict) or stored.get("release") != release or
+                        not isinstance(stored.get("binarySha512"), str) or
+                        not re.fullmatch(r"[0-9a-f]{128}", stored["binarySha512"])):
+        raise PilotError("Incomplete CLI receipt failed its pinned integrity check")
     parsed = urllib.parse.urlsplit(release["url"])
     if parsed.scheme != "https" or parsed.hostname != "storage.googleapis.com" or not parsed.path.startswith("/antigravity-public/antigravity-cli/"):
         raise PilotError("Release is not an official Antigravity download")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy}))
     with tempfile.TemporaryDirectory(prefix="download-", dir=root) as name:
         archive = Path(name) / "release.tar.gz"
+        staged_binary = Path(name) / "agy"
+        staged_receipt = Path(name) / "release.json"
         with opener.open(release["url"], timeout=60) as source, archive.open("wb") as output:
             shutil.copyfileobj(source, output)
         with archive.open("rb") as source:
@@ -339,11 +359,24 @@ def install_release(root, proxy):
             member = source.getmember("antigravity")
             if not member.isfile() or member.size > 1_000_000_000:
                 raise PilotError("Unexpected executable in official archive")
-            with source.extractfile(member) as content, binary.open("xb") as output:
+            with source.extractfile(member) as content, staged_binary.open("xb") as output:
+                os.fchmod(output.fileno(), 0o600)
                 shutil.copyfileobj(content, output)
-        binary.chmod(0o700)
-    with binary.open("rb") as source:
-        private_json(receipt, {"release": release, "binarySha512": hashlib.file_digest(source, "sha512").hexdigest()})
+        with staged_binary.open("rb") as source:
+            digest = hashlib.file_digest(source, "sha512").hexdigest()
+        staged_binary.chmod(0o700)
+        if has_binary:
+            with binary.open("rb") as source:
+                if hashlib.file_digest(source, "sha512").hexdigest() != digest:
+                    raise PilotError("Unrecognized orphan CLI binary; refusing to replace it")
+        if has_receipt and stored["binarySha512"] != digest:
+            raise PilotError("Incomplete CLI receipt failed its pinned integrity check")
+        private_json(staged_receipt, {"release": release, "binarySha512": digest})
+        if not has_binary:
+            os.link(staged_binary, binary)
+        if not has_receipt:
+            os.link(staged_receipt, receipt)
+        verify_installed_release(root, release)
 
 
 def run_agent(root, proxy, online, arguments):

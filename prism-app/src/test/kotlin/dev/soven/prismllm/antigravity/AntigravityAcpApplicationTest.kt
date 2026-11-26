@@ -279,6 +279,7 @@ class AntigravityAcpApplicationTest {
                 app.close()
             }
             assertTrue(app.requestLimitService.clientKeyOccupancy().isEmpty())
+            assertTrue(app.metrics.registry.isClosed, "Owned metrics registry must be closed with the application")
             assertTrue(app.requestDrain.awaitFinalized(1_000))
             assertTrue(port != 0 && runCatching {
                 Socket().use { it.connect(InetSocketAddress("127.0.0.1", port), 500) }

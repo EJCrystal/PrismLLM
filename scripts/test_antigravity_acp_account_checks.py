@@ -1,10 +1,15 @@
 from contextlib import nullcontext
 import json
+import os
 from pathlib import Path
+import signal
+import sys
 import tempfile
 import subprocess
+import textwrap
+import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import antigravity_acp_account_checks as checks
 import antigravity_acp_pilot as pilot
@@ -134,6 +139,148 @@ class OfficialAccountEvidenceTest(unittest.TestCase):
                 kill.assert_called_once_with(42000123, checks.signal.SIGTERM)
             self.assertEqual(1, factory.call_count)
             self.assertNotIn("private-command", str(error.exception))
+
+    def test_cancellation_and_communication_errors_stop_and_reap_the_owned_group(self):
+        for failure in (KeyboardInterrupt(), RuntimeError("private-detail"), OSError("private-detail")):
+            with self.subTest(failure=type(failure).__name__), patch.object(checks.os, "killpg") as kill:
+                process = Mock(pid=42000123)
+                process.communicate.side_effect = [failure, (b"", None)]
+                with self.assertRaises(type(failure)) as error:
+                    checks.communicate_owned_process(process, 45, "timeout")
+                self.assertIs(failure, error.exception)
+                kill.assert_called_once_with(42000123, signal.SIGTERM)
+                self.assertEqual([45, 5], [call.kwargs["timeout"] for call in process.communicate.call_args_list])
+
+    def test_cancellation_escalates_only_the_owned_group_when_term_is_ignored(self):
+        with patch.object(checks.os, "killpg") as kill:
+            process = Mock(pid=42000123)
+            process.communicate.side_effect = [KeyboardInterrupt(), subprocess.TimeoutExpired("private", 5), (b"", None)]
+            with self.assertRaises(KeyboardInterrupt):
+                checks.communicate_owned_process(process, 45, "timeout")
+            self.assertEqual([(42000123, signal.SIGTERM), (42000123, signal.SIGKILL)],
+                             [call.args for call in kill.call_args_list])
+            self.assertEqual({}, process.communicate.call_args_list[-1].kwargs)
+
+    def test_process_exit_race_does_not_skip_reaping_or_replace_cancellation(self):
+        with patch.object(checks.os, "killpg", side_effect=ProcessLookupError):
+            process = Mock(pid=42000123)
+            process.communicate.side_effect = [KeyboardInterrupt(), (b"", None)]
+            with self.assertRaises(KeyboardInterrupt):
+                checks.communicate_owned_process(process, 45, "timeout")
+            self.assertEqual(2, process.communicate.call_count)
+
+    def test_status_timeout_uses_a_clean_owned_session_and_never_retries(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            with patch.object(pilot, "bridge", return_value=nullcontext()), \
+                    patch.object(pilot, "sandbox_command", return_value=["fake-agent"]), \
+                    patch.object(checks.subprocess, "Popen") as factory, patch.object(checks.os, "killpg") as kill:
+                process = factory.return_value.__enter__.return_value
+                process.pid = 42000123
+                process.communicate.side_effect = [subprocess.TimeoutExpired("private", 45), (b"", None)]
+                with self.assertRaisesRegex(pilot.PilotError, "^Official read-only status timed out; no retry was made$"):
+                    checks.observe_official_status(root, "http://127.0.0.1:7897")
+                self.assertTrue(factory.call_args.kwargs["start_new_session"])
+                self.assertEqual({}, factory.call_args.kwargs["env"])
+                self.assertEqual(1, factory.call_count)
+                kill.assert_called_once_with(42000123, signal.SIGTERM)
+
+    def test_real_sigterm_reaps_each_observer_before_releasing_the_pilot_lock(self):
+        child_source = textwrap.dedent("""
+            import fcntl, os, pathlib, signal, sys, time
+            root = pathlib.Path(sys.argv[1])
+            def stopped(signum, frame):
+                with (root / 'pilot.lock').open('r+') as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        state = 'released-too-early'
+                    except BlockingIOError:
+                        state = 'still-locked'
+                (root / 'child-cleanup').write_text(state)
+                raise SystemExit(0)
+            signal.signal(signal.SIGTERM, stopped)
+            (root / 'child-ready').write_text(str(os.getpid()))
+            while True:
+                time.sleep(1)
+        """)
+        controller_source = textwrap.dedent("""
+            from contextlib import nullcontext
+            from pathlib import Path
+            import signal, subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            import antigravity_acp_account_checks as checks
+            import antigravity_acp_pilot as pilot
+            root = Path(sys.argv[2])
+            original_popen = subprocess.Popen
+            def fake_agent(command, **kwargs):
+                return original_popen([sys.executable, '-c', sys.argv[4], str(root)], **kwargs)
+            def interrupted(signum, frame):
+                raise KeyboardInterrupt
+            signal.signal(signal.SIGTERM, interrupted)
+            pilot.REPO = root
+            pilot.bridge = lambda *args, **kwargs: nullcontext()
+            pilot.sandbox_command = lambda *args: ['fake-agent']
+            checks.shutil.which = lambda name: sys.executable
+            checks.subprocess.Popen = fake_agent
+            try:
+                with pilot.pilot_lock(root, existing=True):
+                    if sys.argv[3] == 'session':
+                        checks.observe_official_session(root, 'http://127.0.0.1:7897', 'gemini-fixed')
+                    else:
+                        checks.observe_official_status(root, 'http://127.0.0.1:7897')
+            except KeyboardInterrupt:
+                (root / 'controller-cancelled').touch()
+        """)
+        for mode in ("status", "session"):
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / "pilot.lock").touch(mode=0o600)
+                jar = root / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
+                jar.parent.mkdir(parents=True)
+                jar.touch()
+                child_pid = None
+                with subprocess.Popen([sys.executable, "-c", controller_source, str(Path(__file__).resolve().parent),
+                                       str(root), mode, child_source], env={"PYTHONDONTWRITEBYTECODE": "1"},
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE) as controller:
+                    try:
+                        deadline = time.monotonic() + 5
+                        while not (root / "child-ready").exists() and controller.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        self.assertTrue((root / "child-ready").exists(), "Synthetic observer did not become ready")
+                        child_pid = int((root / "child-ready").read_text())
+                        controller.send_signal(signal.SIGTERM)
+                        _, errors = controller.communicate(timeout=8)
+                        self.assertEqual(0, controller.returncode, errors.decode())
+                        self.assertTrue((root / "controller-cancelled").is_file())
+                        self.assertEqual("still-locked", (root / "child-cleanup").read_text())
+                        with self.assertRaises(ProcessLookupError):
+                            os.kill(child_pid, 0)
+                        with pilot.pilot_lock(root, existing=True):
+                            pass
+                    finally:
+                        if child_pid is not None:
+                            try:
+                                os.killpg(child_pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                        if controller.poll() is None:
+                            controller.kill()
+                            controller.wait()
+
+    def test_account_cancellation_invalidates_the_pending_report_before_unlock(self):
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / "reports").mkdir(mode=0o700)
+            (root / "pilot.lock").touch(mode=0o600)
+            with patch.object(pilot, "validate_gateway_state"), \
+                    patch.object(checks, "observe_official_status", side_effect=KeyboardInterrupt):
+                with self.assertRaises(KeyboardInterrupt):
+                    checks.check_account(root, "http://127.0.0.1:7897", "gemini-fixed")
+            report = json.loads((root / "reports/account-verification.json").read_text())
+            self.assertEqual("ACCOUNT_EVIDENCE_CHECK_STOPPED", report["status"])
+            self.assertFalse(report["canContinueAcceptance"])
+            with pilot.pilot_lock(root, existing=True):
+                pass
 
     def test_official_readonly_plan_is_evidence_but_token_connection_is_not_expiry_evidence(self):
         report = checks.summarize_status(self.result(), 0, {"oauth2.googleapis.com": 1})

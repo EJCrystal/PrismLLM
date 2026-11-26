@@ -23,7 +23,7 @@ async function includeSource(file) {
     if (imported) await includeSource(imported)
   }
 }
-for (const path of ['components/OAuthAccountsView.vue', 'components/ToastStack.vue', 'components/Icon.vue', 'style.css']) {
+for (const path of ['components/ChannelsView.vue', 'components/OAuthAccountsView.vue', 'components/OAuthProviderDrawer.vue', 'components/ToastStack.vue', 'components/Icon.vue', 'style.css']) {
   await includeSource(resolve(webDir, 'src', path))
 }
 const fixtureFiles = new Set(['index.html', 'main.ts', 'FixtureShell.vue', 'accounts.js', 'fake-fetch.js'].map((name) => resolve(fixtureDir, name)))

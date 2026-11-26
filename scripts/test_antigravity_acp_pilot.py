@@ -128,15 +128,246 @@ class PilotPreparationTest(unittest.TestCase):
                    "sha512": "incorrect"}
         opener = unittest.mock.Mock()
         opener.open.return_value = contextlib.closing(io.BytesIO(payload))
-        with patch.object(Path, "read_text", return_value=json.dumps(release)), patch.object(pilot.urllib.request, "build_opener", return_value=opener):
+        with patch.object(pilot, "pinned_release", return_value=release), patch.object(pilot.urllib.request, "build_opener", return_value=opener):
             with self.assertRaises(pilot.PilotError):
                 pilot.install_release(self.root, "http://127.0.0.1:7897")
         self.assertFalse((self.root / "bin/agy").exists())
         release["sha512"] = hashlib.sha512(payload).hexdigest()
         opener.open.return_value = contextlib.closing(io.BytesIO(payload))
-        with patch.object(Path, "read_text", return_value=json.dumps(release)), patch.object(pilot.urllib.request, "build_opener", return_value=opener):
+        with patch.object(pilot, "pinned_release", return_value=release), patch.object(pilot.urllib.request, "build_opener", return_value=opener):
             pilot.install_release(self.root, "http://127.0.0.1:7897")
         self.assertEqual(binary_data, (self.root / "bin/agy").read_bytes())
+
+
+class PilotInstallationTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "pilot"
+        pilot.prepare_files(self.root)
+        self.binary = self.root / "bin/agy"
+        self.receipt = self.root / "release.json"
+        self.binary_data = b"offline CLI fixture; never execute"
+        self.proxy = "http://127.0.0.1:7897"
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as output:
+            member = tarfile.TarInfo("antigravity")
+            member.size = len(self.binary_data)
+            output.addfile(member, io.BytesIO(self.binary_data))
+        self.payload = archive.getvalue()
+        self.release = {"version": "fixture", "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/fixture.tar.gz",
+                        "sha512": hashlib.sha512(self.payload).hexdigest()}
+        self.record = {"release": self.release, "binarySha512": hashlib.sha512(self.binary_data).hexdigest()}
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(pilot, "pinned_release", return_value=self.release))
+        self.opener = unittest.mock.Mock()
+        self.opener.open.side_effect = lambda *arguments, **keywords: contextlib.closing(io.BytesIO(self.payload))
+        self.build_opener = self.stack.enter_context(patch.object(pilot.urllib.request, "build_opener", return_value=self.opener))
+        self.stack.enter_context(patch.object(pilot.subprocess, "Popen", side_effect=AssertionError("No real CLI")))
+        self.stack.enter_context(patch.object(pilot.subprocess, "run", side_effect=AssertionError("No real subprocess")))
+
+    def install(self):
+        pilot.install_release(self.root, self.proxy)
+
+    def write_binary(self, content=None):
+        self.binary.write_bytes(self.binary_data if content is None else content)
+        self.binary.chmod(0o700)
+
+    def assert_installed(self):
+        self.assertEqual(self.binary_data, self.binary.read_bytes())
+        self.assertEqual(self.record, json.loads(self.receipt.read_text()))
+        self.assertEqual(0o700, stat.S_IMODE(self.binary.stat().st_mode))
+        self.assertEqual(0o600, stat.S_IMODE(self.receipt.stat().st_mode))
+        self.assertEqual(1, self.binary.stat().st_nlink)
+        self.assertEqual(1, self.receipt.stat().st_nlink)
+        pilot.verify_installed_release(self.root, self.release)
+        self.assertFalse(list(self.root.glob("download-*")))
+
+    def test_success_publishes_verified_binary_and_private_receipt_then_reuses_without_download(self):
+        self.install()
+        self.assert_installed()
+        binary_info, receipt_info = self.binary.stat(), self.receipt.stat()
+        self.build_opener.reset_mock()
+        self.install()
+        self.build_opener.assert_not_called()
+        self.assertEqual(binary_info, self.binary.stat())
+        self.assertEqual(receipt_info, self.receipt.stat())
+
+    def test_interrupted_or_failed_copy_never_publishes_partial_binary_and_retry_recovers(self):
+        copyfileobj = pilot.shutil.copyfileobj
+        for failure in (OSError("disk copy failed"), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__):
+                def interrupted(source, output):
+                    if Path(output.name).name == "agy":
+                        output.write(source.read(4))
+                        self.assertEqual(0o600, stat.S_IMODE(os.fstat(output.fileno()).st_mode))
+                        self.assertFalse(self.binary.exists())
+                        self.assertFalse(self.receipt.exists())
+                        raise failure
+                    copyfileobj(source, output)
+
+                with patch.object(pilot.shutil, "copyfileobj", side_effect=interrupted):
+                    with self.assertRaises(type(failure)):
+                        self.install()
+                self.assertFalse(self.binary.exists())
+                self.assertFalse(self.receipt.exists())
+                self.assertFalse(list(self.root.glob("download-*")))
+                self.install()
+                self.assert_installed()
+                self.binary.unlink()
+                self.receipt.unlink()
+
+    def test_receipt_staging_failure_does_not_publish_binary(self):
+        with patch.object(pilot, "private_json", side_effect=OSError("receipt disk full")):
+            with self.assertRaises(OSError):
+                self.install()
+        self.assertFalse(self.binary.exists())
+        self.assertFalse(self.receipt.exists())
+        self.assertFalse(list(self.root.glob("download-*")))
+        self.install()
+        self.assert_installed()
+
+    def test_interrupt_between_binary_and_receipt_recovers_without_replacing_binary(self):
+        link = pilot.os.link
+
+        def interrupted(source, destination):
+            if destination == self.receipt:
+                self.assertEqual(self.binary_data, self.binary.read_bytes())
+                raise KeyboardInterrupt()
+            link(source, destination)
+
+        with patch.object(pilot.os, "link", side_effect=interrupted):
+            with self.assertRaises(KeyboardInterrupt):
+                self.install()
+        self.assertTrue(self.binary.exists())
+        self.assertFalse(self.receipt.exists())
+        self.assertFalse(list(self.root.glob("download-*")))
+        binary_info = self.binary.stat()
+        self.install()
+        self.assert_installed()
+        self.assertEqual(binary_info, self.binary.stat())
+
+    def test_valid_receipt_only_state_recovers_without_replacing_receipt(self):
+        pilot.private_json(self.receipt, self.record)
+        receipt_info = self.receipt.stat()
+        self.install()
+        self.assert_installed()
+        self.assertEqual(receipt_info, self.receipt.stat())
+
+    def test_unknown_orphan_binary_is_preserved_instead_of_replaced(self):
+        self.write_binary(b"unexpected existing file")
+        original = self.binary.read_bytes(), self.binary.stat()
+        with self.assertRaisesRegex(pilot.PilotError, "orphan CLI binary"):
+            self.install()
+        self.assertEqual(original, (self.binary.read_bytes(), self.binary.stat()))
+        self.assertFalse(self.receipt.exists())
+        self.assertFalse(list(self.root.glob("download-*")))
+
+    def test_orphan_receipt_schema_and_pin_are_checked_before_download(self):
+        for record in (None, [], {}, dict(self.record, release=dict(self.release, version="changed")),
+                       dict(self.record, binarySha512=None), dict(self.record, binarySha512="invalid")):
+            with self.subTest(record=record):
+                pilot.private_json(self.receipt, record)
+                original = self.receipt.read_bytes(), self.receipt.stat()
+                with self.assertRaises(pilot.PilotError):
+                    self.install()
+                self.build_opener.assert_not_called()
+                self.assertEqual(original, (self.receipt.read_bytes(), self.receipt.stat()))
+                self.assertFalse(self.binary.exists())
+
+    def test_orphan_receipt_digest_must_match_verified_archive(self):
+        pilot.private_json(self.receipt, dict(self.record, binarySha512="0" * 128))
+        original = self.receipt.read_bytes(), self.receipt.stat()
+        with self.assertRaises(pilot.PilotError):
+            self.install()
+        self.assertEqual(original, (self.receipt.read_bytes(), self.receipt.stat()))
+        self.assertFalse(self.binary.exists())
+        self.assertFalse(list(self.root.glob("download-*")))
+
+    def test_existing_invalid_pair_is_not_reinstalled_or_overwritten(self):
+        for record in (dict(self.record, binarySha512="0" * 128),
+                       dict(self.record, release=dict(self.release, version="changed"))):
+            with self.subTest(record=record):
+                self.write_binary()
+                pilot.private_json(self.receipt, record)
+                original = self.binary.read_bytes(), self.binary.stat(), self.receipt.read_bytes(), self.receipt.stat()
+                with self.assertRaises(pilot.PilotError):
+                    self.install()
+                self.build_opener.assert_not_called()
+                self.assertEqual(original, (self.binary.read_bytes(), self.binary.stat(), self.receipt.read_bytes(), self.receipt.stat()))
+
+    def test_unexpected_symlinks_directories_and_special_paths_are_never_replaced(self):
+        for path in (self.binary, self.receipt):
+            for kind in ("symlink", "dangling-symlink", "directory", "fifo"):
+                with self.subTest(path=path.name, kind=kind):
+                    target = Path(self.temporary.name) / "outside"
+                    target.write_bytes(b"leave outside file untouched")
+                    if kind == "symlink":
+                        path.symlink_to(target)
+                    elif kind == "dangling-symlink":
+                        path.symlink_to(target.with_name("absent"))
+                    elif kind == "directory":
+                        path.mkdir(mode=0o700)
+                    else:
+                        os.mkfifo(path, 0o600)
+                    original = path.lstat()
+                    try:
+                        with self.assertRaises(pilot.PilotError):
+                            self.install()
+                        self.build_opener.assert_not_called()
+                        self.assertEqual(original, path.lstat())
+                        self.assertEqual(b"leave outside file untouched", target.read_bytes())
+                    finally:
+                        if kind == "directory":
+                            path.rmdir()
+                        else:
+                            path.unlink()
+
+    def test_private_permissions_ownership_and_binary_parent_are_required(self):
+        for path, mode in ((self.binary, 0o755), (self.receipt, 0o644)):
+            with self.subTest(path=path.name):
+                path.write_bytes(b"unexpected shared file")
+                path.chmod(mode)
+                try:
+                    with self.assertRaises(pilot.PilotError):
+                        self.install()
+                    self.build_opener.assert_not_called()
+                    self.assertEqual(b"unexpected shared file", path.read_bytes())
+                finally:
+                    path.unlink()
+        with patch.object(pilot.os, "getuid", return_value=os.getuid() + 1):
+            with self.assertRaises(pilot.PilotError):
+                self.install()
+        directory = self.root / "bin"
+        saved = self.root / "saved-bin"
+        directory.rename(saved)
+        directory.symlink_to(saved, target_is_directory=True)
+        try:
+            with self.assertRaises(pilot.PilotError):
+                self.install()
+            self.build_opener.assert_not_called()
+        finally:
+            directory.unlink()
+            saved.rename(directory)
+
+    def test_publish_never_clobbers_a_file_appearing_after_initial_checks(self):
+        link = pilot.os.link
+        for destination in (self.binary, self.receipt):
+            with self.subTest(destination=destination.name):
+                def appeared(source, target):
+                    if target == destination:
+                        target.write_bytes(b"concurrent unexpected file")
+                        target.chmod(0o600)
+                    link(source, target)
+
+                with patch.object(pilot.os, "link", side_effect=appeared):
+                    with self.assertRaises(FileExistsError):
+                        self.install()
+                self.assertEqual(b"concurrent unexpected file", destination.read_bytes())
+                self.assertFalse(list(self.root.glob("download-*")))
+                self.binary.unlink(missing_ok=True)
+                self.receipt.unlink(missing_ok=True)
 
 
 class GatewayAgentTest(unittest.TestCase):

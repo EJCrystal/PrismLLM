@@ -1,7 +1,10 @@
 package dev.soven.prismllm.proxy
 
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.binder.MeterBinder
 import org.junit.jupiter.api.Tag
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 @Tag("unit")
@@ -52,5 +55,57 @@ class GatewayMetricsTest {
         assertTrue(output.contains("gateway_upstream_key_rate_limit_skips_total"))
         assertTrue(output.contains("reason=\"requests_per_minute\""))
         assertTrue(output.contains("gateway_database_ready 1.0"))
+    }
+
+    @Test
+    fun `closes owned metric binders once and closes the registry`() {
+        val metrics = GatewayMetrics()
+        val first = TrackingMeterBinder()
+        val second = TrackingMeterBinder()
+        metrics.ownMeterBinders(listOf(first, second))
+
+        metrics.close()
+        metrics.close()
+
+        assertEquals(1, first.closeCalls)
+        assertEquals(1, second.closeCalls)
+        assertTrue(metrics.registry.isClosed)
+    }
+
+    @Test
+    fun `a failing metric binder does not prevent remaining cleanup`() {
+        val metrics = GatewayMetrics()
+        val failing = TrackingMeterBinder(IllegalStateException("synthetic close failure"))
+        val remaining = TrackingMeterBinder()
+        metrics.ownMeterBinders(listOf(failing, remaining))
+
+        metrics.close()
+        metrics.close()
+
+        assertEquals(1, failing.closeCalls)
+        assertEquals(1, remaining.closeCalls)
+        assertTrue(metrics.registry.isClosed)
+    }
+
+    @Test
+    fun `non closeable metric binders do not prevent registry cleanup`() {
+        val metrics = GatewayMetrics()
+        metrics.ownMeterBinders(listOf(MeterBinder {}))
+
+        metrics.close()
+
+        assertTrue(metrics.registry.isClosed)
+    }
+
+    private class TrackingMeterBinder(private val closeFailure: Exception? = null) : MeterBinder, AutoCloseable {
+        var closeCalls = 0
+            private set
+
+        override fun bindTo(registry: MeterRegistry) = Unit
+
+        override fun close() {
+            closeCalls += 1
+            closeFailure?.let { throw it }
+        }
     }
 }

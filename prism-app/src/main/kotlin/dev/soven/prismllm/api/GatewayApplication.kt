@@ -791,7 +791,9 @@ class GatewayApplication(
             }
         }
         app.install(MicrometerMetrics) {
+            registry.close()
             registry = metrics.registry
+            metrics.ownMeterBinders(meterBinders)
         }
 
         app.routing {
@@ -925,6 +927,7 @@ class GatewayApplication(
         oauthQuotaService.close()
         oauthTokenService.close()
         scope.cancel()
+        metrics.close()
         iqJudgeService.close()
         iqJudgeRegistry.close()
         accountEgressClients.values.forEach { runCatching { it.close() } }

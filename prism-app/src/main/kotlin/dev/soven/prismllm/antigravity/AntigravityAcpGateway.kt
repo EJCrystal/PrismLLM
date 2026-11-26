@@ -24,7 +24,7 @@ internal class AntigravityAcpGateway(
     private val admission = Mutex()
 
     fun authorize(key: ClientKeyRecord) {
-        if (key.id !in config.clientKeyIds) throw forbidden("此密钥未获授权访问 Antigravity ACP")
+        if (key.id.lowercase() !in config.clientKeyIds) throw forbidden("此密钥未获授权访问 Antigravity ACP")
         val policy = key.accessPolicy
         if (policy.allowedChannelIds != null || policy.allowedChannelKeys != null ||
             !policy.deniedChannelIds.isNullOrEmpty() || !policy.deniedChannelKeys.isNullOrEmpty()) {

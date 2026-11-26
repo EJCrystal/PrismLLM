@@ -22,6 +22,7 @@ import ChannelKeyRateLimitModal from './ChannelKeyRateLimitModal.vue'
 import ChannelQuotaModal from './ChannelQuotaModal.vue'
 import ChannelHealthModal from './ChannelHealthModal.vue'
 import OAuthProviderDrawer, { type OAuthProviderDrawerTab } from './OAuthProviderDrawer.vue'
+import OAuthAccountsView from './OAuthAccountsView.vue'
 import ChannelHealthSummary from './ChannelHealthSummary.vue'
 import ChannelModelPreview from './ChannelModelPreview.vue'
 import ChannelKeyEditor from './ChannelKeyEditor.vue'
@@ -123,6 +124,7 @@ const oauthAccounts = ref<OAuthAccount[]>([])
 const oauthLoadError = ref('')
 const providerKindFilter = ref<ProviderKindFilter>('all')
 const providerConnection = ref<{ kind: ProviderListItem['kind'] | ''; providerId: string } | null>(null)
+const newOAuthAccountProvider = ref<string | null>(null)
 const canConnectProvider = computed(() => {
   const draft = providerConnection.value
   return draft?.kind === 'custom' || (draft?.kind === 'subscription'
@@ -132,7 +134,6 @@ const activeOAuthDrawer = ref<{
   providerId: string
   tab: OAuthProviderDrawerTab
   statusFilter: OAuthAccountStatusFilter
-  autoOpenCreate: boolean
 } | null>(null)
 const relativeNow = ref(Date.now())
 const relativeRefreshMs = ref(60_000)
@@ -842,13 +843,21 @@ const channelUpdateSavingIds = ref<string[]>([])
 
 function openOAuthDrawer(
   providerId: string,
-  options: { tab?: OAuthProviderDrawerTab; statusFilter?: OAuthAccountStatusFilter; autoOpenCreate?: boolean } = {},
+  options: { tab?: OAuthProviderDrawerTab; statusFilter?: OAuthAccountStatusFilter } = {},
 ): void {
   activeOAuthDrawer.value = {
     providerId,
     tab: options.tab ?? 'accounts',
     statusFilter: options.statusFilter ?? 'all',
-    autoOpenCreate: options.autoOpenCreate ?? false,
+  }
+}
+
+function openSubscriptionAccounts(item: ProviderListItem): void {
+  if (!item.providerId) return
+  if (item.accountSummary.total > 0) {
+    openOAuthDrawer(item.providerId, { tab: 'accounts' })
+  } else if (item.configured) {
+    newOAuthAccountProvider.value = item.providerId
   }
 }
 
@@ -863,12 +872,14 @@ function continueProviderConnect(): void {
   if (draft.kind === 'custom') {
     openCreate()
   } else {
-    openOAuthDrawer(draft.providerId, { autoOpenCreate: true })
+    newOAuthAccountProvider.value = draft.providerId
   }
 }
 
-function consumeAutoCreate(): void {
-  if (activeOAuthDrawer.value) activeOAuthDrawer.value.autoOpenCreate = false
+function observeOAuthAuthorization(request: Promise<OAuthAccount>): void {
+  void request.then(() => {
+    if (!listDisposed) void load()
+  }, () => {})
 }
 
 /** 订阅数据读取失败时保留上次快照，并单独暴露错误，避免把失败伪装成空列表。 */
@@ -1708,7 +1719,7 @@ onMounted(() => {
                       type="button"
                       class="button ghost mini"
                       :disabled="!item.configured && item.accountSummary.total === 0"
-                      @click="openOAuthDrawer(item.providerId, { tab: 'accounts', autoOpenCreate: item.accountSummary.total === 0 })"
+                      @click="openSubscriptionAccounts(item)"
                     >
                       {{ item.accountSummary.total > 0 ? '管理账号' : '添加账号' }}
                     </button>
@@ -1879,7 +1890,7 @@ onMounted(() => {
                 type="button"
                 class="button primary mini"
                 :disabled="!item.configured && item.accountSummary.total === 0"
-                @click="openOAuthDrawer(item.providerId, { tab: 'accounts', autoOpenCreate: item.accountSummary.total === 0 })"
+                @click="openSubscriptionAccounts(item)"
               >
                 {{ item.accountSummary.total > 0 ? '管理账号' : '添加账号' }}
               </button>
@@ -2035,6 +2046,15 @@ onMounted(() => {
       <p v-else-if="!loading && providerItems.length" class="channel-mobile-empty muted">当前筛选条件下没有提供商</p>
     </div>
 
+    <OAuthAccountsView
+      v-if="newOAuthAccountProvider"
+      :key="newOAuthAccountProvider"
+      :fixed-provider="newOAuthAccountProvider"
+      create-only
+      @close="newOAuthAccountProvider = null"
+      @authorization-submitted="observeOAuthAuthorization"
+    />
+
     <OAuthProviderDrawer
       v-if="activeOAuthDrawer && activeOAuthDrawerItem"
       ref="oauthDrawer"
@@ -2043,11 +2063,9 @@ onMounted(() => {
       :channels="channels"
       :initial-tab="activeOAuthDrawer.tab"
       :initial-status-filter="activeOAuthDrawer.statusFilter"
-      :auto-open-create="activeOAuthDrawer.autoOpenCreate"
       :toggling-enabled="Boolean(activeOAuthDrawerItem.channel && channelUpdateSavingIds.includes(activeOAuthDrawerItem.channel.id))"
       @close="activeOAuthDrawer = null"
       @changed="load"
-      @auto-create-consumed="consumeAutoCreate"
       @toggle-enabled="toggleSubscriptionProviderEnabled"
       @open-prices="openPrice($event)"
       @open-health="healthTarget = $event"
@@ -2544,17 +2562,6 @@ onMounted(() => {
 .channel-status-stack > .channel-occupancy,
 .channel-status-stack > .channel-cooldown,
 .channel-status-stack > .channel-health-probe { margin-top: 0; }
-.channel-status-toggle { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: 7px; min-width: max-content; padding: 2px 0; border: 0; background: transparent; color: var(--ink); font: inherit; font-size: 12px; font-weight: 650; white-space: nowrap; cursor: pointer; }
-.channel-status-label { flex: 0 0 auto; white-space: nowrap; }
-.channel-status-track { position: relative; display: inline-flex; align-items: center; width: 34px; height: 20px; flex: 0 0 auto; border: 1px solid color-mix(in srgb, var(--danger-fill) 58%, var(--line-strong)); border-radius: 999px; background: var(--danger-soft); transition: background .16s ease, border-color .16s ease; }
-.channel-status-track > span { position: absolute; left: 3px; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(16, 24, 40, .2); transition: transform .16s ease; }
-.channel-status-toggle.is-enabled .channel-status-track { border-color: var(--success); background: var(--success); }
-.channel-status-toggle.is-enabled .channel-status-track > span { transform: translateX(14px); }
-.channel-status-toggle.is-enabled .channel-status-label { color: var(--success); }
-.channel-status-toggle.is-disabled .channel-status-track { border-color: var(--danger); background: var(--danger); }
-.channel-status-toggle.is-disabled .channel-status-label { color: var(--danger); }
-.channel-status-toggle:disabled { opacity: .55; cursor: wait; }
-.channel-status-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
 .channel-name-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; margin-bottom: 2px; }
 .channel-name-head .primary-cell { flex: 0 1 auto; min-width: 0; }
 .provider-kind-badge { flex: 0 0 auto; font-size: 11px; padding: 1px 6px; }
