@@ -24,12 +24,15 @@ const props = withDefaults(defineProps<{
   /** 选项很少时可以不显示搜索框，避免弹层多占一行高度。 */
   searchable?: boolean
   compact?: boolean
+  /** 仅展示轻量文本按钮触发器（例如行内“候选”选择器），不回显长标题与提示。 */
+  triggerText?: string
 }>(), {
   placeholder: '请选择',
   disabled: false,
   panelWidth: 320,
   searchable: true,
   compact: false,
+  triggerText: '',
 })
 
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
@@ -108,20 +111,21 @@ function choose(value: string, close: () => void) {
         ref="anchor"
         type="button"
         class="search-select-trigger"
-        :class="{ 'is-compact': compact }"
+        :class="{ 'is-compact': compact, 'is-picker-trigger': !!triggerText }"
         :disabled="disabled"
         :aria-label="[label + '：' + (selected?.label ?? placeholder), triggerHint].filter(Boolean).join('，')"
-        :title="compact ? [selected?.label, triggerHint].filter(Boolean).join(' · ') : undefined"
+        :title="triggerText ? (selected?.label ? `当前：${selected.label}（点击从候选选择）` : '从候选列表选择') : (compact ? [selected?.label, triggerHint].filter(Boolean).join(' · ') : undefined)"
         @click="openPanel"
         @keydown.enter="openPanel"
         @keydown.space="openPanel"
         @keydown.down.prevent="openPanel"
       >
-        <span class="search-select-copy">
+        <span v-if="triggerText" class="search-select-trigger-text">{{ triggerText }}</span>
+        <span v-else class="search-select-copy">
           <strong :class="{ 'is-placeholder': !selected }">{{ selected?.label ?? placeholder }}</strong>
           <small v-if="triggerHint">{{ triggerHint }}</small>
         </span>
-        <Icon name="chevron" :size="15" class="search-select-chevron" />
+        <Icon name="chevron" :size="triggerText ? 14 : 15" class="search-select-chevron" />
       </button>
     </PopoverButton>
     <Portal>
@@ -134,7 +138,7 @@ function choose(value: string, close: () => void) {
               v-model="query"
               type="search"
               :aria-label="'搜索' + label"
-              :placeholder="'搜索' + label + '…'"
+              :placeholder="(/^[A-Za-z0-9]/.test(label) ? '搜索 ' : '搜索') + label + '…'"
               autocomplete="off"
             />
             <span v-if="query.trim()" class="search-select-count">{{ matchedCount }}</span>
@@ -263,6 +267,29 @@ function choose(value: string, close: () => void) {
 .is-compact .search-select-copy small {
   flex: 0 1 42%;
   min-width: 0;
+}
+
+.search-select-trigger.is-picker-trigger {
+  width: auto;
+  min-height: 32px;
+  height: 32px;
+  padding: 0 9px;
+  gap: 4px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.search-select-trigger.is-picker-trigger:hover:not(:disabled) {
+  color: var(--ink);
+  border-color: var(--sd-border-hover, var(--line-strong));
+  background: var(--sd-bg-hover, var(--glass-field-strong));
+}
+
+.search-select-trigger-text {
+  line-height: 1;
 }
 
 .search-select-trigger[aria-expanded="true"] .search-select-chevron {
@@ -419,6 +446,8 @@ function choose(value: string, close: () => void) {
 .search-select-option-copy small {
   color: var(--muted);
   font-size: 10.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
 }
 
 .search-select-check {
@@ -435,6 +464,12 @@ function choose(value: string, close: () => void) {
 }
 /* 弹层被 Teleport 到 body，拿不到页面容器的回退，需要自己声明。 */
 @media (prefers-reduced-transparency: reduce) {
+  .search-select-trigger.is-picker-trigger,
+  .search-select-trigger.is-picker-trigger:hover:not(:disabled) {
+    background: var(--panel);
+    border-color: var(--line);
+  }
+
   .search-select-panel {
     background: var(--panel);
     border-color: var(--line);
