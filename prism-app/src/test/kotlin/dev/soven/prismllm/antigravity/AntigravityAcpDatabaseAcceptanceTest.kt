@@ -53,7 +53,7 @@ class AntigravityAcpDatabaseAcceptanceTest {
                     AntigravityAcpPilot(command = listOf(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                         "-Dstdout.encoding=UTF-8", "-cp", classpath, FakeAcpGatewayAgent::class.java.name,
                         fixture.toString(), scenario), workspace = fixture, agentWorkspace = Path.of("/workspace"),
-                        timeoutMs = config.timeoutMs, allowModelSelection = false)
+                        timeoutMs = config.timeoutMs)
                 }, writeReport = { report = it })
             assertEquals(if (scenario == "http-success") 0 else 1, result, report.toString())
             assertEquals(JsonPrimitive(when (scenario) {

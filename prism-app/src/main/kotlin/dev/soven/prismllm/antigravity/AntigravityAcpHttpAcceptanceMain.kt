@@ -98,7 +98,7 @@ internal suspend fun runAcpHttpAcceptance(
     config: AntigravityAcpConfig,
     pilot: AntigravityAcpPilot = AntigravityAcpPilot(
         command = config.command(), workspace = config.stateDir, agentWorkspace = Path.of("/workspace"),
-        timeoutMs = config.timeoutMs, cancelGraceMs = 3_000, allowModelSelection = false,
+        timeoutMs = config.timeoutMs, cancelGraceMs = 3_000,
     ),
     writeReport: (JsonObject) -> Unit,
     onStage: (String) -> Unit = {},

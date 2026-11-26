@@ -20,6 +20,8 @@ import org.junit.jupiter.params.provider.ValueSource
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption.APPEND
+import java.nio.file.StandardOpenOption.CREATE
 import kotlin.system.exitProcess
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -37,7 +39,7 @@ class AntigravityAcpPilotTest {
     fun streamsOnlyTextFromTheActiveTurnAndDeniesTools() = runBlocking {
         val chunks = mutableListOf<String>()
 
-        val reason = pilot("stream").prompt(FIXTURE_PROMPT) { chunk ->
+        val reason = pilot("stream").prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") { chunk ->
             chunks += chunk
             if (chunk == "第一段\n") Files.createFile(fixture.resolve("first-chunk"))
         }
@@ -54,7 +56,7 @@ class AntigravityAcpPilotTest {
         val chunks = mutableListOf<String>()
         var acknowledged = false
         val turn = launch {
-            pilot.prompt(FIXTURE_PROMPT, onCancelled = { acknowledged = it }) { chunk ->
+            pilot.prompt(FIXTURE_PROMPT, modelId = "gemini-pilot", onCancelled = { acknowledged = it }) { chunk ->
                 chunks += chunk
                 started.complete(Unit)
                 awaitCancellation()
@@ -62,7 +64,7 @@ class AntigravityAcpPilotTest {
         }
 
         started.await()
-        val busy = assertFailsWith<AcpPilotException> { pilot.prompt(FIXTURE_PROMPT) {} }
+        val busy = assertFailsWith<AcpPilotException> { pilot.prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") {} }
         assertEquals(AcpPilotException.Kind.BUSY, busy.kind)
         turn.cancelAndJoin()
 
@@ -107,12 +109,13 @@ class AntigravityAcpPilotTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["choose-model-config", "choose-model-legacy"])
-    fun selectsTheExactModelBeforeSendingAPrompt(scenario: String) = runBlocking {
+    @ValueSource(strings = ["current-model-config", "current-model-legacy"])
+    fun promptsOnlyWithTheAlreadyCurrentModelWithoutSelectingIt(scenario: String) = runBlocking {
         val chunks = mutableListOf<String>()
         val reason = pilot(scenario).prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") { chunks += it }
         assertEquals(AcpStopReason.END_TURN, reason)
-        assertEquals(listOf("selected"), chunks)
+        assertEquals(listOf("current model"), chunks)
+        assertEquals(1, receivedMethods().count { it == "session/prompt" })
         assertChildStopped()
     }
 
@@ -124,16 +127,58 @@ class AntigravityAcpPilotTest {
             }
         }
         assertEquals(AcpPilotException.Kind.MODEL_UNAVAILABLE, error.kind)
+        assertFalse("session/prompt" in receivedMethods())
         assertChildStopped()
     }
 
     @ParameterizedTest
     @ValueSource(strings = ["catalog-config", "catalog-legacy"])
-    fun fixedModelModeNeverChangesTheCurrentModelOrPrompts(scenario: String) = runBlocking {
+    fun neverChangesTheCurrentModelOrPromptsWhenTheTargetDiffers(scenario: String) = runBlocking {
         val failure = assertFailsWith<AcpPilotException> {
-            pilot(scenario, allowModelSelection = false).prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") {}
+            pilot(scenario).prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") {}
         }
         assertEquals(AcpPilotException.Kind.MODEL_MISMATCH, failure.kind)
+        assertFalse("session/prompt" in receivedMethods())
+        assertChildStopped()
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+        "runner-discovery-mismatch-config", "runner-discovery-mismatch-legacy",
+        "runner-generation-mismatch-config", "runner-generation-mismatch-legacy",
+        "runner-cancellation-mismatch-config", "runner-cancellation-mismatch-legacy",
+        "runner-reuse-mismatch-config", "runner-reuse-mismatch-legacy",
+    ])
+    fun acceptanceStopsAtEachModelMismatchWithoutSelectingOrSendingAnotherPrompt(scenario: String) = runBlocking {
+        val workspace = Files.createDirectory(fixture.resolve("workspace")).toRealPath()
+        val arguments = listOf("verify", workspace.toString(), "gemini-pilot", "--") + fixtureCommand(scenario)
+        val reports = mutableListOf<JsonObject>()
+
+        val result = runAcpAcceptance(arguments.toTypedArray()) { reports += it }
+
+        val stage = scenario.removePrefix("runner-").substringBefore("-mismatch-")
+        val startup = when (stage) {
+            "discovery" -> 1
+            "generation" -> 2
+            "cancellation" -> 3
+            "reuse" -> 4
+            else -> error("Unknown acceptance stage")
+        }
+        val report = reports.single()
+        assertEquals(1, result)
+        assertEquals(JsonPrimitive("MODEL_MISMATCH"), report["status"])
+        assertEquals(JsonPrimitive(when (stage) {
+            "discovery" -> "SESSION_DISCOVERY"
+            "generation" -> "TEXT_GENERATION"
+            "cancellation" -> "CANCELLATION"
+            else -> "CREDENTIAL_REUSE"
+        }), report["stage"])
+        assertEquals(JsonPrimitive(startup >= 3), report["realGenerationVerified"])
+        assertFalse(report["credentialsReused"] == JsonPrimitive(true))
+        assertFalse(report["cancelAcknowledged"] == JsonPrimitive(true))
+        assertEquals(startup.toString(), Files.readString(fixture.resolve("startups")))
+        assertEquals((startup - 2).coerceAtLeast(0), receivedMethods().count { it == "session/prompt" })
+        assertFalse(report.toString().contains(PRIVATE_FIXTURE_DATA))
         assertChildStopped()
     }
 
@@ -173,11 +218,11 @@ class AntigravityAcpPilotTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = ["fixed-notices-config", "fixed-notices-legacy", "selectable-notices"])
+    @ValueSource(strings = ["fixed-notices-config", "fixed-notices-legacy"])
     fun sameModelForeignSessionAndUnrelatedNoticesDoNotInterruptTheTurn(scenario: String) = runBlocking {
         val chunks = mutableListOf<String>()
         var cancelled = false
-        val reason = pilot(scenario, allowModelSelection = scenario == "selectable-notices").prompt(
+        val reason = pilot(scenario).prompt(
             FIXTURE_PROMPT, modelId = "gemini-pilot", onCancelled = { cancelled = true },
         ) { chunks += it }
 
@@ -224,7 +269,7 @@ class AntigravityAcpPilotTest {
     fun timesOutAndStopsAgentThatIgnoresCancellation() = runBlocking {
         val chunks = mutableListOf<String>()
         val error = assertFailsWith<AcpPilotException> {
-            pilot("hang", timeoutMs = 2_000).prompt(FIXTURE_PROMPT) { chunks += it }
+            pilot("hang", timeoutMs = 2_000).prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") { chunks += it }
         }
 
         assertEquals(AcpPilotException.Kind.TIMED_OUT, error.kind)
@@ -236,7 +281,7 @@ class AntigravityAcpPilotTest {
     @Test
     fun timesOutEvenWhenAgentStopsReadingStdin() = runBlocking {
         val error = assertFailsWith<AcpPilotException> {
-            pilot("blocked-writer", timeoutMs = 2_000).prompt("\u0000".repeat(32_768)) {
+            pilot("blocked-writer", timeoutMs = 2_000).prompt("\u0000".repeat(32_768), modelId = "gemini-pilot") {
                 error("A blocked agent did not send a chunk")
             }
         }
@@ -250,7 +295,7 @@ class AntigravityAcpPilotTest {
     fun reportsProcessExitAfterPartialOutput() = runBlocking {
         val chunks = mutableListOf<String>()
         val error = assertFailsWith<AcpPilotException> {
-            pilot("exit").prompt(FIXTURE_PROMPT) { chunks += it }
+            pilot("exit").prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") { chunks += it }
         }
 
         assertEquals(AcpPilotException.Kind.TRANSPORT_CLOSED, error.kind)
@@ -262,7 +307,7 @@ class AntigravityAcpPilotTest {
     fun reportsRpcCodeWithoutExposingRawAgentErrors() = runBlocking {
         val chunks = mutableListOf<String>()
         val error = assertFailsWith<AcpPilotException> {
-            pilot("error").prompt(FIXTURE_PROMPT) { chunks += it }
+            pilot("error").prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") { chunks += it }
         }
 
         assertEquals(AcpPilotException.Kind.AGENT_ERROR, error.kind)
@@ -277,7 +322,7 @@ class AntigravityAcpPilotTest {
     @ValueSource(strings = ["wrong-version", "invalid-json", "oversized-frame"])
     fun rejectsUnsupportedOrInvalidFrames(scenario: String) = runBlocking {
         val error = assertFailsWith<AcpPilotException> {
-            pilot(scenario).prompt(FIXTURE_PROMPT) { error("An invalid frame did not produce a chunk") }
+            pilot(scenario).prompt(FIXTURE_PROMPT, modelId = "gemini-pilot") { error("An invalid frame did not produce a chunk") }
         }
 
         assertEquals(AcpPilotException.Kind.PROTOCOL_ERROR, error.kind)
@@ -290,7 +335,7 @@ class AntigravityAcpPilotTest {
         val chunks = mutableListOf<String>()
         var acknowledged = false
         val failure = assertFailsWith<AcpPilotException> {
-            pilot(scenario, allowModelSelection = false).prompt(
+            pilot(scenario).prompt(
                 FIXTURE_PROMPT, modelId = "gemini-pilot", onCancelled = { acknowledged = it },
             ) { chunks += it }
         }
@@ -302,12 +347,11 @@ class AntigravityAcpPilotTest {
         assertChildStopped()
     }
 
-    private fun pilot(scenario: String, timeoutMs: Long = 8_000, allowModelSelection: Boolean = true) = AntigravityAcpPilot(
+    private fun pilot(scenario: String, timeoutMs: Long = 8_000) = AntigravityAcpPilot(
         command = fixtureCommand(scenario),
         workspace = Files.createDirectory(fixture.resolve("workspace")).toRealPath(),
         environment = mapOf("PRISM_ACP_FIXTURE" to "enabled"),
         timeoutMs = timeoutMs,
-        allowModelSelection = allowModelSelection,
     )
 
     private fun fixtureCommand(scenario: String) = listOf(
@@ -328,7 +372,11 @@ class AntigravityAcpPilotTest {
     private fun assertChildStopped() {
         val pid = Files.readString(fixture.resolve("pid")).toLong()
         assertFalse(ProcessHandle.of(pid).map { it.isAlive }.orElse(false), "Fake ACP child is still running")
+        assertFalse("session/set_model" in receivedMethods())
+        assertFalse("session/set_config_option" in receivedMethods())
     }
+
+    private fun receivedMethods(): List<String> = Files.readAllLines(fixture.resolve("methods"))
 }
 
 private object FakeAcpAgent {
@@ -341,7 +389,7 @@ private object FakeAcpAgent {
         check(Path.of("").toRealPath() == workspace)
         if (!scenario.startsWith("runner-")) check(System.getenv("PRISM_ACP_FIXTURE") == "enabled")
         check(System.getenv("PATH") == null && System.getenv("GEMINI_API_KEY") == null)
-        val wire = FakeWire()
+        val wire = FakeWire(fixture)
 
         val init = wire.request("initialize")
         check(init["params"] == json("""{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false,"auth":{"terminal":false}}}"""))
@@ -375,24 +423,33 @@ private object FakeAcpAgent {
             Files.writeString(fixture.resolve("startups"), "1")
             return
         }
+        val startup = if (scenario.startsWith("runner-")) {
+            val counter = fixture.resolve("startups")
+            val count = if (Files.exists(counter)) Files.readString(counter).toInt() + 1 else 1
+            Files.writeString(counter, count.toString())
+            count
+        } else 0
+        val mismatchStartup = when (scenario.removePrefix("runner-").substringBefore("-mismatch-")) {
+            "discovery" -> 1
+            "generation" -> 2
+            "cancellation" -> 3
+            "reuse" -> 4
+            else -> -1
+        }
+        val currentModel = if (startup == mismatchStartup || scenario.startsWith("catalog-") || scenario == "unavailable-model")
+            "gemini-other" else "gemini-pilot"
         wire.chunk("before the prompt")
         when {
             scenario == "fixed-notices-legacy" -> wire.result(new.getValue("id"),
                 """{"sessionId":"fixture-session","models":{"currentModelId":"gemini-pilot","availableModels":[{"modelId":"gemini-pilot","name":"Pilot"}]}}""")
-            scenario.startsWith("fixed-") || scenario == "selectable-notices" -> wire.result(new.getValue("id"),
+            scenario.startsWith("fixed-") -> wire.result(new.getValue("id"),
                 """{"sessionId":"fixture-session","configOptions":[{"id":"selected-model","category":"model","type":"select","currentValue":"gemini-pilot","options":[{"value":"gemini-pilot","name":"Pilot"},{"value":"gemini-other","name":"Other"}]}]}""")
-            scenario.startsWith("runner-") -> wire.result(new.getValue("id"),
-                """{"sessionId":"fixture-session","models":{"currentModelId":"gemini-pilot","availableModels":[{"modelId":"gemini-pilot","name":"Pilot"}]}}""")
             scenario.endsWith("config") || scenario == "unavailable-model" -> wire.result(new.getValue("id"),
-                """{"sessionId":"fixture-session","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"gemini-other","options":[{"name":"Group","options":[{"value":"gemini-pilot","name":"Pilot"},{"value":"gemini-other","name":"Other"},{"value":"invalid\nmodel","name":"Invalid"}]}]}]}""")
-            scenario.endsWith("legacy") -> wire.result(new.getValue("id"),
-                """{"sessionId":"fixture-session","models":{"currentModelId":"gemini-other","availableModels":[{"modelId":"gemini-pilot","name":"Pilot"},{"modelId":"gemini-other","name":"Other"}]}}""")
-            else -> wire.result(new.getValue("id"), """{"sessionId":"fixture-session"}""")
+                """{"sessionId":"fixture-session","configOptions":[{"id":"model","category":"model","type":"select","currentValue":"$currentModel","options":[{"name":"Group","options":[{"value":"gemini-pilot","name":"Pilot"},{"value":"gemini-other","name":"Other"},{"value":"invalid\nmodel","name":"Invalid"}]}]}]}""")
+            else -> wire.result(new.getValue("id"),
+                """{"sessionId":"fixture-session","models":{"currentModelId":"$currentModel","availableModels":[{"modelId":"gemini-pilot","name":"Pilot"},{"modelId":"gemini-other","name":"Other"}]}}""")
         }
         if (scenario.startsWith("runner-")) {
-            val counter = fixture.resolve("startups")
-            val startup = if (Files.exists(counter)) Files.readString(counter).toInt() + 1 else 1
-            Files.writeString(counter, startup.toString())
             if (startup == 1 || startup == 4) return
             val prompt = wire.request("session/prompt")
             val promptId = prompt.getValue("id")
@@ -426,22 +483,12 @@ private object FakeAcpAgent {
                 }
                 wire.chunk("1\n")
                 wire.expectCancel()
-                val reason = if (scenario == "runner-pass") "cancelled" else "end_turn"
+                val reason = if (scenario == "runner-pass" || scenario.contains("-mismatch-")) "cancelled" else "end_turn"
                 wire.result(promptId, """{"stopReason":"$reason"}""")
             }
             return
         }
         if (scenario.startsWith("catalog-")) return
-        if (scenario.startsWith("choose-model-")) {
-            val method = if (scenario.endsWith("config")) "session/set_config_option" else "session/set_model"
-            val selected = wire.request(method)
-            val expected = if (scenario.endsWith("config"))
-                """{"sessionId":"fixture-session","configId":"model","value":"gemini-pilot"}"""
-            else """{"sessionId":"fixture-session","modelId":"gemini-pilot"}"""
-            check(selected["params"] == json(expected))
-            wire.result(selected.getValue("id"), if (scenario.endsWith("config"))
-                """{"configOptions":[{"id":"model","currentValue":"gemini-pilot"}]}""" else "{}")
-        }
         if (scenario == "blocked-writer") {
             Files.createFile(fixture.resolve("stdin-blocked"))
             return Thread.sleep(Long.MAX_VALUE)
@@ -466,7 +513,7 @@ private object FakeAcpAgent {
             wire.result(promptId, """{"stopReason":"cancelled"}""")
             return
         }
-        if (scenario.startsWith("fixed-notices-") || scenario == "selectable-notices") {
+        if (scenario.startsWith("fixed-notices-")) {
             wire.chunk("before notices")
             wire.update("""{"sessionUpdate":"current_model_update","currentModelId":"gemini-pilot"}""")
             wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-pilot"}]}""")
@@ -478,17 +525,12 @@ private object FakeAcpAgent {
             wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-other"},{"category":"model"},{"id":"model"}]}""", session = "other-session")
             wire.update("""{"sessionUpdate":"config_option_update"}""", session = "other-session")
             wire.write(""""method":"session/update","params":{"update":{"sessionUpdate":"current_model_update","currentModelId":"gemini-other"}}""")
-            if (scenario == "selectable-notices") {
-                wire.update("""{"sessionUpdate":"current_model_update","currentModelId":"gemini-other"}""")
-                wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-other"},{"id":"model"}]}""")
-                wire.update("""{"sessionUpdate":"config_option_update"}""")
-            }
             wire.chunk("after notices")
             wire.result(promptId, """{"stopReason":"end_turn"}""")
             return
         }
-        if (scenario.startsWith("choose-model-")) {
-            wire.chunk("selected")
+        if (scenario.startsWith("current-model-")) {
+            wire.chunk("current model")
             wire.result(promptId, """{"stopReason":"end_turn"}""")
             return
         }
@@ -550,11 +592,14 @@ private object FakeAcpAgent {
     }
 }
 
-private class FakeWire {
+private class FakeWire(private val fixture: Path) {
     private val input = System.`in`.bufferedReader(Charsets.UTF_8)
 
     fun read(): JsonObject = json(checkNotNull(input.readLine())).also {
         check(it["jsonrpc"] == JsonPrimitive("2.0"))
+        (it["method"] as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content?.let { method ->
+            Files.writeString(fixture.resolve("methods"), method + "\n", CREATE, APPEND)
+        }
     }
 
     fun request(method: String): JsonObject = read().also {

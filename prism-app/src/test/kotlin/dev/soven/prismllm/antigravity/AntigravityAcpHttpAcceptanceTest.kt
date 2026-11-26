@@ -39,7 +39,7 @@ class AntigravityAcpHttpAcceptanceTest {
                 "-Dstdout.encoding=UTF-8", "-cp", classpath, FakeAcpGatewayAgent::class.java.name,
                 fixture.toString(), scenario),
             workspace = fixture, agentWorkspace = Path.of("/workspace"), timeoutMs = 8_000,
-            cancelGraceMs = 3_000, allowModelSelection = false,
+            cancelGraceMs = 3_000,
         )
         lateinit var report: JsonObject
         val stages = mutableListOf<String>()

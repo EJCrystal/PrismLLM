@@ -16,7 +16,6 @@ internal class AntigravityAcpGateway(
         agentWorkspace = Path.of("/workspace"),
         timeoutMs = config.timeoutMs,
         cancelGraceMs = 3_000,
-        allowModelSelection = false,
     ),
     private val onCancelled: (Boolean) -> Unit = {},
 ) {

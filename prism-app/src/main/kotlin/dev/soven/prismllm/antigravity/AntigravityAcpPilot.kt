@@ -71,7 +71,6 @@ internal class AntigravityAcpPilot(
     private val timeoutMs: Long = 30_000,
     private val cancelGraceMs: Long = 500,
     private val agentWorkspace: Path = workspace,
-    private val allowModelSelection: Boolean = true,
 ) {
     private val command = command.toList()
     private val environment = environment.toMap()
@@ -88,7 +87,7 @@ internal class AntigravityAcpPilot(
 
     suspend fun prompt(
         text: String,
-        modelId: String? = null,
+        modelId: String,
         onCancelled: (Boolean) -> Unit = {},
         onText: suspend (String) -> Unit,
     ): AcpStopReason {
@@ -171,35 +170,15 @@ internal class AntigravityAcpPilot(
     private suspend fun runTurn(
         connection: AcpStdio,
         text: String,
-        modelId: String?,
+        modelId: String,
         onCancelled: (Boolean) -> Unit,
         onText: suspend (String) -> Unit,
     ): AcpStopReason {
         val session = createSession(connection)
         val sessionId = session.id
-        if (!allowModelSelection && (modelId == null || session.catalog.currentModelId != modelId)) {
+        if (modelId !in session.catalog.modelIds) throw AcpPilotException(AcpPilotException.Kind.MODEL_UNAVAILABLE)
+        if (session.catalog.currentModelId != modelId) {
             throw AcpPilotException(AcpPilotException.Kind.MODEL_MISMATCH)
-        }
-        if (modelId != null) {
-            if (modelId !in session.catalog.modelIds) throw AcpPilotException(AcpPilotException.Kind.MODEL_UNAVAILABLE)
-            if (modelId != session.catalog.currentModelId) {
-                val method = if (session.modelOptionId == null) "session/set_model" else "session/set_config_option"
-                connection.send(request(SELECT_MODEL_ID, method, buildJsonObject {
-                    put("sessionId", sessionId)
-                    if (session.modelOptionId == null) {
-                        put("modelId", modelId)
-                    } else {
-                        put("configId", session.modelOptionId)
-                        put("value", modelId)
-                    }
-                }))
-                val selected = connection.reply(SELECT_MODEL_ID)
-                if (session.modelOptionId != null) {
-                    val option = (selected["configOptions"] as? JsonArray)?.filterIsInstance<JsonObject>()
-                        ?.firstOrNull { it.string("id") == session.modelOptionId }
-                    if (option?.string("currentValue") != modelId) invalidMessage()
-                }
-            }
         }
         val params = buildJsonObject {
             put("sessionId", sessionId)
@@ -213,7 +192,7 @@ internal class AntigravityAcpPilot(
         try {
             connection.send(request(PROMPT_ID, "session/prompt", params))
             val reason = connection.reply(PROMPT_ID, session,
-                fixedModelId = modelId.takeUnless { allowModelSelection }, onText = onText).string("stopReason")
+                fixedModelId = modelId, onText = onText).string("stopReason")
             return AcpStopReason.entries.firstOrNull { it.wireValue == reason } ?: invalidMessage()
         } catch (failure: Exception) {
             withContext(NonCancellable) {
@@ -426,7 +405,6 @@ private const val PROTOCOL_VERSION = 1
 private const val INITIALIZE_ID = 1
 private const val NEW_SESSION_ID = 2
 private const val PROMPT_ID = 3
-private const val SELECT_MODEL_ID = 4
 private const val MAX_PROMPT_CHARS = 32_768
 private const val MAX_FRAME_CHARS = 1_048_576
 private const val PROCESS_EXIT_GRACE_MS = 1_000L

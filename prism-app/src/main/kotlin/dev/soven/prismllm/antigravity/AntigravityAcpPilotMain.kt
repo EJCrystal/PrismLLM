@@ -71,7 +71,10 @@ internal suspend fun runAcpAcceptance(
                 })
                 return@withTimeout 0
             }
-            require(model.isNotBlank() && model in catalog.modelIds) { "Select an exact model from probe" }
+            if (model.isBlank() || model !in catalog.modelIds) {
+                throw AcpPilotException(AcpPilotException.Kind.MODEL_UNAVAILABLE)
+            }
+            if (catalog.currentModelId != model) throw AcpPilotException(AcpPilotException.Kind.MODEL_MISMATCH)
             val marker = "PRISM-" + UUID.randomUUID().toString()
             val response = StringBuilder()
             var chunks = 0
@@ -113,7 +116,8 @@ internal suspend fun runAcpAcceptance(
             }
             stage = "CREDENTIAL_REUSE"
             val restarted = pilot.inspect()
-            check(model in restarted.modelIds)
+            if (model !in restarted.modelIds) throw AcpPilotException(AcpPilotException.Kind.MODEL_UNAVAILABLE)
+            if (restarted.currentModelId != model) throw AcpPilotException(AcpPilotException.Kind.MODEL_MISMATCH)
             writeReport(buildJsonObject {
                 put("status", "REAL_ACP_ACCEPTANCE_PASSED")
                 put("modelId", model)

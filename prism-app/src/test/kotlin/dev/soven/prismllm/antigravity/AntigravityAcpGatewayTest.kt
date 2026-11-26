@@ -361,7 +361,6 @@ class AntigravityAcpGatewayTest {
             command = listOf(Path.of(System.getProperty("java.home"), "bin", "java").toString(),
                 "-Dstdout.encoding=UTF-8", "-cp", classpath, FakeAcpGatewayAgent::class.java.name, fixture.toString(), scenario),
             workspace = fixture, agentWorkspace = Path.of("/workspace"), timeoutMs = timeoutMs,
-            allowModelSelection = false,
         ))
     }
 
