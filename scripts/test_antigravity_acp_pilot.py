@@ -1,0 +1,478 @@
+import contextlib
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import stat
+import tarfile
+import tempfile
+import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import antigravity_acp_pilot as pilot
+
+
+class PilotPreparationTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "pilot"
+
+    def test_dedicated_configuration_disables_extra_credits_and_api_provider(self):
+        pilot.prepare_files(self.root)
+        settings = self.root / "home/.gemini/antigravity-cli/settings.json"
+        config = json.loads(settings.read_text())
+        self.assertIs(config["useG1Credits"], False)
+        self.assertEqual(config["modelProvider"], "")
+        self.assertEqual(config["toolPermission"], "strict")
+        self.assertEqual(config["permissions"]["allow"], [])
+        self.assertEqual(stat.S_IMODE(self.root.stat().st_mode), 0o700)
+        pilot.prepare_files(self.root)
+
+    def test_changed_credit_policy_fails_closed(self):
+        pilot.prepare_files(self.root)
+        path = self.root / "policy.json"
+        policy = json.loads(path.read_text())
+        policy["useG1Credits"] = True
+        path.write_text(json.dumps(policy))
+        with self.assertRaises(pilot.PilotError):
+            pilot.prepare_files(self.root)
+
+    def test_private_directory_rejects_symlinks_and_shared_permissions(self):
+        self.root.mkdir(mode=0o777)
+        self.root.chmod(0o777)
+        with self.assertRaises(pilot.PilotError):
+            pilot.private_directory(self.root)
+        link = Path(self.temporary.name) / "link"
+        link.symlink_to(self.root)
+        with self.assertRaises(pilot.PilotError):
+            pilot.private_directory(link)
+
+    def test_proxy_accepts_only_credential_free_loopback_http(self):
+        self.assertEqual(("127.0.0.1", 7897), pilot.proxy_address("http://127.0.0.1:7897"))
+        for value in ("http://user:secret@127.0.0.1:7897", "http://example.com:80",
+                      "https://127.0.0.1:7897", "http://127.0.0.1:7897/private", "http://127.0.0.1:7897?token=x"):
+            with self.subTest(value=value), self.assertRaises(pilot.PilotError):
+                pilot.proxy_address(value)
+
+    def test_egress_denies_host_services_api_key_endpoint_and_non_google_hosts(self):
+        self.assertEqual("oauth2.googleapis.com", pilot.destination(b"CONNECT oauth2.googleapis.com:443 HTTP/1.1\r\n\r\n"))
+        for host in ("127.0.0.1", "169.254.169.254", "generativelanguage.googleapis.com",
+                     "oauth2.googleapis.com.evil.invalid", "example.com"):
+            with self.subTest(host=host), self.assertRaises(pilot.PilotError):
+                pilot.destination(f"CONNECT {host}:443 HTTP/1.1\r\n\r\n".encode())
+        with self.assertRaises(pilot.PilotError):
+            pilot.destination(b"GET https://oauth2.googleapis.com/ HTTP/1.1\r\n\r\n")
+
+    def test_sandbox_unshares_network_and_mounts_only_pilot_state(self):
+        command = pilot.sandbox_command(self.root, self.root / "runtime", True, ["/opt/agy", "acp"])
+        self.assertIn("--unshare-all", command)
+        self.assertNotIn("--share-net", command)
+        self.assertNotIn(str(Path.home()), command)
+        self.assertNotIn(str(pilot.REPO), command)
+        self.assertIn("/run/pilot-egress.sock", command)
+        self.assertNotIn("GEMINI_API_KEY", command)
+        policy_index = command.index(str(self.root / "policy.json"))
+        self.assertEqual("--ro-bind", command[policy_index - 1])
+        for relative in ("home/.gemini", "home/.gemini/antigravity-cli"):
+            directory_index = command.index(str(self.root / relative))
+            self.assertEqual("--bind", command[directory_index - 1])
+            self.assertLess(directory_index, policy_index)
+        login = pilot.sandbox_command(self.root, self.root / "runtime", True, ["/opt/agy", "acp", "--login"], login=True)
+        self.assertNotIn(str(self.root / "policy.json"), login)
+
+    def test_bounded_proxy_headers(self):
+        left, right = socket.socketpair()
+        with left, right:
+            right.sendall(b"x" * 16_385)
+            with self.assertRaises(pilot.PilotError):
+                pilot.read_header(left)
+
+    def test_sanitized_report_is_saved_without_agent_frames(self):
+        pilot.prepare_files(self.root)
+        result = SimpleNamespace(stdout='{"status":"AUTHENTICATION_REQUIRED_OR_DENIED","realGenerationVerified":false}', returncode=10)
+        with patch.object(Path, "exists", return_value=True), patch.object(pilot.subprocess, "run", return_value=result), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(10, pilot.run_checks(self.root, "http://127.0.0.1:7897", "probe"))
+        report = json.loads((self.root / "reports/probe.json").read_text())
+        self.assertIs(report["realGenerationVerified"], False)
+        result.stdout = 'raw ACP frame\n' + result.stdout
+        with patch.object(Path, "exists", return_value=True), patch.object(pilot.subprocess, "run", return_value=result):
+            with self.assertRaises(pilot.PilotError):
+                pilot.run_checks(self.root, "http://127.0.0.1:7897", "probe")
+
+    def test_cli_logs_and_default_customizations_are_disabled(self):
+        pilot.prepare_files(self.root)
+        with patch.object(pilot.subprocess, "Popen") as popen:
+            popen.return_value.__enter__.return_value.wait.return_value = 0
+            self.assertEqual(0, pilot.run_agent(self.root, "http://127.0.0.1:7897", False, ["acp"]))
+        command = popen.call_args.args[0]
+        self.assertIn("--disable-telemetry", command)
+        self.assertIn("--include-default-customizations=false", command)
+        self.assertEqual("/dev/null", command[command.index("--cli_log_file") + 1])
+        self.assertEqual({"env": {}}, popen.call_args.kwargs)
+
+    def test_download_checks_archive_before_extracting_or_running(self):
+        pilot.prepare_files(self.root)
+        binary_data = b"fake binary, never execute"
+        archive = io.BytesIO()
+        with tarfile.open(fileobj=archive, mode="w:gz") as output:
+            member = tarfile.TarInfo("antigravity")
+            member.size = len(binary_data)
+            output.addfile(member, io.BytesIO(binary_data))
+        payload = archive.getvalue()
+        release = {"version": "fixture", "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/fixture.tar.gz",
+                   "sha512": "incorrect"}
+        opener = unittest.mock.Mock()
+        opener.open.return_value = contextlib.closing(io.BytesIO(payload))
+        with patch.object(Path, "read_text", return_value=json.dumps(release)), patch.object(pilot.urllib.request, "build_opener", return_value=opener):
+            with self.assertRaises(pilot.PilotError):
+                pilot.install_release(self.root, "http://127.0.0.1:7897")
+        self.assertFalse((self.root / "bin/agy").exists())
+        release["sha512"] = hashlib.sha512(payload).hexdigest()
+        opener.open.return_value = contextlib.closing(io.BytesIO(payload))
+        with patch.object(Path, "read_text", return_value=json.dumps(release)), patch.object(pilot.urllib.request, "build_opener", return_value=opener):
+            pilot.install_release(self.root, "http://127.0.0.1:7897")
+        self.assertEqual(binary_data, (self.root / "bin/agy").read_bytes())
+
+
+class GatewayAgentTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name) / "pilot"
+        self.repo = Path(self.temporary.name) / "repo"
+        (self.repo / "scripts").mkdir(parents=True)
+        self.proxy = "http://127.0.0.1:7897"
+        self.model = "gemini-4-hydrogen"
+        self.report = {"status": "REAL_ACP_ACCEPTANCE_PASSED", "modelId": self.model,
+                       "realGenerationVerified": True, "cancelAcknowledged": True, "credentialsReused": True}
+        self.release = {"version": "fixture", "url": "https://storage.googleapis.com/antigravity-public/antigravity-cli/fixture.tar.gz",
+                        "sha512": "a" * 128}
+        self.pin = self.repo / "scripts/antigravity-acp-release.json"
+        self.pin.write_text(json.dumps(self.release))
+        pilot.prepare_files(self.root)
+        (self.root / "pilot.lock").touch(mode=0o600)
+        self.binary = self.root / "bin/agy"
+        self.binary.write_bytes(b"test fixture; never execute")
+        self.binary.chmod(0o700)
+        self.receipt = {"release": self.release, "binarySha512": hashlib.sha512(self.binary.read_bytes()).hexdigest()}
+        pilot.private_json(self.root / "release.json", self.receipt)
+        self.verification = self.root / "reports/verification.json"
+        pilot.private_json(self.verification, self.report)
+        self.credentials = self.root / "home/.gemini/antigravity-cli/oauth_creds.json"
+        self.credentials.write_bytes(b"mock credential must not be read by wrapper")
+        self.credentials.chmod(0o600)
+        self.real_run_agent = pilot.run_agent
+        self.stack = contextlib.ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch.object(pilot, "REPO", self.repo))
+        self.stack.enter_context(patch.object(pilot.platform, "system", return_value="Linux"))
+        self.stack.enter_context(patch.object(pilot.platform, "machine", return_value="x86_64"))
+        self.agent = self.stack.enter_context(patch.object(pilot, "run_agent", return_value=0))
+        self.installer = self.stack.enter_context(patch.object(pilot, "install_release", side_effect=AssertionError("No downloads")))
+        self.stack.enter_context(patch.object(pilot.urllib.request, "build_opener", side_effect=AssertionError("No network")))
+        self.stack.enter_context(patch.object(pilot.subprocess, "Popen", side_effect=AssertionError("No real CLI")))
+        self.stack.enter_context(patch.object(pilot.subprocess, "run", side_effect=AssertionError("No real subprocess")))
+        previous_umask = os.umask(0o077)
+        self.addCleanup(os.umask, previous_umask)
+        self.stdout = io.StringIO()
+
+    def invoke(self, *arguments, state=None):
+        command = ["pilot", "--state", str(self.root if state is None else state), "--proxy", self.proxy, *arguments]
+        with patch.object(pilot.sys, "argv", command), contextlib.redirect_stdout(self.stdout):
+            return pilot.main()
+
+    def gateway(self, model=None):
+        return self.invoke("gateway-agent", "--model", self.model if model is None else model)
+
+    def snapshot(self):
+        return {str(path.relative_to(self.root)): (stat.S_IMODE(path.lstat().st_mode), path.read_bytes())
+                for path in self.root.rglob("*") if path.is_file()}
+
+    def assert_gateway_denied(self):
+        with self.assertRaises(pilot.PilotError):
+            self.gateway()
+        self.agent.assert_not_called()
+        self.installer.assert_not_called()
+        self.assertEqual("", self.stdout.getvalue())
+
+    def test_gateway_is_silent_read_only_and_runs_only_online_acp(self):
+        before = self.snapshot()
+        original_open = Path.open
+
+        def guarded_open(path, *arguments, **keywords):
+            if path == self.credentials:
+                raise AssertionError("Wrapper must not read credentials")
+            return original_open(path, *arguments, **keywords)
+
+        self.agent.return_value = 23
+        with patch.object(pilot, "prepare_files", side_effect=AssertionError("No preparation")), patch.object(Path, "open", guarded_open):
+            self.assertEqual(23, self.gateway())
+        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp"])
+        self.installer.assert_not_called()
+        self.assertEqual("", self.stdout.getvalue())
+        self.assertEqual(before, self.snapshot())
+
+    def test_gateway_accepts_only_explicit_false_if_report_mentions_extra_credits(self):
+        pilot.private_json(self.verification, dict(self.report, extraCredits=False))
+        self.assertEqual(0, self.gateway())
+        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp"])
+
+    def test_missing_state_paths_are_never_recreated(self):
+        for relative in ("", "pilot.lock", "policy.json", "release.json", "bin", "bin/agy", "home",
+                         "reports", "reports/verification.json", "work", "home/.gemini",
+                         "home/.gemini/antigravity-cli", "home/.gemini/antigravity-cli/settings.json"):
+            with self.subTest(path=relative):
+                path = self.root / relative
+                saved = Path(self.temporary.name) / "saved"
+                path.rename(saved)
+                try:
+                    self.assert_gateway_denied()
+                    self.assertFalse(path.exists())
+                finally:
+                    saved.rename(path)
+
+    def test_missing_or_changed_release_pin_fails_closed(self):
+        self.pin.unlink()
+        self.assert_gateway_denied()
+        self.pin.write_text(json.dumps(dict(self.release, version="different")))
+        self.assert_gateway_denied()
+
+    def test_changed_binary_or_receipt_fails_without_downloading(self):
+        original = self.binary.read_bytes()
+        self.binary.write_bytes(b"changed executable")
+        self.assert_gateway_denied()
+        self.binary.write_bytes(original)
+        for receipt in ({}, [], dict(self.receipt, binarySha512="0" * 128),
+                        dict(self.receipt, release=dict(self.release, version="changed"))):
+            with self.subTest(receipt=receipt):
+                pilot.private_json(self.root / "release.json", receipt)
+                self.assert_gateway_denied()
+
+    def test_changed_policy_is_rejected_without_repairing_it(self):
+        for relative in ("policy.json", "home/.gemini/antigravity-cli/settings.json"):
+            for field, value in (("useG1Credits", True), ("useG1Credits", 0), ("modelProvider", "api-key"),
+                                 ("toolPermission", "allow"), ("historySize", False), ("unknown", False)):
+                with self.subTest(path=relative, field=field, value=value):
+                    path = self.root / relative
+                    changed = dict(pilot.POLICY, **{field: value})
+                    pilot.private_json(path, changed)
+                    self.assert_gateway_denied()
+                    self.assertEqual(changed, json.loads(path.read_text()))
+                    pilot.private_json(path, pilot.POLICY)
+
+    def test_report_requires_pass_exact_model_and_no_paid_credits(self):
+        for report in ({}, [], None, dict(self.report, status="AUTHENTICATION_REQUIRED_OR_DENIED"),
+                       dict(self.report, modelId="different"), dict(self.report, modelId=self.model + " "),
+                       dict(self.report, modelId=None), dict(self.report, extraCredits=True),
+                       dict(self.report, extraCredits=0), dict(self.report, extraCredits="false"),
+                       dict(self.report, extraCredits=None)):
+            with self.subTest(report=report):
+                pilot.private_json(self.verification, report)
+                self.assert_gateway_denied()
+
+    def test_report_requires_all_acceptance_flags_to_be_present(self):
+        pilot.private_json(self.verification, {"status": self.report["status"], "modelId": self.model})
+        self.assert_gateway_denied()
+        for field in ("realGenerationVerified", "cancelAcknowledged", "credentialsReused"):
+            with self.subTest(missing=field):
+                report = dict(self.report)
+                del report[field]
+                pilot.private_json(self.verification, report)
+                self.assert_gateway_denied()
+
+    def test_report_requires_each_acceptance_flag_to_be_explicitly_true(self):
+        for field in ("realGenerationVerified", "cancelAcknowledged", "credentialsReused"):
+            for value in (False, None, 0, 1, "true"):
+                with self.subTest(field=field, value=value):
+                    pilot.private_json(self.verification, dict(self.report, **{field: value}))
+                    self.assert_gateway_denied()
+
+    def test_invalid_or_ambiguous_json_fails_closed(self):
+        for path, valid in ((self.root / "policy.json", pilot.POLICY),
+                            (self.root / "release.json", self.receipt), (self.verification, self.report)):
+            duplicate = "{" + json.dumps(next(iter(valid))) + ":null," + json.dumps(valid)[1:]
+            for payload in ("{", "raw ACP frame\n" + json.dumps(valid),
+                            json.dumps(valid) + "\nraw ACP frame", duplicate):
+                with self.subTest(path=path.name, payload=payload):
+                    path.write_text(payload)
+                    self.assert_gateway_denied()
+            pilot.private_json(path, valid)
+
+    def test_symlinks_and_shared_permissions_fail_closed(self):
+        paths = [self.root, self.root / "pilot.lock", self.root / "bin", self.binary,
+                 self.root / "home", self.root / "reports", self.root / "work",
+                 self.root / "home/.gemini", self.root / "home/.gemini/antigravity-cli",
+                 self.root / "policy.json", self.root / "release.json", self.verification,
+                 self.root / "home/.gemini/antigravity-cli/settings.json"]
+        for path in paths:
+            with self.subTest(path=path, kind="mode"):
+                original_mode = stat.S_IMODE(path.stat().st_mode)
+                path.chmod(original_mode | 0o044)
+                try:
+                    self.assert_gateway_denied()
+                finally:
+                    path.chmod(original_mode)
+            with self.subTest(path=path, kind="symlink"):
+                saved = Path(self.temporary.name) / "saved"
+                path.rename(saved)
+                path.symlink_to(saved, target_is_directory=saved.is_dir())
+                try:
+                    self.assert_gateway_denied()
+                finally:
+                    path.unlink()
+                    saved.rename(path)
+
+    def test_foreign_owner_is_rejected(self):
+        with patch.object(pilot.os, "getuid", return_value=os.getuid() + 1):
+            self.assert_gateway_denied()
+
+    def test_invalid_models_and_relative_state_fail_without_mutation(self):
+        before = self.snapshot()
+        for model in ("", " ", "a" * 161, "model\n", "auto*", "model;command", "model --login"):
+            with self.subTest(model=model), self.assertRaises(pilot.PilotError):
+                self.gateway(model)
+        with self.assertRaises(pilot.PilotError):
+            self.invoke("gateway-agent", "--model", self.model, state=Path("relative-state"))
+        self.agent.assert_not_called()
+        self.assertEqual(before, self.snapshot())
+
+    def test_gateway_does_not_accept_arbitrary_command_arguments(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as failure:
+            self.invoke("gateway-agent", "--model", self.model, "--", "acp", "--login")
+        self.assertEqual(2, failure.exception.code)
+        self.agent.assert_not_called()
+
+    def test_existing_lock_conflict_prevents_gateway_login_and_verify(self):
+        before = self.snapshot()
+        with pilot.pilot_lock(self.root, existing=True):
+            for arguments in (("gateway-agent", "--model", self.model), ("login",), ("verify", "--model", self.model)):
+                with self.subTest(action=arguments[0]), self.assertRaisesRegex(pilot.PilotError, "already running"):
+                    self.invoke(*arguments)
+        self.agent.assert_not_called()
+        self.installer.assert_not_called()
+        self.assertEqual(before, self.snapshot())
+
+    def test_gateway_holds_lock_until_agent_exit_and_releases_it_after_errors(self):
+        previous_handler = signal.getsignal(signal.SIGTERM)
+
+        def agent(*arguments):
+            with self.assertRaisesRegex(pilot.PilotError, "already running"):
+                self.invoke("login")
+            raise KeyboardInterrupt()
+
+        self.agent.side_effect = agent
+        with self.assertRaises(KeyboardInterrupt):
+            self.gateway()
+        with pilot.pilot_lock(self.root, existing=True):
+            pass
+        self.assertEqual(previous_handler, signal.getsignal(signal.SIGTERM))
+        self.assertEqual(self.report, json.loads(self.verification.read_text()))
+
+    def test_sigterm_kills_and_reaps_child_while_lock_is_held(self):
+        previous_handler = signal.getsignal(signal.SIGTERM)
+        with patch.object(pilot, "run_agent", side_effect=self.real_run_agent), \
+                patch.object(pilot, "bridge", return_value=contextlib.nullcontext()), \
+                patch.object(pilot.subprocess, "Popen") as popen:
+            process = popen.return_value.__enter__.return_value
+
+            def wait():
+                with self.assertRaisesRegex(pilot.PilotError, "already running"):
+                    with pilot.pilot_lock(self.root, existing=True):
+                        pass
+                if process.wait.call_count == 1:
+                    signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+                return 0
+
+            def kill():
+                with self.assertRaisesRegex(pilot.PilotError, "already running"):
+                    with pilot.pilot_lock(self.root, existing=True):
+                        pass
+
+            process.wait.side_effect = wait
+            process.kill.side_effect = kill
+            with self.assertRaisesRegex(pilot.PilotError, "interrupted"):
+                self.gateway()
+            self.assertEqual([unittest.mock.call.wait(), unittest.mock.call.kill(), unittest.mock.call.wait()], process.mock_calls)
+            command = popen.call_args.args[0]
+            self.assertEqual("/usr/bin/bwrap", command[0])
+            self.assertNotIn("--login", command)
+            self.assertEqual("--ro-bind", command[command.index(str(self.root / "policy.json")) - 1])
+            self.assertEqual({"env": {}}, popen.call_args.kwargs)
+        with pilot.pilot_lock(self.root, existing=True):
+            pass
+        self.assertEqual(previous_handler, signal.getsignal(signal.SIGTERM))
+        self.assertEqual(self.report, json.loads(self.verification.read_text()))
+        self.assertEqual("", self.stdout.getvalue())
+
+    def test_login_invalidates_acceptance_before_reauthentication(self):
+        def login(root, proxy, online, arguments):
+            self.assertFalse(self.verification.exists())
+            self.assertEqual(["acp", "--login"], arguments)
+            return 1
+
+        self.agent.side_effect = login
+        with patch.object(pilot, "install_release", return_value=None):
+            self.assertEqual(1, self.invoke("login"))
+        self.assertFalse(self.verification.exists())
+        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp", "--login"])
+        self.assertEqual(b"mock credential must not be read by wrapper", self.credentials.read_bytes())
+
+    def test_login_and_verify_invalidate_even_if_cli_check_fails(self):
+        for arguments in (("login",), ("verify", "--model", self.model)):
+            with self.subTest(action=arguments[0]):
+                pilot.private_json(self.verification, self.report)
+                with patch.object(pilot, "install_release", side_effect=pilot.PilotError("CLI failed")):
+                    with self.assertRaises(pilot.PilotError):
+                        self.invoke(*arguments)
+                self.assertFalse(self.verification.exists())
+        self.agent.assert_not_called()
+
+    def test_verify_invalidates_acceptance_before_starting_checks(self):
+        def checks(*arguments):
+            self.assertFalse(self.verification.exists())
+            raise pilot.PilotError("acceptance failed")
+
+        with patch.object(pilot, "install_release", return_value=None), patch.object(pilot, "run_checks", side_effect=checks):
+            with self.assertRaises(pilot.PilotError):
+                self.invoke("verify", "--model", self.model)
+        self.assertFalse(self.verification.exists())
+
+    def test_checks_remove_old_pass_before_missing_jar_or_invalid_output(self):
+        with self.assertRaises(pilot.PilotError):
+            pilot.run_checks(self.root, self.proxy, "verify", self.model)
+        self.assertFalse(self.verification.exists())
+        jar = self.repo / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
+        jar.parent.mkdir(parents=True)
+        jar.touch()
+        results = [SimpleNamespace(stdout="raw ACP frame", returncode=1),
+                   SimpleNamespace(stdout=json.dumps(self.report), returncode=1)]
+        for result in results:
+            with self.subTest(result=result):
+                pilot.private_json(self.verification, self.report)
+                with patch.object(pilot.subprocess, "run", return_value=result), self.assertRaises(pilot.PilotError):
+                    pilot.run_checks(self.root, self.proxy, "verify", self.model)
+                self.assertFalse(self.verification.exists())
+
+    def test_failed_verification_replaces_pass_with_failure_report(self):
+        jar = self.repo / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
+        jar.parent.mkdir(parents=True)
+        jar.touch()
+        failure_report = {"status": "AUTHENTICATION_REQUIRED_OR_DENIED", "realGenerationVerified": False}
+
+        def checks(*arguments, **keywords):
+            self.assertFalse(self.verification.exists())
+            return SimpleNamespace(stdout=json.dumps(failure_report), returncode=10)
+
+        with patch.object(pilot.subprocess, "run", side_effect=checks), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(10, pilot.run_checks(self.root, self.proxy, "verify", self.model))
+        self.assertEqual(failure_report, json.loads(self.verification.read_text()))
+        self.assert_gateway_denied()
+
+
+if __name__ == "__main__":
+    unittest.main()
