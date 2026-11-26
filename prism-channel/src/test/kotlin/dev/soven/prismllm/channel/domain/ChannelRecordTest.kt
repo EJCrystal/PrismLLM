@@ -82,6 +82,30 @@ class ChannelRecordTest {
     }
 
     @Test
+    fun `display models use enabled authorization without trimming catalog or depending on transient availability`() {
+        val channel = channel().copy(
+            enabled = false,
+            modelMappings = listOf(
+                ChannelModelRecord("m1", "shared-family"),
+                ChannelModelRecord("m2", "shared-family"),
+                ChannelModelRecord("disabled-only"),
+                ChannelModelRecord("unauthorized"),
+                ChannelModelRecord("dormant", "saved-manual", "manual", catalogActive = false),
+            ),
+        )
+        val credentials = listOf(
+            Credential("first", models = listOf("m1", "dormant", "outside-catalog")),
+            Credential("second", models = listOf("m2"), routable = false),
+            Credential("disabled", models = listOf("disabled-only"), enabled = false),
+        )
+        assertEquals(listOf("m1", "m2"), channel.modelsForEnabledCredentials(credentials))
+        assertEquals(emptyList(), channel.modelsForEnabledCredentials(emptyList()))
+        assertEquals(emptyList(), channel.modelsForEnabledCredentials(credentials.filter { !it.enabled }))
+        assertEquals(listOf("m1", "m2", "disabled-only", "unauthorized"), channel.models)
+        assertEquals("saved-manual", channel.modelMappings.last().canonicalModelId)
+    }
+
+    @Test
     fun `routableCredentialCount ignores disabled unauthorized and out-of-catalog credentials`() {
         val channel = channel(
             listOf(

@@ -84,21 +84,22 @@ function newDraftRow(model: string) {
     mode: 'auto' as const,
     mappingSource: null,
     catalogActive: false,
+    enabled: false,
   }
 }
 
 const allModels = computed(() => {
   const rows = baseline.value?.mappings ?? []
-  // 人工映射即使休眠也常驻可见；只有目录自动生成的休眠行默认折叠。
+  // 默认只显示启用账号已授权的模型；未启用的手工映射保留，待保存草稿不能被隐藏。
   const filtered = showInactive.value
     ? rows
-    : rows.filter((row) => row.catalogActive || row.mappingSource != null || dirtyModels.has(row.upstreamModel))
+    : rows.filter((row) => row.enabled || dirtyModels.has(row.upstreamModel))
   return [...filtered, ...newDraftModels.value.map(newDraftRow)]
     .sort((a, b) => a.upstreamModel.localeCompare(b.upstreamModel))
 })
 
-const hiddenDormantCount = computed(() =>
-  (baseline.value?.mappings ?? []).filter((row) => !row.catalogActive && row.mappingSource == null).length,
+const inactiveCount = computed(() =>
+  (baseline.value?.mappings ?? []).filter((row) => !row.enabled).length,
 )
 
 function isCustomRow(model: string): boolean {
@@ -129,7 +130,7 @@ const mappingCandidates = computed(() => {
     candidates.get(id)!.add(hint)
   }
   for (const mapping of baseline.value?.mappings ?? []) {
-    if (mapping.catalogActive) add(mapping.publicModelId, '当前提供商有效对外 ID')
+    if (mapping.enabled) add(mapping.publicModelId, '当前提供商已启用对外 ID')
   }
   for (const channel of props.channels ?? []) {
     const mapped = new Map(channel.modelMappings.map((item) => [item.upstreamModel, item]))
@@ -335,6 +336,7 @@ function resetState() {
   notice.value = ''
   query.value = ''
   filterMode.value = 'all'
+  showInactive.value = false
   showAddForm.value = false
   newModel.value = ''
   newModelMode.value = 'manual'
@@ -437,6 +439,10 @@ async function save() {
       changes,
     })
     baseline.value = updated
+    // 保存未启用项后继续展示结果；重新打开面板仍默认只显示已启用项。
+    if (updated.mappings.some((row) => !row.enabled && changes.some((change) => change.upstreamModel === row.upstreamModel))) {
+      showInactive.value = true
+    }
     // 新增但选了「自动」的草稿无法创建，保存成功后仍需保留。
     const remainingUncreatable = [...uncreatableDrafts.value]
     dirtyModels.clear()
@@ -490,7 +496,7 @@ defineExpose({
   <div class="provider-mappings-panel">
     <div class="provider-mappings-intro">
       <div class="provider-mappings-context">
-        <span class="provider-mappings-desc muted small">仅调整对外模型 ID，不影响各账号的模型授权范围</span>
+        <span class="provider-mappings-desc muted small">仅调整对外模型 ID；默认显示启用账号已授权的模型</span>
         <div v-if="baseline" class="provider-mappings-pills">
           <span class="provider-meta-pill">共享 {{ baseline.affectedAccountCount }} 个账号</span>
           <span class="provider-meta-pill mono">v{{ baseline.revision }}</span>
@@ -553,7 +559,7 @@ defineExpose({
           :aria-pressed="filterMode === 'all'"
           @click="filterMode = 'all'"
         >
-          全部 {{ allModels.length }}
+          {{ showInactive ? '全部' : '已启用' }} {{ allModels.length }}
         </button>
         <button
           type="button"
@@ -565,14 +571,14 @@ defineExpose({
           自定义 {{ customCount }}
         </button>
         <button
-          v-if="hiddenDormantCount > 0"
+          v-if="inactiveCount > 0"
           type="button"
           class="provider-filter-chip is-dormant"
           :class="{ 'is-active': showInactive }"
           :aria-pressed="showInactive"
           @click="showInactive = !showInactive"
         >
-          含休眠 {{ hiddenDormantCount }}
+          含未启用 {{ inactiveCount }}
         </button>
       </div>
       <button
@@ -619,7 +625,9 @@ defineExpose({
       正在读取共享模型映射…
     </div>
     <div v-else-if="allModels.length === 0" class="provider-mappings-empty">
-      <p class="muted small">当前提供商还没有共享模型。可直接手工新增映射，或在「账号池」中添加账号并同步模型目录。</p>
+      <p class="muted small">
+        {{ baseline?.mappings.length ? '当前没有已启用模型。可在「账号池」中启用账号并授权模型，或选择「含未启用」查看保留的映射。' : '当前提供商还没有共享模型。可直接手工新增映射，或在「账号池」中添加账号并同步模型目录。' }}
+      </p>
       <button v-if="!showAddForm" type="button" class="button ghost mini" :disabled="busy" @click="openAddForm()">
         <Icon name="plus" :size="14" />
         手工新增映射
@@ -656,6 +664,11 @@ defineExpose({
               class="badge neutral small"
               title="当前所有账号目录均未包含该模型，保留历史人工映射"
             >休眠</span>
+            <span
+              v-else-if="!row.enabled"
+              class="badge neutral small"
+              title="当前没有启用账号授权此模型；已有映射保留，不参与列表模型统计"
+            >未启用</span>
           </div>
 
           <div class="provider-mapping-public" data-label="对外 ID">

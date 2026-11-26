@@ -1,5 +1,7 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { channelDisplayModels, hiddenModelsTitle } from '../src/utils/channelDisplay'
+import { channelPriceSummaries } from '../src/utils/modelPrice'
 import {
   buildProviderListItems,
   providerDisplayName,
@@ -71,6 +73,43 @@ describe('providerDisplay', () => {
     assert.equal(providerDisplayName('自建（系统）', 'custom'), '自建（系统）')
   })
 
+  it('uses the enabled authorization projection for labels filters and pricing without changing the editable catalog', () => {
+    const subscription = makeChannel({
+      kind: 'provider', provider: 'antigravity',
+      models: ['claude-first', 'claude-second', 'gemini-3-flash', 'gemini-3.1-flash-image'],
+      enabledModels: ['claude-first', 'claude-second', 'outside-catalog'],
+      modelMappings: [
+        { upstreamModel: 'claude-first', canonicalModelId: 'claude-family', mappingSource: 'manual' },
+        { upstreamModel: 'claude-second', canonicalModelId: 'claude-family', mappingSource: null },
+        { upstreamModel: 'gemini-3-flash', canonicalModelId: 'saved-flash', mappingSource: 'manual' },
+      ],
+    })
+    const custom = makeChannel({ id: 'custom', enabledModels: [] })
+    const providers = [{ id: 'antigravity', label: 'Antigravity', configured: true }]
+    // Both the normal and missing-provider-metadata fallback paths must use the same projection.
+    for (const metadata of [providers, []]) {
+      const items = buildProviderListItems([subscription, custom], metadata, [], NOW)
+      const display = items.find(item => item.kind === 'subscription')
+      assert.deepEqual(display.channel.models, ['claude-first', 'claude-second'])
+      assert.deepEqual(channelDisplayModels(display.channel).map(item => item.displayName), ['claude-family'])
+      assert.doesNotMatch(hiddenModelsTitle(display.channel), /gemini|saved-flash/)
+      assert.deepEqual(providerModelFilterOptions(items), ['claude-family', 'gpt-4o'])
+      assert.equal(providerMatchesFilters(display, 'all', 'all', 'saved-flash', ''), false)
+      const prices = channelPriceSummaries(items.map(item => item.channel), [], [])
+      assert.deepEqual(prices.get(subscription.id), { count: 2, unpriced: ['claude-first', 'claude-second'] })
+      assert.deepEqual(items.find(item => item.kind === 'custom').channel.models, ['gpt-4o'])
+    }
+    assert.equal(subscription.models.length, 4)
+    assert.equal(subscription.modelMappings[2].canonicalModelId, 'saved-flash')
+
+    subscription.enabledModels = []
+    const [empty] = buildProviderListItems([subscription], providers, [], NOW)
+    assert.deepEqual(empty.channel.models, [])
+    assert.deepEqual(providerModelFilterOptions([empty]), [])
+    assert.equal(channelPriceSummaries([empty.channel], [], []).get(subscription.id).count, 0)
+    assert.equal(subscription.models.length, 4)
+  })
+
   it('merges provisioned provider channels, unprovisioned oauth providers, and custom channels', () => {
     const channels = [
       makeChannel({
@@ -81,6 +120,7 @@ describe('providerDisplay', () => {
         kind: 'provider',
         provider: 'chatgpt',
         models: ['gpt-6-luna'],
+        enabledModels: ['gpt-6-luna'],
         modelMappings: [{ upstreamModel: 'gpt-6-luna', canonicalModelId: 'gpt-6-luna', mappingSource: null }],
       }),
       makeChannel({ id: 'ch-custom', name: 'OpenRouter' }),

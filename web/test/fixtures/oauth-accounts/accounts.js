@@ -30,7 +30,7 @@ export function createMockOAuthChannels(now = FIXTURE_NOW) {
     ['fixture-antigravity-channel', 'Antigravity 订阅渠道', 'antigravity', ANTIGRAVITY_MODELS],
     ['fixture-secondary-channel', '演示备用渠道（仅本地合成数据）', null, [...CHATGPT_MODELS, ...ANTIGRAVITY_MODELS]],
   ].map(([id, name, provider, models]) => ({
-    id, name, provider, models: [...models], baseUrl: '', authType: 'NONE', protocolAuthTypes: {},
+    id, name, provider, models: [...models], enabledModels: provider ? [...models] : null, baseUrl: '', authType: 'NONE', protocolAuthTypes: {},
     protocols: ['OPENAI'], enabled: true, credentialSet: false, createdAt: now - 30 * DAY,
     updatedAt: now - DAY, modelMappings: [], priority: 1, keys: [], requestOverrides: {},
     quota: { providerId: '', config: {}, credentialSource: 'CHANNEL_KEY', credentialSet: false },
@@ -132,7 +132,7 @@ export function createOAuthAccountsFixture(now = FIXTURE_NOW) {
       const mode = upstreamModel === 'claude-opus-4-5-thinking' || legacyOverride ? 'manual' : upstreamModel === 'gpt-5-nano' ? 'upstream' : 'auto'
       const canonicalModelId = upstreamModel === 'claude-opus-4-5-thinking' ? 'custom/opus' : mode === 'upstream' ? null : automaticCanonicalModelId
       const mappingSource = legacyOverride ? 'models_dev' : mode === 'auto' ? null : 'manual'
-      return { upstreamModel, automaticCanonicalModelId, canonicalModelId, publicModelId: canonicalModelId ?? upstreamModel, mode, mappingSource, catalogActive: true }
+      return { upstreamModel, automaticCanonicalModelId, canonicalModelId, publicModelId: canonicalModelId ?? upstreamModel, mode, mappingSource, catalogActive: true, enabled: true }
     }),
   }]))
   return {
