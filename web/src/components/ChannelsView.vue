@@ -519,7 +519,11 @@ const activeOAuthDrawerItem = computed(() => {
   if (!target) return null
   return providerItems.value.find((item) => item.kind === 'subscription' && item.providerId === target.providerId) ?? null
 })
-const priceSummaries = computed(() => channelPriceSummaries(channels.value, prices.value, defaultPrices.value))
+const priceSummaries = computed(() => channelPriceSummaries(
+  providerItems.value.flatMap((item) => item.channel ? [item.channel] : []),
+  prices.value,
+  defaultPrices.value,
+))
 const pricePrompt = computed(() => {
   const channelId = pricePromptChannelId.value
   if (!channelId) return null

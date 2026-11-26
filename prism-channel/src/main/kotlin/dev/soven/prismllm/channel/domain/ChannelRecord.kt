@@ -146,6 +146,11 @@ data class ChannelRecord(
     val isProviderChannel: Boolean get() = kind == ChannelKind.PROVIDER
     val models: List<String> get() = modelMappings.filter { it.catalogActive }.map { it.upstreamModel }
 
+    /** 展示用授权范围，不受短暂冷却、额度或渠道总开关影响，也不裁剪完整目录。 */
+    fun modelsForEnabledCredentials(credentials: List<UpstreamCredential>): List<String> = models.filter { model ->
+        credentials.any { it.enabled && it.supports(model) }
+    }
+
     /**
      * 支持指定上游模型的可路由密钥，按密钥优先级、名称和 id 稳定排序。
      * 临时停用到期后重新参与路由，人工与永久停用永不参与。

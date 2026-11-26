@@ -3187,6 +3187,7 @@ private fun encodeOAuthProviderModelMappings(
                 mode = row.mode,
                 mappingSource = row.mapping.mappingSource,
                 catalogActive = row.mapping.catalogActive,
+                enabled = row.enabled,
             )
         },
     ),
