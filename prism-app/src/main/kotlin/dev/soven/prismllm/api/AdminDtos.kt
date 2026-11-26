@@ -485,6 +485,7 @@ data class ClientKeyRequest(
     val maxConcurrentRequests: Int? = null,
     val requestsPerMinute: Int? = null,
     val accessPolicy: ClientKeyAccessPolicyDto? = null,
+    val ipPolicy: ClientKeyIpPolicyDto? = null,
 )
 
 /**
@@ -509,6 +510,7 @@ data class ClientKeyResponse(
     val rotatedAt: Long?,
     val revokedAt: Long?,
     val accessPolicy: ClientKeyAccessPolicyDto,
+    val ipPolicy: ClientKeyIpPolicyDto,
 )
 
 /** 映射调用方密钥的完整管理读响应，尚未加载额度时使用默认用量。 */
@@ -527,6 +529,7 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
     accessPolicy = accessPolicy.toDto(),
+    ipPolicy = ipPolicy.toDto(),
 )
 
 /** 映射调用方密钥的完整管理读响应及已加载的额度用量。 */
@@ -545,6 +548,7 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
     accessPolicy = accessPolicy.toDto(),
+    ipPolicy = ipPolicy.toDto(),
 )
 
 fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse(
@@ -776,6 +780,7 @@ data class ClientKeyCreatedResponse(
     val rotatedAt: Long?,
     val revokedAt: Long?,
     val accessPolicy: ClientKeyAccessPolicyDto,
+    val ipPolicy: ClientKeyIpPolicyDto,
 )
 
 /** 创建或轮换时一次性回显凭据与完整访问范围。 */
@@ -794,6 +799,7 @@ fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
     accessPolicy = accessPolicy.toDto(),
+    ipPolicy = ipPolicy.toDto(),
 )
 
 /**

@@ -483,6 +483,30 @@ curl -b cookies.txt -X POST http://localhost:8080/admin/api/model-tests/fingerpr
 - `maxConcurrentRequests`：单密钥同时处理并发上限。
 - `dailyTokenLimit`：按 UTC 自然日限制总 Token 数。
 - `dailyUsdLimit`：每日费用上限（USD）。
+- `ipPolicy`：调用来源 IP 白名单和黑名单，支持 IPv4、IPv6 单个地址及 CIDR 网段，每份名单最多 256 条。
+
+创建和 `PUT /admin/api/client-keys/<id>` 更新示例：
+
+~~~json
+{
+  "name": "internal-service",
+  "ipPolicy": {
+    "allowlist": ["203.0.113.0/24", "2001:db8::/32"],
+    "denylist": ["203.0.113.9"]
+  }
+}
+~~~
+
+白名单为空表示不限制来源，非空时只允许匹配地址；黑名单匹配即拒绝，优先于白名单。
+两份名单都为空时不增加 IP 限制。创建时省略或传入 `null` 保持默认不限制；更新时省略或传入 `null`
+保留已有配置，传入完整对象替换两份名单，传入 `{}` 或两个空数组清除 IP 限制。
+主机名、端口、非法地址及非法 CIDR 前缀返回 400（`invalid_client_key_ip_policy`），不保存任何部分更新。
+列表、创建、更新、轮换和撤销响应均包含 `ipPolicy`；轮换或单独启停不改变 IP 限制。
+
+所有数据面模型列表及四协议请求统一执行 IP 校验，不匹配时在请求上游或消耗配额前返回 403，
+响应头为 `X-Prism-Error-Code: ip_access_denied`；错误体保持对应协议的原生格式。
+来源 IP 沿用网关可信代理解析，仅当直接连接来自 `TRUSTED_PROXY_CIDRS` 时信任转发头，
+未配置可信代理时只使用直接连接 IP。反向代理部署需正确配置该环境变量，不能把任意客户端网段列为可信代理。
 
 ### 2. 密钥轮换（Rotate）与永久撤销（Revoke）
 
