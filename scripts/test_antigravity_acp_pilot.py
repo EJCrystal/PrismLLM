@@ -7,8 +7,12 @@ from pathlib import Path
 import signal
 import socket
 import stat
+import subprocess
+import sys
 import tarfile
 import tempfile
+import textwrap
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -95,25 +99,27 @@ class PilotPreparationTest(unittest.TestCase):
     def test_sanitized_report_is_saved_without_agent_frames(self):
         pilot.prepare_files(self.root)
         result = SimpleNamespace(stdout='{"status":"AUTHENTICATION_REQUIRED_OR_DENIED","realGenerationVerified":false}', returncode=10)
-        with patch.object(Path, "exists", return_value=True), patch.object(pilot.subprocess, "run", return_value=result), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(Path, "exists", return_value=True), patch.object(pilot, "run_owned_process", return_value=result), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(10, pilot.run_checks(self.root, "http://127.0.0.1:7897", "probe"))
         report = json.loads((self.root / "reports/probe.json").read_text())
         self.assertIs(report["realGenerationVerified"], False)
         result.stdout = 'raw ACP frame\n' + result.stdout
-        with patch.object(Path, "exists", return_value=True), patch.object(pilot.subprocess, "run", return_value=result):
+        with patch.object(Path, "exists", return_value=True), patch.object(pilot, "run_owned_process", return_value=result):
             with self.assertRaises(pilot.PilotError):
                 pilot.run_checks(self.root, "http://127.0.0.1:7897", "probe")
 
     def test_cli_logs_and_default_customizations_are_disabled(self):
         pilot.prepare_files(self.root)
         with patch.object(pilot.subprocess, "Popen") as popen:
-            popen.return_value.__enter__.return_value.wait.return_value = 0
+            process = popen.return_value.__enter__.return_value
+            process.communicate.return_value = (None, None)
+            process.returncode = 0
             self.assertEqual(0, pilot.run_agent(self.root, "http://127.0.0.1:7897", False, ["acp"]))
         command = popen.call_args.args[0]
         self.assertIn("--disable-telemetry", command)
         self.assertIn("--include-default-customizations=false", command)
         self.assertEqual("/dev/null", command[command.index("--cli_log_file") + 1])
-        self.assertEqual({"env": {}}, popen.call_args.kwargs)
+        self.assertEqual({"env": {}, "start_new_session": True}, popen.call_args.kwargs)
 
     def test_download_checks_archive_before_extracting_or_running(self):
         pilot.prepare_files(self.root)
@@ -608,32 +614,34 @@ class GatewayAgentTest(unittest.TestCase):
         previous_handler = signal.getsignal(signal.SIGTERM)
         with patch.object(pilot, "run_agent", side_effect=self.real_run_agent), \
                 patch.object(pilot, "bridge", return_value=contextlib.nullcontext()), \
-                patch.object(pilot.subprocess, "Popen") as popen:
+                patch.object(pilot.subprocess, "Popen") as popen, patch.object(pilot.os, "killpg") as kill_group:
             process = popen.return_value.__enter__.return_value
+            process.pid = 42000123
 
-            def wait():
+            def communicate(timeout=None):
                 with self.assertRaisesRegex(pilot.PilotError, "already running"):
                     with pilot.pilot_lock(self.root, existing=True):
                         pass
-                if process.wait.call_count == 1:
+                if process.communicate.call_count == 1:
                     signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
-                return 0
+                return None, None
 
-            def kill():
+            def kill(process_id, signum):
                 with self.assertRaisesRegex(pilot.PilotError, "already running"):
                     with pilot.pilot_lock(self.root, existing=True):
                         pass
 
-            process.wait.side_effect = wait
-            process.kill.side_effect = kill
+            process.communicate.side_effect = communicate
+            kill_group.side_effect = kill
             with self.assertRaisesRegex(pilot.PilotError, "interrupted"):
                 self.gateway()
-            self.assertEqual([unittest.mock.call.wait(), unittest.mock.call.kill(), unittest.mock.call.wait()], process.mock_calls)
+            self.assertEqual([unittest.mock.call.communicate(timeout=None), unittest.mock.call.communicate(timeout=5)], process.mock_calls)
+            kill_group.assert_called_once_with(process.pid, signal.SIGKILL)
             command = popen.call_args.args[0]
             self.assertEqual("/usr/bin/bwrap", command[0])
             self.assertNotIn("--login", command)
             self.assertEqual("--ro-bind", command[command.index(str(self.root / "policy.json")) - 1])
-            self.assertEqual({"env": {}}, popen.call_args.kwargs)
+            self.assertEqual({"env": {}, "start_new_session": True}, popen.call_args.kwargs)
         with pilot.pilot_lock(self.root, existing=True):
             pass
         self.assertEqual(previous_handler, signal.getsignal(signal.SIGTERM))
@@ -685,7 +693,7 @@ class GatewayAgentTest(unittest.TestCase):
         for result in results:
             with self.subTest(result=result):
                 pilot.private_json(self.verification, self.report)
-                with patch.object(pilot.subprocess, "run", return_value=result), self.assertRaises(pilot.PilotError):
+                with patch.object(pilot, "run_owned_process", return_value=result), self.assertRaises(pilot.PilotError):
                     pilot.run_checks(self.root, self.proxy, "verify", self.model)
                 self.assertFalse(self.verification.exists())
 
@@ -699,10 +707,214 @@ class GatewayAgentTest(unittest.TestCase):
             self.assertFalse(self.verification.exists())
             return SimpleNamespace(stdout=json.dumps(failure_report), returncode=10)
 
-        with patch.object(pilot.subprocess, "run", side_effect=checks), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(pilot, "run_owned_process", side_effect=checks), contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(10, pilot.run_checks(self.root, self.proxy, "verify", self.model))
         self.assertEqual(failure_report, json.loads(self.verification.read_text()))
         self.assert_gateway_denied()
+
+
+class PilotProcessOwnershipTest(unittest.TestCase):
+    def test_checks_reap_before_unlock_on_timeout_interrupt_and_other_exceptions(self):
+        failures = (subprocess.TimeoutExpired("private-command", 1), KeyboardInterrupt(), RuntimeError("fixture"),
+                    OSError("fixture"), SystemExit(2))
+        for mode in ("verify", "probe"):
+            for failure in failures:
+                with self.subTest(mode=mode, failure=type(failure).__name__), tempfile.TemporaryDirectory() as name:
+                    root = Path(name)
+                    pilot.prepare_files(root)
+                    report = root / "reports" / ("verification.json" if mode == "verify" else "probe.json")
+                    pilot.private_json(report, {"status": "STALE_SUCCESS"})
+                    jar = root / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
+                    jar.parent.mkdir(parents=True)
+                    jar.touch()
+                    with patch.object(pilot, "REPO", root), patch.object(pilot.subprocess, "Popen") as factory, \
+                            patch.object(pilot.os, "killpg") as kill_group:
+                        process = factory.return_value.__enter__.return_value
+                        process.pid = 42000123
+
+                        def communicate(timeout=None):
+                            self.assertFalse(report.exists())
+                            with self.assertRaisesRegex(pilot.PilotError, "already running"):
+                                with pilot.pilot_lock(root):
+                                    pass
+                            if process.communicate.call_count == 1:
+                                raise failure
+                            return "", None
+
+                        process.communicate.side_effect = communicate
+                        expected = pilot.PilotError if isinstance(failure, subprocess.TimeoutExpired) else type(failure)
+                        with pilot.pilot_lock(root), self.assertRaises(expected):
+                            pilot.run_checks(root, "http://127.0.0.1:7897", mode, "gemini-fixed")
+                        kill_group.assert_called_once_with(process.pid, signal.SIGTERM)
+                        self.assertTrue(factory.call_args.kwargs["start_new_session"])
+                        self.assertEqual(1, factory.call_count)
+                    self.assertFalse(report.exists())
+                    with pilot.pilot_lock(root):
+                        pass
+
+    def test_success_and_nonzero_exit_also_drain_remaining_owned_group_members(self):
+        for returncode in (0, 10):
+            with self.subTest(returncode=returncode), patch.object(pilot.subprocess, "Popen") as factory, \
+                    patch.object(pilot.os, "killpg") as kill_group, \
+                    patch.object(pilot, "owned_group_running", side_effect=[True, True, False]), \
+                    patch.object(pilot.time, "sleep"):
+                process = factory.return_value.__enter__.return_value
+                process.pid = 42000123
+                process.returncode = returncode
+                process.communicate.return_value = ("sanitized", None)
+                result = pilot.run_owned_process(["synthetic-java"], stdout=subprocess.PIPE)
+                self.assertEqual(returncode, result.returncode)
+                self.assertEqual("sanitized", result.stdout)
+                kill_group.assert_called_once_with(process.pid, signal.SIGTERM)
+                self.assertEqual([None, 5], [call.kwargs["timeout"] for call in process.communicate.call_args_list])
+
+    def test_cleanup_waits_for_and_escalates_group_members_after_the_leader_has_exited(self):
+        process = unittest.mock.Mock(pid=42000123)
+        process.communicate.return_value = ("", None)
+        with patch.object(pilot.os, "killpg") as kill_group, \
+                patch.object(pilot, "owned_group_running", side_effect=[True, True, False]), \
+                patch.object(pilot.time, "monotonic", side_effect=[0, 6]), patch.object(pilot.time, "sleep"):
+            pilot.stop_owned_process(process)
+        self.assertEqual([(process.pid, signal.SIGTERM), (process.pid, signal.SIGKILL)],
+                         [call.args for call in kill_group.call_args_list])
+
+    def test_real_sigterm_verify_probe_and_prepare_reap_java_agent_and_detached_sandbox_before_unlock(self):
+        sandbox_source = textwrap.dedent("""
+            import os, pathlib, sys, time
+            root = pathlib.Path(sys.argv[1])
+            (root / 'sandbox-ready').write_text(str(os.getpid()))
+            while True:
+                time.sleep(1)
+        """)
+        agent_source = textwrap.dedent("""
+            from contextlib import nullcontext
+            from pathlib import Path
+            import fcntl, os, signal, sys, time
+            sys.path.insert(0, sys.argv[1])
+            import antigravity_acp_pilot as pilot
+            root = Path(sys.argv[2])
+            sandbox_source = sys.argv[3]
+            pilot.bridge = lambda *args, **kwargs: nullcontext()
+            pilot.sandbox_command = lambda *args, **kwargs: [sys.executable, '-c', sandbox_source, str(root)]
+            def original_handler(signum, frame):
+                raise RuntimeError('Original handler must be restored, not used')
+            signal.signal(signal.SIGTERM, original_handler)
+            (root / 'agent-ready').write_text(str(os.getpid()))
+            sys.argv = ['pilot', '--state', str(root), 'agent', '--online', '--', 'acp']
+            try:
+                pilot.main()
+            except KeyboardInterrupt:
+                sandbox_pid = int((root / 'sandbox-ready').read_text())
+                try:
+                    os.kill(sandbox_pid, 0)
+                    raise AssertionError('Sandbox was not reaped')
+                except ProcessLookupError:
+                    pass
+                time.sleep(0.2)
+                with (root / 'pilot.lock').open('r+') as lock:
+                    try:
+                        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        raise AssertionError('Lock released before agent cleanup')
+                    except BlockingIOError:
+                        pass
+                assert signal.getsignal(signal.SIGTERM) is original_handler
+                (root / 'agent-reaped-sandbox').touch()
+        """)
+        java_source = textwrap.dedent("""
+            from pathlib import Path
+            import os, signal, subprocess, sys
+            root = Path(sys.argv[2])
+            signal.signal(signal.SIGTERM, lambda signum, frame: os._exit(0))
+            (root / 'java-ready').write_text(str(os.getpid()))
+            with subprocess.Popen([sys.executable, '-c', sys.argv[3], sys.argv[1], str(root), sys.argv[4]],
+                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as agent:
+                agent.wait()
+        """)
+        controller_source = textwrap.dedent("""
+            from pathlib import Path
+            import ctypes, os, signal, subprocess, sys
+            sys.path.insert(0, sys.argv[1])
+            import antigravity_acp_pilot as pilot
+            scripts_directory = sys.argv[1]
+            root = Path(sys.argv[2])
+            assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+            action, java_source, agent_source, sandbox_source = sys.argv[3:]
+            original_popen = subprocess.Popen
+            def synthetic_java(command, **kwargs):
+                assert pilot.MAIN_CLASS in command
+                return original_popen([sys.executable, '-c', java_source, scripts_directory, str(root),
+                                       agent_source, sandbox_source], **kwargs)
+            def original_handler(signum, frame):
+                raise RuntimeError('Original handler must be restored, not used')
+            signal.signal(signal.SIGTERM, original_handler)
+            pilot.REPO = root
+            pilot.install_release = lambda *args: None
+            pilot.check_sandbox = lambda *args: None
+            pilot.subprocess.Popen = synthetic_java
+            real_run_owned = pilot.run_owned_process
+            def owned_process(command, **kwargs):
+                if '--batch-mode' in command:
+                    return subprocess.CompletedProcess(command, 0)
+                return real_run_owned(command, **kwargs)
+            pilot.run_owned_process = owned_process
+            sys.argv = ['pilot', '--state', str(root), action]
+            if action == 'verify':
+                sys.argv += ['--model', 'gemini-fixed']
+            try:
+                pilot.main()
+            except KeyboardInterrupt:
+                assert (root / 'agent-reaped-sandbox').is_file()
+                agent_pid = int((root / 'agent-ready').read_text())
+                assert os.waitpid(agent_pid, 0)[1] == 0
+                assert signal.getsignal(signal.SIGTERM) is original_handler
+                (root / 'controller-cancelled').touch()
+        """)
+        for action in ("verify", "probe", "prepare"):
+            with self.subTest(action=action), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                pilot.prepare_files(root)
+                (root / "pilot.lock").touch(mode=0o600)
+                report = root / "reports" / ("verification.json" if action == "verify" else "probe.json")
+                pilot.private_json(report, {"status": "STALE_SUCCESS"})
+                pilot.private_json(root / "reports/ready.json", {"status": "STALE_READY"})
+                jar = root / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
+                jar.parent.mkdir(parents=True)
+                jar.touch()
+                command = [sys.executable, "-c", controller_source, str(Path(__file__).resolve().parent),
+                           str(root), action, java_source, agent_source, sandbox_source]
+                with subprocess.Popen(command, env={"PYTHONDONTWRITEBYTECODE": "1"}, stdout=subprocess.PIPE,
+                                      stderr=subprocess.PIPE) as controller:
+                    try:
+                        deadline = time.monotonic() + 5
+                        while (not (root / "sandbox-ready").exists() or not (root / "sandbox-ready").read_text()) \
+                                and controller.poll() is None and time.monotonic() < deadline:
+                            time.sleep(0.01)
+                        if not (root / "sandbox-ready").exists() and controller.poll() is not None:
+                            _, errors = controller.communicate(timeout=1)
+                            self.fail("Synthetic chain did not start: " + errors.decode())
+                        self.assertTrue((root / "sandbox-ready").exists(), "Synthetic chain did not start")
+                        process_ids = [int((root / marker).read_text())
+                                       for marker in ("java-ready", "agent-ready", "sandbox-ready")]
+                        controller.send_signal(signal.SIGTERM)
+                        _, errors = controller.communicate(timeout=8)
+                        self.assertEqual(0, controller.returncode, errors.decode())
+                        self.assertTrue((root / "controller-cancelled").is_file())
+                        self.assertFalse(report.exists())
+                        if action == "prepare":
+                            self.assertFalse((root / "reports/ready.json").exists())
+                        for process_id in process_ids:
+                            with self.assertRaises(ProcessLookupError):
+                                os.kill(process_id, 0)
+                        with pilot.pilot_lock(root, existing=True):
+                            pass
+                    finally:
+                        for marker in ("java-ready", "sandbox-ready"):
+                            if (root / marker).is_file() and (root / marker).read_text():
+                                with contextlib.suppress(ProcessLookupError):
+                                    os.killpg(int((root / marker).read_text()), signal.SIGKILL)
+                        if controller.poll() is None:
+                            controller.kill()
+                            controller.wait()
 
 
 if __name__ == "__main__":

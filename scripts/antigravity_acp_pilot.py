@@ -19,6 +19,7 @@ import sys
 import tarfile
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -47,6 +48,84 @@ POLICY = {
 
 class PilotError(Exception):
     pass
+
+
+@contextlib.contextmanager
+def interrupt_on_sigterm():
+    def interrupted(signum, frame):
+        raise KeyboardInterrupt
+
+    previous_handler = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
+def owned_group_running(process_id):
+    for entry in Path("/proc").iterdir():
+        if entry.name.isdecimal():
+            try:
+                fields = (entry / "stat").read_text().rsplit(")", 1)[1].split()
+                if int(fields[2]) == process_id and fields[0] not in ("Z", "X"):
+                    return True
+            except (OSError, ValueError, IndexError):
+                pass
+    return False
+
+
+def stop_owned_process(process, stop_signal=signal.SIGTERM):
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM, signal.SIGINT})
+    try:
+        deadline = time.monotonic() + 5
+        escalated = stop_signal == signal.SIGKILL
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, stop_signal)
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            escalated = True
+            process.communicate()
+        except (OSError, ValueError):
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            escalated = True
+            process.wait()
+        while owned_group_running(process.pid):
+            if not escalated and time.monotonic() >= deadline:
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                escalated = True
+            time.sleep(0.01)
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+
+
+def communicate_owned_process(process, timeout=None, timeout_message="Pilot process timed out; no retry was made",
+                              stop_signal=signal.SIGTERM):
+    completed = False
+    try:
+        output = process.communicate(timeout=timeout)
+        if owned_group_running(process.pid):
+            stop_owned_process(process, stop_signal)
+        completed = True
+        return output
+    except subprocess.TimeoutExpired:
+        raise PilotError(timeout_message) from None
+    finally:
+        if not completed:
+            stop_owned_process(process, stop_signal)
+
+
+def run_owned_process(command, timeout=None, check=False, stop_signal=signal.SIGTERM, **arguments):
+    with subprocess.Popen(command, start_new_session=True, **arguments) as process:
+        output, errors = communicate_owned_process(process, timeout, stop_signal=stop_signal)
+        result = subprocess.CompletedProcess(command, process.returncode, output, errors)
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, command)
+    return result
 
 
 def private_directory(path):
@@ -246,7 +325,7 @@ def inside(arguments):
         server = socketserver.ThreadingTCPServer(("127.0.0.1", 18080), RelayHandler)
         server.daemon_threads = True
         threading.Thread(target=server.serve_forever, daemon=True).start()
-    return subprocess.call(command)
+    return run_owned_process(command, stop_signal=signal.SIGKILL).returncode
 
 
 def check_sandbox(root, proxy):
@@ -264,7 +343,7 @@ def check_sandbox(root, proxy):
             "try:\n pathlib.Path('/home/pilot/.gemini/antigravity-cli/settings.json').write_text('{}')\n"
             "except OSError:\n pass\nelse:\n raise AssertionError('Policy is not read-only')\n"
         )
-        subprocess.run(sandbox_command(root, runtime, False, ["/usr/bin/python3", "-c", code]), check=True,
+        run_owned_process(sandbox_command(root, runtime, False, ["/usr/bin/python3", "-c", code]), check=True,
                        env={}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
         with bridge(runtime, proxy):
             code = (
@@ -272,7 +351,7 @@ def check_sandbox(root, proxy):
                 "proxy=urllib.request.ProxyHandler({'https':'http://127.0.0.1:18080'}); "
                 "response=urllib.request.build_opener(proxy).open('https://oauth2.googleapis.com/',timeout=25)"
             )
-            result = subprocess.run(sandbox_command(root, runtime, True, ["/usr/bin/python3", "-c",
+            result = run_owned_process(sandbox_command(root, runtime, True, ["/usr/bin/python3", "-c",
                 "import urllib.error\ntry:\n " + code + "\nexcept urllib.error.HTTPError as error:\n assert error.code in (400,404)\n"]),
                 env={}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=35)
             if result.returncode:
@@ -282,7 +361,7 @@ def check_sandbox(root, proxy):
                 "sock.sendall(b'CONNECT generativelanguage.googleapis.com:443 HTTP/1.1\\r\\n\\r\\n'); "
                 "assert sock.recv(1024).startswith(b'HTTP/1.1 403')"
             )
-            subprocess.run(sandbox_command(root, runtime, True, ["/usr/bin/python3", "-c", code]),
+            run_owned_process(sandbox_command(root, runtime, True, ["/usr/bin/python3", "-c", code]),
                            env={}, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
 
 
@@ -388,13 +467,8 @@ def run_agent(root, proxy, online, arguments):
             command = ["/opt/agy", arguments[0], "--disable-telemetry", "--include-default-customizations=false",
                        "--cli_log_file", "/dev/null", "--log-file", "/dev/null", *arguments[1:]]
             try:
-                with subprocess.Popen(sandbox_command(root, runtime, online, command, login=login), env={}) as process:
-                    try:
-                        return process.wait()
-                    except BaseException:
-                        process.kill()
-                        process.wait()
-                        raise
+                return run_owned_process(sandbox_command(root, runtime, online, command, login=login),
+                                         env={}, stop_signal=signal.SIGKILL).returncode
             finally:
                 if login:
                     private_json(root / "home/.gemini/antigravity-cli/settings.json", POLICY)
@@ -435,8 +509,8 @@ def invalidate_verification(root):
 
 
 def run_checks(root, proxy, mode, model="", online=True):
-    if mode == "verify":
-        invalidate_verification(root)
+    destination = root / "reports" / ("verification.json" if mode == "verify" else "probe.json")
+    destination.unlink(missing_ok=True)
     jar = REPO / "prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar"
     if not jar.exists():
         raise PilotError("Build the pilot with prepare before running checks")
@@ -445,7 +519,7 @@ def run_checks(root, proxy, mode, model="", online=True):
     if online:
         command += ["--online"]
     command += ["--", "acp"]
-    result = subprocess.run(command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    result = run_owned_process(command, cwd=REPO, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
     try:
         report = json.loads(result.stdout)
         if not isinstance(report, dict) or not isinstance(report.get("status"), str):
@@ -454,11 +528,16 @@ def run_checks(root, proxy, mode, model="", online=True):
         raise PilotError("Acceptance process failed before producing a sanitized report") from None
     if mode == "verify" and result.returncode and report["status"] == "REAL_ACP_ACCEPTANCE_PASSED":
         raise PilotError("Acceptance process failed despite reporting a pass")
-    private_json(root / "reports" / ("verification.json" if mode == "verify" else "probe.json"), report)
-    print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    try:
+        private_json(destination, report)
+        print(json.dumps(report, ensure_ascii=False, indent=2), flush=True)
+    except BaseException:
+        destination.unlink(missing_ok=True)
+        raise
     return result.returncode
 
 
+@interrupt_on_sigterm()
 def main():
     if len(sys.argv) > 1 and sys.argv[1] == "inside":
         return inside(sys.argv[2:])
@@ -501,13 +580,16 @@ def main():
         prepare_files(root)
         if args.action in ("login", "verify"):
             invalidate_verification(root)
+        if args.action in ("prepare", "probe"):
+            (root / "reports/probe.json").unlink(missing_ok=True)
         if args.action == "prepare":
+            (root / "reports/ready.json").unlink(missing_ok=True)
             print("Installing and verifying the pinned official CLI...", flush=True)
             install_release(root, args.proxy)
             print("Checking filesystem/process/network isolation and Google-only HTTPS egress...", flush=True)
             check_sandbox(root, args.proxy)
             print("Building the standalone acceptance entry (no gateway is started)...", flush=True)
-            subprocess.run([shutil.which("mvn"), "--batch-mode", "--no-transfer-progress", "-pl", "prism-app", "-am",
+            run_owned_process([shutil.which("mvn"), "--batch-mode", "--no-transfer-progress", "-pl", "prism-app", "-am",
                             "-DskipTests", "package"], cwd=REPO, check=True)
             result = run_checks(root, args.proxy, "probe", online=False)
             if result not in (0, 10):
@@ -531,6 +613,6 @@ if __name__ == "__main__":
     except PilotError as failure:
         print(str(failure), file=sys.stderr)
         sys.exit(1)
-    except (OSError, ValueError, KeyError, subprocess.SubprocessError, tarfile.TarError):
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError, tarfile.TarError, KeyboardInterrupt):
         print("Pilot stopped: preparation or policy check failed. No billing or direct-network fallback was used.", file=sys.stderr)
         sys.exit(1)

@@ -212,7 +212,7 @@ internal class AntigravityAcpPilot(
         }
         try {
             connection.send(request(PROMPT_ID, "session/prompt", params))
-            val reason = connection.reply(PROMPT_ID, sessionId,
+            val reason = connection.reply(PROMPT_ID, session,
                 fixedModelId = modelId.takeUnless { allowModelSelection }, onText = onText).string("stopReason")
             return AcpStopReason.entries.firstOrNull { it.wireValue == reason } ?: invalidMessage()
         } catch (failure: Exception) {
@@ -223,7 +223,7 @@ internal class AntigravityAcpPilot(
                             put("method", "session/cancel")
                             put("params", buildJsonObject { put("sessionId", sessionId) })
                         })
-                        connection.reply(PROMPT_ID, sessionId, cancelling = true).string("stopReason") == "cancelled"
+                        connection.reply(PROMPT_ID, session, cancelling = true).string("stopReason") == "cancelled"
                     } catch (_: Exception) {
                         false
                     }
@@ -236,7 +236,7 @@ internal class AntigravityAcpPilot(
 
     private suspend fun AcpStdio.reply(
         requestId: Int,
-        sessionId: String? = null,
+        session: AcpPilotSession? = null,
         cancelling: Boolean = false,
         fixedModelId: String? = null,
         onText: suspend (String) -> Unit = {},
@@ -259,7 +259,7 @@ internal class AntigravityAcpPilot(
 
             val method = frame.string("method") ?: invalidMessage()
             val params = frame["params"] as? JsonObject
-            val isCurrentSession = sessionId != null && params?.string("sessionId") == sessionId
+            val isCurrentSession = session != null && params?.string("sessionId") == session.id
             if (id != null) {
                 if (id !is JsonPrimitive || (!id.isString && id.longOrNull == null)) invalidMessage()
                 send(message {
@@ -284,11 +284,15 @@ internal class AntigravityAcpPilot(
                 if (fixedModelId != null) {
                     val changed = when (update?.string("sessionUpdate")) {
                         "current_model_update" -> update.string("currentModelId") != fixedModelId
-                        "config_option_update" -> (update["configOptions"] as? JsonArray)
-                            ?.filterIsInstance<JsonObject>()?.any {
-                                (it.string("category") == "model" || it.string("id") == "model") &&
-                                    it.string("currentValue") != fixedModelId
-                            } == true
+                        "config_option_update" -> {
+                            val options = update["configOptions"] as? JsonArray ?: invalidMessage()
+                            options.any { element ->
+                                val option = element as? JsonObject ?: invalidMessage()
+                                (option.string("category") == "model" || option.string("id") == "model" ||
+                                    (session?.modelOptionId != null && option.string("id") == session.modelOptionId)) &&
+                                    option.string("currentValue") != fixedModelId
+                            }
+                        }
                         else -> false
                     }
                     if (changed) throw AcpPilotException(AcpPilotException.Kind.MODEL_MISMATCH)

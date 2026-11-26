@@ -138,6 +138,56 @@ class AntigravityAcpPilotTest {
     }
 
     @ParameterizedTest
+    @ValueSource(strings = [
+        """{"sessionUpdate":"current_model_update","currentModelId":"gemini-other"}""",
+        """{"sessionUpdate":"current_model_update"}""",
+        """{"sessionUpdate":"current_model_update","currentModelId":null}""",
+        """{"sessionUpdate":"current_model_update","currentModelId":42}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-other"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":null}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":42}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":{"value":"gemini-pilot"}}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","category":"other","currentValue":"gemini-other"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"unrelated"},{"id":"selected-model","currentValue":"gemini-other"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"other-id","category":"model","currentValue":"gemini-other"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"category":"model"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"model","currentValue":"gemini-other"}]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"model"}]}""",
+    ])
+    fun fixedModelDriftCancelsBeforeAnySubsequentText(update: String) = runBlocking {
+        assertFixedModelNoticeRejected("fixed-drift:$update", AcpPilotException.Kind.MODEL_MISMATCH)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = [
+        """{"sessionUpdate":"config_option_update"}""",
+        """{"sessionUpdate":"config_option_update","configOptions":null}""",
+        """{"sessionUpdate":"config_option_update","configOptions":{"id":"selected-model","currentValue":"gemini-other"}}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[null]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":["selected-model"]}""",
+        """{"sessionUpdate":"config_option_update","configOptions":[{"id":"unrelated"},42]}""",
+    ])
+    fun malformedFixedModelNoticesFailClosedBeforeAnySubsequentText(update: String) = runBlocking {
+        assertFixedModelNoticeRejected("fixed-invalid:$update", AcpPilotException.Kind.PROTOCOL_ERROR)
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = ["fixed-notices-config", "fixed-notices-legacy", "selectable-notices"])
+    fun sameModelForeignSessionAndUnrelatedNoticesDoNotInterruptTheTurn(scenario: String) = runBlocking {
+        val chunks = mutableListOf<String>()
+        var cancelled = false
+        val reason = pilot(scenario, allowModelSelection = scenario == "selectable-notices").prompt(
+            FIXTURE_PROMPT, modelId = "gemini-pilot", onCancelled = { cancelled = true },
+        ) { chunks += it }
+
+        assertEquals(AcpStopReason.END_TURN, reason)
+        assertEquals(listOf("before notices", "after notices"), chunks)
+        assertFalse(cancelled)
+        assertChildStopped()
+    }
+
+    @ParameterizedTest
     @ValueSource(strings = ["runner-pass", "runner-cancel-incomplete", "runner-auth-required", "runner-disabled-text",
         "runner-quota-text", "runner-disabled-rpc", "runner-quota-rpc", "runner-unexpected-text", "runner-cancel-quota"])
     fun acceptanceEntryUsesRealTransportAndReportsOnlyCompletedChecks(scenario: String) = runBlocking {
@@ -236,6 +286,22 @@ class AntigravityAcpPilotTest {
         assertChildStopped()
     }
 
+    private suspend fun assertFixedModelNoticeRejected(scenario: String, kind: AcpPilotException.Kind) {
+        val chunks = mutableListOf<String>()
+        var acknowledged = false
+        val failure = assertFailsWith<AcpPilotException> {
+            pilot(scenario, allowModelSelection = false).prompt(
+                FIXTURE_PROMPT, modelId = "gemini-pilot", onCancelled = { acknowledged = it },
+            ) { chunks += it }
+        }
+
+        assertEquals(kind, failure.kind)
+        assertEquals(listOf("before update"), chunks)
+        assertTrue(acknowledged)
+        assertTrue(Files.exists(fixture.resolve("cancel-acknowledged")))
+        assertChildStopped()
+    }
+
     private fun pilot(scenario: String, timeoutMs: Long = 8_000, allowModelSelection: Boolean = true) = AntigravityAcpPilot(
         command = fixtureCommand(scenario),
         workspace = Files.createDirectory(fixture.resolve("workspace")).toRealPath(),
@@ -311,6 +377,10 @@ private object FakeAcpAgent {
         }
         wire.chunk("before the prompt")
         when {
+            scenario == "fixed-notices-legacy" -> wire.result(new.getValue("id"),
+                """{"sessionId":"fixture-session","models":{"currentModelId":"gemini-pilot","availableModels":[{"modelId":"gemini-pilot","name":"Pilot"}]}}""")
+            scenario.startsWith("fixed-") || scenario == "selectable-notices" -> wire.result(new.getValue("id"),
+                """{"sessionId":"fixture-session","configOptions":[{"id":"selected-model","category":"model","type":"select","currentValue":"gemini-pilot","options":[{"value":"gemini-pilot","name":"Pilot"},{"value":"gemini-other","name":"Other"}]}]}""")
             scenario.startsWith("runner-") -> wire.result(new.getValue("id"),
                 """{"sessionId":"fixture-session","models":{"currentModelId":"gemini-pilot","availableModels":[{"modelId":"gemini-pilot","name":"Pilot"}]}}""")
             scenario.endsWith("config") || scenario == "unavailable-model" -> wire.result(new.getValue("id"),
@@ -382,6 +452,41 @@ private object FakeAcpAgent {
         check(prompt["params"] == json(
             """{"sessionId":"fixture-session","prompt":[{"type":"text","text":${JsonPrimitive(FIXTURE_PROMPT)}}]}""",
         ))
+        if (scenario.startsWith("fixed-drift:") || scenario.startsWith("fixed-invalid:")) {
+            wire.chunk("before update")
+            wire.update(scenario.substringAfter(':'))
+            wire.chunk("discarded after drift")
+            wire.permission("after-drift", GOOD_OPTIONS)
+            wire.expectCancel()
+            wire.expectPermission("after-drift", """{"outcome":"cancelled"}""")
+            wire.update("""{"sessionUpdate":"current_model_update"}""")
+            wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model"}]}""")
+            wire.chunk("discarded during cancellation")
+            Files.createFile(fixture.resolve("cancel-acknowledged"))
+            wire.result(promptId, """{"stopReason":"cancelled"}""")
+            return
+        }
+        if (scenario.startsWith("fixed-notices-") || scenario == "selectable-notices") {
+            wire.chunk("before notices")
+            wire.update("""{"sessionUpdate":"current_model_update","currentModelId":"gemini-pilot"}""")
+            wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-pilot"}]}""")
+            wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"category":"model","currentValue":"gemini-pilot"},{"id":"model","currentValue":"gemini-pilot"}]}""")
+            wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"unrelated"},{"id":"other-model-option","type":"select","currentValue":"gemini-other"},{"category":"mode","currentValue":"gemini-other"}]}""")
+            wire.update("""{"sessionUpdate":"config_option_update","configOptions":[]}""")
+            wire.update("""{"sessionUpdate":"current_model_update","currentModelId":"gemini-other"}""", session = "other-session")
+            wire.update("""{"sessionUpdate":"current_model_update"}""", session = "other-session")
+            wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-other"},{"category":"model"},{"id":"model"}]}""", session = "other-session")
+            wire.update("""{"sessionUpdate":"config_option_update"}""", session = "other-session")
+            wire.write(""""method":"session/update","params":{"update":{"sessionUpdate":"current_model_update","currentModelId":"gemini-other"}}""")
+            if (scenario == "selectable-notices") {
+                wire.update("""{"sessionUpdate":"current_model_update","currentModelId":"gemini-other"}""")
+                wire.update("""{"sessionUpdate":"config_option_update","configOptions":[{"id":"selected-model","currentValue":"gemini-other"},{"id":"model"}]}""")
+                wire.update("""{"sessionUpdate":"config_option_update"}""")
+            }
+            wire.chunk("after notices")
+            wire.result(promptId, """{"stopReason":"end_turn"}""")
+            return
+        }
         if (scenario.startsWith("choose-model-")) {
             wire.chunk("selected")
             wire.result(promptId, """{"stopReason":"end_turn"}""")

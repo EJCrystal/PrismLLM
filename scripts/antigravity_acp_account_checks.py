@@ -13,6 +13,7 @@ import tempfile
 import threading
 
 import antigravity_acp_pilot as pilot
+from antigravity_acp_pilot import communicate_owned_process
 
 
 def summarize_status(output, exit_code, connections):
@@ -135,32 +136,6 @@ def merge_session_evidence(report, session, model):
         result["subscriptionEntitlementVerified"] = tier != "FREE" and result["canContinueAcceptance"]
         result["subscriptionEvidence"] = "OFFICIAL_ACP_SESSION_TIER_METADATA"
     return result
-
-
-def stop_owned_process(process):
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except ProcessLookupError:
-        pass
-    try:
-        process.communicate(timeout=5)
-    except subprocess.TimeoutExpired:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.communicate()
-
-
-def communicate_owned_process(process, timeout, timeout_message):
-    try:
-        return process.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        stop_owned_process(process)
-        raise pilot.PilotError(timeout_message) from None
-    except BaseException:
-        stop_owned_process(process)
-        raise
 
 
 def observe_official_session(root, proxy, model):

@@ -89,7 +89,7 @@ python3 scripts/antigravity_acp_pilot.py verify --model <probe返回的精确模
 
 ```bash
 mvn --batch-mode --no-transfer-progress -pl prism-app -am \
-  -Dtest=AntigravityAcpPilotTest,AntigravityAcpConfigTest,AntigravityAcpGatewayTest,AntigravityAcpHttpAcceptanceTest,AntigravityAcpDatabaseAcceptanceTest,AntigravityAcpApplicationTest,GatewayConfigTest,RequestDrainTest,RequestLimitServiceTest,RequestAuthenticationIntegrationTest,TestClassificationTest,CodeAssistIntegrationTest \
+  -Dtest=AntigravityAcpPilotTest,AntigravityAcpConfigTest,AntigravityAcpGatewayTest,AntigravityAcpHttpAcceptanceTest,AntigravityAcpDatabaseAcceptanceTest,AntigravityAcpApplicationTest,GatewayConfigTest,GatewayMetricsTest,RequestDrainTest,RequestLimitServiceTest,RequestAuthenticationIntegrationTest,TestClassificationTest,CodeAssistIntegrationTest \
   -Dsurefire.failIfNoSpecifiedTests=false test
 ```
 
@@ -321,3 +321,23 @@ python3 scripts/antigravity_acp_natural_refresh.py \
 - 初始 CI 后端因 JVM 堆耗尽而失败；本地在 1536 MiB 测试堆上复现。堆诊断显示 JVM GC 指标通知监听器持有已关闭应用的指标注册表，进而保留应用与指纹检测数据。现在由网关指标对象统一拥有并关闭可关闭的指标 binder 及注册表，插件未使用的默认注册表也立即关闭；不提高堆上限或删减测试。新增重复关闭、单个 binder 关闭失败仍继续清理，以及完整应用关停后注册表已关闭的回归。
 - 定向离线 Maven `package` 通过：应用模块 142 项、quota 模块 3 项、test-support 模块 3 项，共 **148 项 Kotlin 测试通过**；空环境变量、临时 home 下 **88 项 Python 回归通过**。本轮不访问生产数据库、真实凭据或订阅接口，不消耗订阅额度，不切模型、不付费回退，不修改线上路由；原实验工作区和九份私有验收报告保持不变。
 - 16:05:28（Asia/Shanghai）完整后端 reactor 生命周期 `mvn --offline --batch-mode --no-transfer-progress -pl prism-app -am -DargLine=-Xmx1536m test` 成功：应用模块 **1,008 项**、上游模块 **654 项**，合计 **1,662 项测试通过**，无失败、错误或跳过。包含先前 CI 堆耗尽时正在运行的 `SubscriptionOAuthIntegrationTest`，不通过扩堆、拆分进程或跳过测试规避问题。日志为本机 `/tmp/prism-acp-278-round1-metrics-lifecycle.log`；不等同于扩展插件或前端测试。工作流 `actionlint` 1.7.7 与 `git diff --check` 通过，远端 CI 与新 HEAD 全量复审仍以实际结果为准。
+- 第一轮提交 `4a00ba94` 的远端 CI `45780673507` 已成功；CI 使用 PR 合并提交 `aa4b54c6`，应用模块 **1,008 项通过**，无失败、错误或跳过，隔离策略与工作流检查同样通过。PR-Agent 在该 HEAD 的全量完整复审确认三项初始意见均已解决，同时指出自定义模型配置项通知和 `verify/probe` 取消链路仍需补齐，不能将此状态报告为可合并。
+
+## 第二轮收敛校验约束
+
+- 固定模型的事实由会话建立时确认的模型及实际配置项 ID 共同决定；当前会话任何模型漂移都必须在转发后续文本之前停止，不切模型、不重试、不回退。外来会话不能改变本会话，重复同模型和无关配置更新不应误停。
+- 隔离锁覆盖它拥有的整个子进程生命周期，不只覆盖入口 Python：正常完成、非零退出、等待异常、超时及 SIGTERM/键盘取消，都必须在所属进程终止并回收后才能解锁。准备、验收、登录和账号观察路径使用同一清理责任，不另加锁、重试或持久化状态。
+
+| 路径与事件 | 成功/重复 | 失败/模型漂移 | 超时/取消 | 不允许的副作用 |
+| --- | --- | --- | --- | --- |
+| 当前会话模型更新 | 仅保持确认的固定模型 | 先停止再处理后续输出 | 取消期间不转发输出 | 不选模型、不自动重试、不付费回退 |
+| 账号观察及 `verify/probe` | 回收后记录结果并解锁 | 回收后失败，不复用成功证据 | 终止所属进程链并回收后解锁 | 不清理外来进程，不与新登录并发 |
+| 登录/agent 与准备子进程 | 保留现有策略及登录复用 | 清理后恢复策略 | 保持沙盒父子终止关系 | 不额外读取或导出凭据，不改线上配置或时钟 |
+
+## 2026-11-26 PR #278 第二轮回归
+
+- 模型通知校验改为接收所属会话，而不是只接收会话 ID；固定模型模式同时识别会话实际的模型配置项 ID、兼容的 `model` ID、模型类别及旧版 `current_model_update`。自定义 ID 更新省略类别、缺失或畸形当前值时停止；当前会话畸形配置通知按协议错误停止。外来会话、无关选项、同值重复更新和取消中通知不误转发或重新激活生成。
+- 新增 **24 项**模型通知用例；其中 **13 项**在修复前失败，修复后 `AntigravityAcpPilotTest` **57 项通过**。覆盖漂移前文本仍可见、漂移后文本被丢弃、取消得到确认、子进程退出和不发送模型选择 RPC；不以模拟结果替代实号证据。
+- 观察器与主试点复用同一套所属进程清理。验收、准备、agent/login 以及沙盒内 CLI 的子进程都采用独立所属组；SIGTERM 转为可清理的中断，结束后恢复原处理器。组长退出后仍检查并等待本组包装进程完成清理，必要时只强制结束所属组；清理期间屏蔽重复终止信号，先终止回收再解锁。成功、非零退出、超时和等待异常均覆盖该责任，不新增锁、重试或凭据状态。
+- 新增合成进程测试，实际对 `verify`、`probe` 和 `prepare` 入口发送 SIGTERM；模拟 Java 先退出、Python agent 延迟清理和独立沙盒进程，检查锁仍持有、相关进程已停止、信号处理器已恢复及旧证据已失效。进程收养仅存在于测试控制器，不修改生产进程管理。空环境、临时 HOME 的 **92 项 Python 回归通过**；组合离线 `package` 的 **172 项 Kotlin 回归通过**（app 166、quota 3、test-support 3）。
+- 16:52:16（Asia/Shanghai）再次运行相同 1536 MiB 堆上限的完整离线后端 reactor：应用模块 **1,032 项**、上游模块 **654 项**，共 **1,686 项测试通过**，无失败、错误或跳过；日志 `/tmp/prism-acp-278-round2-full.log`。本轮仍未访问生产数据库、真实 CLI 凭据或 Google 订阅接口，未部署、改线上路由或消耗订阅额度；原实验工作区与九份私有报告校验不变。远端 CI 与复审需在第二轮提交后独立确认。
