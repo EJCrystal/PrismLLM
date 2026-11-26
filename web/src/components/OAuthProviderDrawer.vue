@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import type { Channel } from '../types/api'
 import type { OAuthAccountStatusFilter } from '../utils/oauthAccount'
 import type { ProviderListItem } from '../utils/providerDisplay'
@@ -40,6 +40,7 @@ const mappingsPanel = ref<InstanceType<typeof OAuthProviderMappingsPanel> | null
 const mappingsMounted = ref(activeTab.value === 'mappings')
 /** 账号池发生变更时映射目录可能过期，等下次进入映射标签再刷新。 */
 const mappingsStale = ref(false)
+const mappingsHasDirty = computed(() => mappingsMounted.value && mappingsPanel.value?.hasDirty() === true)
 
 watch(() => props.initialTab, (tab) => {
   activeTab.value = tab
@@ -60,7 +61,7 @@ watch(() => props.item.providerId, () => {
 })
 
 function requestClose() {
-  if (mappingsMounted.value && mappingsPanel.value?.hasDirty()) {
+  if (mappingsHasDirty.value) {
     if (!window.confirm('共享模型映射还有未保存的修改，确定关闭并放弃这些草稿吗？')) return
   }
   emit('close')
@@ -82,7 +83,7 @@ function onMappingsSaved() {
 
 /** 供页面级导航保护判断是否存在未保存的共享映射草稿。 */
 function hasDirty(): boolean {
-  return mappingsMounted.value && mappingsPanel.value?.hasDirty() === true
+  return mappingsHasDirty.value
 }
 
 defineExpose({ hasDirty })
@@ -94,6 +95,7 @@ defineExpose({ hasDirty })
     eyebrow="官方订阅提供商"
     full
     mobile-fullscreen
+    :body-scrollable="activeTab !== 'mappings'"
     @close="requestClose"
   >
     <template #title-extra>
@@ -147,6 +149,12 @@ defineExpose({ hasDirty })
             >
               <Icon name="list" :size="15" />
               <span>共享模型映射</span>
+              <span
+                v-if="mappingsHasDirty"
+                class="provider-tab-dot"
+                title="有未保存的映射草稿"
+                aria-label="有未保存的映射草稿"
+              ></span>
             </button>
           </div>
           <div v-if="item.channel" class="provider-drawer-quick-actions">
@@ -173,7 +181,12 @@ defineExpose({ hasDirty })
         @auto-create-consumed="$emit('auto-create-consumed')"
       />
     </div>
-    <div v-if="mappingsMounted && item.providerId" v-show="activeTab === 'mappings'" class="provider-drawer-pane" role="tabpanel">
+    <div
+      v-if="mappingsMounted && item.providerId"
+      v-show="activeTab === 'mappings'"
+      class="provider-drawer-pane provider-drawer-pane-mappings"
+      role="tabpanel"
+    >
       <OAuthProviderMappingsPanel
         ref="mappingsPanel"
         :provider="item.providerId"
@@ -188,7 +201,8 @@ defineExpose({ hasDirty })
 <style scoped>
 .provider-drawer-subhead {
   display: grid;
-  gap: 10px;
+  gap: 12px;
+  padding: 12px 0 14px;
 }
 
 .provider-drawer-meta {
@@ -208,6 +222,8 @@ defineExpose({ hasDirty })
 }
 
 .provider-drawer-endpoint code {
+  color: var(--ink-soft);
+  font-size: 12px;
   overflow-wrap: anywhere;
 }
 
@@ -221,10 +237,11 @@ defineExpose({ hasDirty })
 
 .provider-drawer-tabs {
   display: inline-flex;
-  gap: 6px;
+  gap: 4px;
   padding: 3px;
+  border: 1px solid var(--glass-line);
   border-radius: 10px;
-  background: var(--surface-subtle, rgba(127, 127, 127, 0.08));
+  background: var(--glass-bg-soft);
 }
 
 .provider-tab {
@@ -232,19 +249,34 @@ defineExpose({ hasDirty })
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border: none;
+  border: 1px solid transparent;
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
   font-size: 13px;
   font-weight: 500;
   cursor: pointer;
+  transition: color 0.14s ease, background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.provider-tab:hover:not(.is-active) {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--glass-field) 60%, transparent);
 }
 
 .provider-tab.is-active {
+  border-color: var(--glass-line);
   background: var(--glass-field-strong);
   color: var(--ink);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.provider-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--warning-fill, #f59e0b);
+  flex: 0 0 auto;
 }
 
 .provider-drawer-quick-actions {
@@ -255,5 +287,103 @@ defineExpose({ hasDirty })
 
 .provider-drawer-pane {
   min-width: 0;
+}
+
+.provider-drawer-pane-mappings {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.channel-status-toggle {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 7px;
+  min-width: max-content;
+  padding: 2px 0;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.channel-status-label {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.channel-status-track {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 20px;
+  flex: 0 0 auto;
+  border: 1px solid color-mix(in srgb, var(--danger-fill) 58%, var(--line-strong));
+  border-radius: 999px;
+  background: var(--danger-soft);
+  transition: background 0.16s ease, border-color 0.16s ease;
+}
+
+.channel-status-track > span {
+  position: absolute;
+  left: 3px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(16, 24, 40, 0.2);
+  transition: transform 0.16s ease;
+}
+
+.channel-status-toggle.is-enabled .channel-status-track {
+  border-color: var(--success);
+  background: var(--success);
+}
+
+.channel-status-toggle.is-enabled .channel-status-track > span {
+  transform: translateX(14px);
+}
+
+.channel-status-toggle.is-enabled .channel-status-label {
+  color: var(--success);
+}
+
+.channel-status-toggle.is-disabled .channel-status-track {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.channel-status-toggle.is-disabled .channel-status-label {
+  color: var(--danger);
+}
+
+.channel-status-toggle:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.channel-status-toggle:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .provider-drawer-tabs {
+    background: var(--surface-head);
+    border-color: var(--line);
+  }
+
+  .provider-tab.is-active {
+    background: var(--panel);
+    border-color: var(--line);
+  }
 }
 </style>
