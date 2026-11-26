@@ -1,5 +1,6 @@
 package dev.soven.prismllm.api
 
+import dev.soven.prismllm.antigravity.AntigravityAcpGateway
 import dev.soven.prismllm.shared.error.AnthropicErrorBody
 import dev.soven.prismllm.shared.error.AnthropicErrorEnvelope
 import dev.soven.prismllm.shared.error.ErrorBody
@@ -310,6 +311,7 @@ class GatewayApplication(
     }
 
     internal val requestDrain = RequestDrain()
+    internal val antigravityAcp = config.antigravityAcp?.let(::AntigravityAcpGateway)
     val shuttingDown: Boolean
         get() = requestDrain.shuttingDown
     /** 跨协议携带的 Responses 密封推理，按内容哈希暂存在进程内。 */
@@ -773,7 +775,10 @@ class GatewayApplication(
         }
         app.install(CallLogging) {
             level = Level.INFO
-            filter { call -> call.request.path().startsWith("/v1/") || call.request.path().startsWith("/v1beta/") }
+            filter { call ->
+                call.request.path().startsWith("/v1/") || call.request.path().startsWith("/v1beta/") ||
+                    call.request.path().startsWith("/antigravity/v1/")
+            }
             disableDefaultColors()
             // Gemini accepts query credentials; keep the access-log contract independent of Ktor defaults.
             format { call ->
@@ -786,12 +791,15 @@ class GatewayApplication(
             }
         }
         app.install(MicrometerMetrics) {
+            registry.close()
             registry = metrics.registry
+            metrics.ownMeterBinders(meterBinders)
         }
 
         app.routing {
             healthRoutes(this@GatewayApplication)
             proxyRoutes(this@GatewayApplication)
+            antigravityAcpRoutes(this@GatewayApplication)
             adminRoutes(this@GatewayApplication)
             adminUi(this@GatewayApplication)
         }
@@ -919,6 +927,7 @@ class GatewayApplication(
         oauthQuotaService.close()
         oauthTokenService.close()
         scope.cancel()
+        metrics.close()
         iqJudgeService.close()
         iqJudgeRegistry.close()
         accountEgressClients.values.forEach { runCatching { it.close() } }

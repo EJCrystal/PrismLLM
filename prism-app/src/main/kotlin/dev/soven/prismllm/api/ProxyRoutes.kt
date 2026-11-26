@@ -1147,9 +1147,15 @@ private class ProxyState {
     var upstreamErrorBody: String? = null
 }
 
-private suspend fun authenticate(
+internal suspend fun authenticate(
     call: ApplicationCall,
     app: GatewayApplication,
+    protocol: GatewayProtocol? = null,
+): ClientKeyRecord = authenticateClientKey(call, app.clientKeyRepository::findByHash, protocol)
+
+internal suspend fun authenticateClientKey(
+    call: ApplicationCall,
+    findByHash: suspend (String) -> ClientKeyRecord?,
     protocol: GatewayProtocol? = null,
 ): ClientKeyRecord {
     val authorization = call.request.headers[HttpHeaders.Authorization]
@@ -1163,7 +1169,7 @@ private suspend fun authenticate(
         throw unauthorized()
     }
     if (!raw.startsWith(ClientKeyHasher.PREFIX)) throw unauthorized()
-    val record = app.clientKeyRepository.findByHash(ClientKeyHasher.hash(raw)) ?: throw unauthorized()
+    val record = findByHash(ClientKeyHasher.hash(raw)) ?: throw unauthorized()
     if (record.revokedAt != null) throw unauthorized("调用方密钥已撤销")
     if (!record.enabled) throw unauthorized("调用方密钥已禁用")
     val expiresAt = record.expiresAt
@@ -1173,7 +1179,7 @@ private suspend fun authenticate(
     return record
 }
 
-private suspend fun ApplicationCall.receiveLimitedJson(limit: Long): JsonObject {
+internal suspend fun ApplicationCall.receiveLimitedJson(limit: Long): JsonObject {
     val declared = request.contentLength()
     if (declared != null && declared > limit) {
         throw GatewayError(

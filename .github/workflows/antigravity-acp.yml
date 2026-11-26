@@ -1,0 +1,40 @@
+name: Antigravity ACP isolation regression
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/antigravity-acp.yml'
+      - 'scripts/antigravity-acp-release.json'
+      - 'scripts/antigravity_acp_*.py'
+      - 'scripts/test_antigravity_acp_*.py'
+      - 'prism-app/src/main/kotlin/dev/soven/prismllm/antigravity/**'
+      - 'prism-app/src/main/kotlin/dev/soven/prismllm/api/AntigravityAcpRoutes.kt'
+      - 'prism-app/src/main/kotlin/dev/soven/prismllm/config/AntigravityAcpConfig.kt'
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: antigravity-acp-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  isolation-policy:
+    name: Test ACP isolation policy without credentials
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run offline ACP policy and evidence regression
+        run: |
+          test_home=$(mktemp -d)
+          trap 'rm -rf "$test_home"' EXIT
+          env -i HOME="$test_home" PATH=/usr/bin:/bin LANG=C.UTF-8 \
+            PYTHONDONTWRITEBYTECODE=1 \
+            python3 -m unittest discover -s scripts -p 'test_antigravity_acp_*.py' -v

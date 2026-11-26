@@ -5,8 +5,10 @@ import dev.soven.prismllm.shared.domain.Usage
 import io.micrometer.core.instrument.Timer
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.Tags
+import io.micrometer.core.instrument.binder.MeterBinder
 import io.micrometer.prometheusmetrics.PrometheusConfig
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
+import org.slf4j.LoggerFactory
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -16,8 +18,10 @@ import java.util.concurrent.atomic.AtomicReference
  * @author 文杰
  * @since 2026-10-21
  */
-class GatewayMetrics {
+class GatewayMetrics : AutoCloseable {
     val registry = PrometheusMeterRegistry(PrometheusConfig.DEFAULT)
+    private val logger = LoggerFactory.getLogger(GatewayMetrics::class.java)
+    private val closeableMeterBinders = mutableListOf<AutoCloseable>()
     private val databaseReadyValue = AtomicReference(0.0)
     private val adminAuditWriteFailures =
         registry.counter("gateway_admin_audit_write_failures_total")
@@ -169,4 +173,17 @@ class GatewayMetrics {
     }
 
     fun scrape(): String = registry.scrape()
+
+    internal fun ownMeterBinders(binders: List<MeterBinder>) {
+        closeableMeterBinders.addAll(binders.filterIsInstance<AutoCloseable>())
+    }
+
+    override fun close() {
+        val bindersToClose = closeableMeterBinders.toList()
+        closeableMeterBinders.clear()
+        bindersToClose.forEach { binder ->
+            runCatching { binder.close() }.onFailure { logger.warn("failed to close metrics binder", it) }
+        }
+        registry.close()
+    }
 }
