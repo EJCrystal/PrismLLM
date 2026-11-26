@@ -4,6 +4,11 @@ import { installOAuthFixtureFetch } from './fake-fetch.js'
 const mock = installOAuthFixtureFetch(window)
 const params = new URLSearchParams(window.location.search)
 const scenario = params.get('scenario')
+if (scenario === 'empty-provider') {
+  const provider = params.get('provider') || 'chatgpt'
+  mock.fixture.accounts = mock.fixture.accounts.filter(account => account.provider !== provider)
+  if (params.get('provisioned') !== 'true') mock.fixture.channels = mock.fixture.channels.filter(channel => channel.provider !== provider)
+}
 if (scenario === 'candidate-failure') mock.fixture.controls.failSuggestions = true
 if (scenario === 'mapping-failure') mock.fixture.controls.failMappingReads = 1
 if (scenario === 'conflict') mock.fixture.controls.conflictNextSave = true
@@ -24,4 +29,4 @@ const [{ createApp }, { default: FixtureShell }] = await Promise.all([
   import('./FixtureShell.vue'),
   import('../../../src/style.css'),
 ])
-createApp(FixtureShell).mount('#app')
+createApp(FixtureShell, { fixture: mock.fixture }).mount('#app')

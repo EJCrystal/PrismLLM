@@ -26,10 +26,25 @@ export function createOAuthFixtureFetch({ fixture = createOAuthAccountsFixture()
     let url
     try { url = new URL(rawUrl, origin) } catch { return deny('Fixture blocks invalid URLs') }
     log.path = url.pathname
-    if (url.origin !== origin || url.username || url.password || url.search || url.hash) return deny('Fixture blocks external or non-allowlisted URLs')
+    if (url.origin !== origin || url.username || url.password || url.hash) return deny('Fixture blocks external or non-allowlisted URLs')
     if (method === 'GET') {
-      const lists = { '/admin/api/oauth-accounts': fixture.accounts, '/admin/api/oauth-providers': fixture.providers, '/admin/api/channels': fixture.channels }
-      if (Object.hasOwn(lists, url.pathname)) { log.allowed = true; return respond(lists[url.pathname]) }
+      const lists = {
+        '/admin/api/oauth-accounts': fixture.accounts,
+        '/admin/api/oauth-providers': fixture.providers,
+        '/admin/api/channels': fixture.channels,
+        '/admin/api/model-prices': [],
+        '/admin/api/model-default-prices': [],
+        '/admin/api/occupancy': { sampledAt: fixture.now, channels: [], clientKeys: [] },
+        '/admin/api/audit-logs?limit=200&action=channel.probe_protocols': [],
+        '/admin/api/channel-health?window=24h': {
+          window: '24h', from: fixture.now - 86_400_000, to: fixture.now, retentionDays: 7, indexing: false,
+          minimumSamples: 5, staleAfterMs: 300_000, warningErrorRate: 0.1, criticalErrorRate: 0.5,
+          slowFirstTokenMs: 5_000, slowP50FirstTokenMs: 5_000, channels: [],
+        },
+      }
+      const route = url.pathname + url.search
+      if (Object.hasOwn(lists, route)) { log.allowed = true; return respond(lists[route]) }
+      if (url.search) return deny('Fixture blocks non-allowlisted query strings')
       const match = /^\/admin\/api\/oauth-providers\/([a-z0-9-]+)\/model-mappings$/.exec(url.pathname)
       if (match && fixture.providerMappings[match[1]]) {
         log.allowed = true
@@ -39,6 +54,7 @@ export function createOAuthFixtureFetch({ fixture = createOAuthAccountsFixture()
       }
       return deny('Fixture blocks this GET route')
     }
+    if (url.search) return deny('Fixture blocks non-allowlisted query strings')
     if (method === 'POST' && url.pathname === '/admin/api/model-suggestions') {
       let body
       try { body = await readBody(init, requestInput) } catch { return deny('Invalid suggestion JSON') }

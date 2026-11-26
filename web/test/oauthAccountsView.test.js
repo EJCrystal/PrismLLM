@@ -29,7 +29,7 @@ const noUnmockedFetch = async () => { throw new Error('OAuthAccountsView test fo
 globalThis.fetch = window.fetch = noUnmockedFetch
 
 const vueRuntime = await import('vue')
-const { createApp, h, nextTick, ssrContextKey } = vueRuntime
+const { createApp, h, nextTick, ref, ssrContextKey } = vueRuntime
 const headless = await import('@headlessui/vue')
 const { parse } = await import('@vue/compiler-sfc')
 const { compile: compileTemplate } = await import('@vue/compiler-dom')
@@ -41,6 +41,10 @@ const vue = (await import('@vitejs/plugin-vue')).default
 async function loadClientComponent(server, name, components = {}) {
   const component = (await server.ssrLoadModule('/src/components/' + name + '.vue')).default
   const { descriptor } = parse(readFileSync(new URL('../src/components/' + name + '.vue', import.meta.url), 'utf8'))
+  const resolvedComponents = { ...components }
+  for (const match of descriptor.scriptSetup.content.matchAll(/^import\s+([A-Za-z_]\w*)(?:\s*,\s*\{[^}]*\})?\s+from\s+['"]\.\/([^'"]+\.vue)['"]/gm)) {
+    resolvedComponents[match[1]] ??= (await server.ssrLoadModule('/src/components/' + match[2])).default
+  }
   // Current template has TypeScript non-null expressions; strip types from compiler output,
   // not source, so this remains the actual template rather than a handwritten test replica.
   const compiled = compileTemplate(descriptor.template.content, { mode: 'function', prefixIdentifiers: true, expressionPlugins: ['typescript'] })
@@ -49,8 +53,8 @@ async function loadClientComponent(server, name, components = {}) {
     ...component,
     ssrRender: undefined,
     render: new Function('Vue', code)(vueRuntime),
-    components: { ...headless, ...components },
-    setup(props, context) { return { ...component.setup(props, context), ...components } },
+    components: { ...headless, ...resolvedComponents },
+    setup(props, context) { return { ...component.setup(props, context), ...resolvedComponents } },
   }
 }
 
@@ -66,8 +70,14 @@ const account = (fixture, id) => fixture.accounts.find(item => item.id === id)
 describe('OAuthAccountsView mounted subscription-account dashboard', () => {
   let server
   let view
+  let providerDrawer
+  let channelsView
+  let buildProviderListItems
   let toastStack
   let toasts
+  let api
+  let originalStartOAuthLogin
+  let originalCompleteOAuthLogin
   let app
   let host
   let mock
@@ -81,6 +91,14 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
   async function input(node, value) {
     assert.ok(node, 'Expected editable input')
     node.value = value; node.dispatchEvent(new Event('input', { bubbles: true })); await settle()
+  }
+  async function submitMockedLogin() {
+    api.startOAuthLogin = async () => ({ loginId: 'fixture-login', authorizeUrl: 'https://example.invalid/authorize', redirectUri: 'http://localhost/callback', expiresAt: FIXTURE_NOW + 600_000 })
+    buttonNamed(dialog(), '生成登录链接').click()
+    await settle()
+    await input(dialog().querySelector('textarea'), 'http://localhost/callback?code=fixture&state=fixture')
+    dialog().querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
   }
   async function chooseMode(model, value) {
     const select = modelRow(model).querySelector('select')
@@ -151,7 +169,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.ok(panel, 'Expected actual teleported ActionMenu')
     return panel
   }
-  async function mount(fixture = createOAuthAccountsFixture(), { deferLoad = false, failLoad = false } = {}) {
+  async function mount(fixture = createOAuthAccountsFixture(), { deferLoad = false, failLoad = false, drawer = false, autoOpenCreate = false, createOnly = false, providerList = false, providerId = 'antigravity', onClose, onChanged, onToggleEnabled } = {}) {
     assert.equal(fixture.now, FIXTURE_NOW)
     mock = createOAuthFixtureFetch({ fixture, origin: window.location.origin })
     let releaseLoad
@@ -180,16 +198,23 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     }
     host = document.createElement('div')
     document.body.append(host)
-    app = createApp({ render: () => h('div', [h(view), h(toastStack)]) })
+    const item = drawer ? buildProviderListItems(fixture.channels, fixture.providers, fixture.accounts, fixture.now).find(item => item.providerId === providerId) : null
+    const createOpen = ref(true)
+    app = createApp({ render: () => h('div', [createOnly ? h('section', { 'aria-label': '提供商列表' }, '提供商列表') : null, providerList ? h(channelsView) : drawer
+      ? h(providerDrawer, { item, channels: fixture.channels, autoOpenCreate, onToggleEnabled })
+      : (!createOnly || createOpen.value) ? h(view, {
+        createOnly, fixedProvider: createOnly ? providerId : null, onChanged,
+        onClose() { createOpen.value = false; onClose?.() },
+      }) : null, h(toastStack)]) })
     app.provide(ssrContextKey, { modules: new Set() })
     app.mount(host)
     await settle()
     if (!deferLoad) assert.equal(host.querySelector('.loading-state'), null)
-    assert.deepEqual(mock.requests.map(request => [request.method, request.path]), [
+    assert.deepEqual(mock.requests.filter(request => !providerList || ['/admin/api/oauth-accounts', '/admin/api/oauth-providers', '/admin/api/channels'].includes(request.path)).map(request => [request.method, request.path]).sort(), [
       ['GET', '/admin/api/oauth-accounts'],
       ['GET', '/admin/api/oauth-providers'],
       ['GET', '/admin/api/channels'],
-    ])
+    ].sort())
     return { releaseLoad }
   }
 
@@ -215,8 +240,28 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       }),
     }
     view = await loadClientComponent(server, 'OAuthAccountsView', children)
+    providerDrawer = await loadClientComponent(server, 'OAuthProviderDrawer', {
+      ...children,
+      OAuthAccountsView: view,
+      ChannelProtocols: await loadClientComponent(server, 'ChannelProtocols', { ProtocolIcon: await loadClientComponent(server, 'ProtocolIcon') }),
+      OAuthProviderMappingsPanel: await loadClientComponent(server, 'OAuthProviderMappingsPanel', children),
+    })
+    channelsView = await loadClientComponent(server, 'ChannelsView', {
+      ...children,
+      OAuthAccountsView: view,
+      OAuthProviderDrawer: providerDrawer,
+      ChannelProtocols: await loadClientComponent(server, 'ChannelProtocols', { ProtocolIcon: await loadClientComponent(server, 'ProtocolIcon') }),
+      ChannelHealthSummary: await loadClientComponent(server, 'ChannelHealthSummary', children),
+      ChannelModelPreview: await loadClientComponent(server, 'ChannelModelPreview'),
+      FilterSelect: await loadClientComponent(server, 'FilterSelect', children),
+    })
+    channelsView.directives = { scrollHint: (await server.ssrLoadModule('/src/directives/scrollHint.ts')).vScrollHint }
+    buildProviderListItems = (await server.ssrLoadModule('/src/utils/providerDisplay.ts')).buildProviderListItems
     toastStack = await loadClientComponent(server, 'ToastStack')
     toasts = (await server.ssrLoadModule('/src/toast.ts')).toasts
+    api = (await server.ssrLoadModule('/src/api.ts')).api
+    originalStartOAuthLogin = api.startOAuthLogin
+    originalCompleteOAuthLogin = api.completeOAuthLogin
   })
 
   beforeEach(() => {
@@ -240,6 +285,8 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       host = null
       mock = null
       toasts?.splice(0)
+      api.startOAuthLogin = originalStartOAuthLogin
+      api.completeOAuthLogin = originalCompleteOAuthLogin
       window.confirm = originalConfirm
       globalThis.fetch = window.fetch = noUnmockedFetch
       await settle()
@@ -252,6 +299,280 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     dom.window.close()
     globalThis.fetch = originalFetch
     Date.now = originalDateNow
+  })
+
+  for (const providerId of ['chatgpt', 'antigravity']) {
+    for (const scenario of [
+      { label: 'provider connection', entry: 'connect', provisioned: true, close: '取消' },
+      { label: 'desktop unprovisioned add-account', entry: 'desktop', provisioned: false, close: '取消' },
+      { label: 'mobile unprovisioned add-account', entry: 'mobile', provisioned: false, close: '关闭' },
+      { label: 'desktop provisioned add-account', entry: 'desktop', provisioned: true, close: 'Escape' },
+      { label: 'mobile provisioned add-account', entry: 'mobile', provisioned: true, close: 'backdrop' },
+    ]) {
+      it(providerId + ' returns to the actual provider list after cancelling ' + scenario.label, async () => {
+        const fixture = createOAuthAccountsFixture()
+        if (scenario.entry !== 'connect') fixture.accounts = fixture.accounts.filter(account => account.provider !== providerId)
+        if (!scenario.provisioned) fixture.channels = fixture.channels.filter(channel => channel.provider !== providerId)
+        await mount(fixture, { providerList: true })
+        if (scenario.entry === 'connect') {
+          buttonNamed(host, '接入提供商').click()
+          await settle()
+          dialog().querySelector('input[value="subscription"]').click()
+          await settle()
+          const select = dialog().querySelector('select')
+          select.value = providerId
+          select.dispatchEvent(new Event('change', { bubbles: true }))
+          await settle()
+          buttonNamed(dialog(), '继续').click()
+        } else {
+          const item = buildProviderListItems(fixture.channels, fixture.providers, fixture.accounts, fixture.now).find(item => item.providerId === providerId)
+          const providerEntry = scenario.entry === 'desktop'
+            ? host.querySelector('tr[data-provider-id="' + providerId + '"]')
+            : [...host.querySelectorAll('.channel-mobile-card')].find(card => card.querySelector('.channel-mobile-name')?.getAttribute('title') === item.displayName)
+          assert.ok(providerEntry)
+          buttonNamed(providerEntry, '添加账号').click()
+        }
+        await settle()
+        assert.equal(document.querySelectorAll('[role="dialog"]').length, 1)
+        assert.equal(text(dialog().querySelector('h2')), '新建订阅账号')
+        assert.equal(dialog().querySelector('select').value, providerId)
+        assert.equal(document.querySelector('.oauth-accounts-page'), null)
+        const readsBeforeCancel = mock.requests.length
+        if (scenario.close === '取消') buttonNamed(dialog(), '取消').click()
+        else if (scenario.close === '关闭') dialog().querySelector('button[aria-label="关闭"]').click()
+        else if (scenario.close === 'Escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        else {
+          dialog().dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+          dialog().click()
+        }
+        await settle()
+        assert.equal(dialog(), null)
+        assert.equal(document.querySelector('.oauth-accounts-page'), null)
+        assert.ok(host.querySelector('.channel-summary'))
+        assert.ok(host.querySelector('.provider-subscription-row'))
+        assert.equal(mock.requests.length, readsBeforeCancel)
+        assert.equal(mock.requests.some(request => request.method !== 'GET'), false)
+      })
+    }
+
+    for (const action of ['取消', '关闭', 'Escape', 'backdrop']) {
+      it(providerId + ' closes standalone provider creation without exposing the account pool via ' + action, async () => {
+        let closed = 0
+        let changed = 0
+        await mount(createOAuthAccountsFixture(), { createOnly: true, providerId, onClose: () => closed++, onChanged: () => changed++ })
+        assert.equal(document.querySelectorAll('[role="dialog"]').length, 1)
+        assert.equal(text(dialog().querySelector('h2')), '新建订阅账号')
+        assert.equal(dialog().querySelector('select').value, providerId)
+        assert.equal(document.querySelector('.oauth-accounts-table'), null)
+        assert.equal(document.querySelector('.oauth-account-stats'), null)
+        if (action === '取消') buttonNamed(dialog(), '取消').click()
+        else if (action === '关闭') dialog().querySelector('button[aria-label="关闭"]').click()
+        else if (action === 'Escape') document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+        else {
+          dialog().dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
+          dialog().click()
+        }
+        await settle()
+        assert.equal(closed, 1)
+        assert.equal(changed, 0)
+        assert.equal(dialog(), null)
+        assert.ok(host.querySelector('[aria-label="提供商列表"]'))
+        assert.equal(document.querySelector('.oauth-accounts-page'), null)
+        assert.equal(mock.requests.some(request => request.method !== 'GET'), false)
+      })
+    }
+  }
+
+  it('does not reopen standalone creation when cancelled before the initial load finishes', async () => {
+    let closed = 0
+    const { releaseLoad } = await mount(createOAuthAccountsFixture(), { createOnly: true, deferLoad: true, onClose: () => closed++ })
+    assert.match(text(dialog()), /正在读取订阅提供方/)
+    assert.equal(buttonNamed(dialog(), '生成登录链接').disabled, true)
+    buttonNamed(dialog(), '取消').click()
+    await settle()
+    releaseLoad()
+    await settle()
+    assert.equal(closed, 1)
+    assert.equal(dialog(), null)
+    assert.equal(document.querySelector('.oauth-accounts-page'), null)
+  })
+
+  it('allows standalone creation to be cancelled after a load error without exposing the account pool', async () => {
+    await mount(createOAuthAccountsFixture(), { createOnly: true, failLoad: true })
+    assert.match(text(dialog().querySelector('[role="alert"]')), /合成账号列表读取失败/)
+    assert.equal(buttonNamed(dialog(), '生成登录链接').disabled, true)
+    buttonNamed(dialog(), '取消').click()
+    await settle()
+    assert.equal(dialog(), null)
+    assert.equal(document.querySelector('.oauth-accounts-page'), null)
+  })
+
+  it('refreshes the provider list and closes standalone creation after a successful mocked login', async () => {
+    let started
+    let completed
+    const events = []
+    api.startOAuthLogin = async payload => {
+      started = payload
+      return { loginId: 'fixture-login', authorizeUrl: 'https://example.invalid/authorize', redirectUri: 'http://localhost/callback', expiresAt: FIXTURE_NOW + 600_000 }
+    }
+    api.completeOAuthLogin = async (loginId, payload) => { completed = { loginId, ...payload } }
+    await mount(createOAuthAccountsFixture(), { createOnly: true, onChanged: () => events.push('changed'), onClose: () => events.push('close') })
+    buttonNamed(dialog(), '生成登录链接').click()
+    await settle()
+    assert.deepEqual(started, { provider: 'antigravity', accountId: null, name: null, channelIds: [] })
+    await input(dialog().querySelector('textarea'), 'http://localhost/callback?code=fixture&state=fixture')
+    dialog().querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+    await settle()
+    assert.deepEqual(completed, { loginId: 'fixture-login', callbackUrl: 'http://localhost/callback?code=fixture&state=fixture' })
+    assert.deepEqual(events, ['changed', 'close'])
+    assert.equal(dialog(), null)
+    assert.equal(document.querySelector('.oauth-accounts-page'), null)
+  })
+
+  it('ignores a late login-start failure after standalone creation is cancelled', async () => {
+    let rejectLogin
+    api.startOAuthLogin = () => new Promise((resolve, reject) => { rejectLogin = reject })
+    await mount(createOAuthAccountsFixture(), { createOnly: true })
+    buttonNamed(dialog(), '生成登录链接').click()
+    await settle()
+    buttonNamed(dialog(), '取消').click()
+    await settle()
+    rejectLogin(new Error('Delayed synthetic login failure'))
+    await settle()
+    assert.equal(dialog(), null)
+    assert.equal(toasts.length, 0)
+  })
+
+  it('still applies the submitted settings and refreshes the pool after successful reauthorization', async () => {
+    let changed = 0
+    api.completeOAuthLogin = async () => {}
+    await mount(createOAuthAccountsFixture(), { onChanged: () => changed++ })
+    buttonNamed(await openMenu(IDS.groupedHealthy), '重新授权').click()
+    await settle()
+    await input(field('账号名称'), '重新授权后名称')
+    await submitMockedLogin()
+    assert.equal(dialog(), null)
+    assert.equal(changed, 1)
+    assert.equal(account(mock.fixture, IDS.groupedHealthy).name, '重新授权后名称')
+    assert.equal(writes().length, 1)
+    assert.equal(writes()[0].path, '/admin/api/oauth-accounts/' + IDS.groupedHealthy + '/settings')
+    assert.match(text(host.querySelector('.toast')), /订阅账号已重新授权/)
+  })
+
+  for (const outcome of ['success', 'failure']) {
+    for (const providerId of ['chatgpt', 'antigravity']) {
+      it(providerId + ' ignores late login-completion ' + outcome + ' after standalone creation is cancelled', async () => {
+        let finishLogin
+        const events = []
+        api.completeOAuthLogin = () => new Promise((resolve, reject) => { finishLogin = () => outcome === 'success' ? resolve() : reject(new Error('Delayed synthetic completion failure')) })
+        await mount(createOAuthAccountsFixture(), { createOnly: true, providerId, onChanged: () => events.push('changed'), onClose: () => events.push('close') })
+        await submitMockedLogin()
+        assert.equal(buttonNamed(dialog(), '提交中…').disabled, true)
+        buttonNamed(dialog(), '取消').click()
+        await settle()
+        finishLogin()
+        await settle()
+        assert.equal(dialog(), null)
+        assert.equal(document.querySelector('.oauth-accounts-page'), null)
+        assert.deepEqual(events, ['close'])
+        assert.equal(toasts.length, 0)
+        assert.equal(writes().length, 0)
+      })
+    }
+
+    it('ignores late login-completion ' + outcome + ' without updating or closing a newer reauthorization dialog', async () => {
+      let finishLogin
+      let changed = 0
+      api.completeOAuthLogin = () => new Promise((resolve, reject) => { finishLogin = () => outcome === 'success' ? resolve() : reject(new Error('Delayed synthetic completion failure')) })
+      await mount(createOAuthAccountsFixture(), { onChanged: () => changed++ })
+      host.querySelector('.oauth-create-account').click()
+      await settle()
+      await submitMockedLogin()
+      buttonNamed(dialog(), '取消').click()
+      await settle()
+      buttonNamed(await openMenu(IDS.groupedHealthy), '重新授权').click()
+      await settle()
+      await input(field('账号名称'), '保留新的重新授权草稿')
+      finishLogin()
+      await settle()
+      assert.ok(dialog())
+      assert.equal(text(dialog().querySelector('h2')), '重新授权订阅账号')
+      assert.equal(field('账号名称').value, '保留新的重新授权草稿')
+      assert.equal(buttonNamed(dialog(), '重新授权').disabled, false)
+      assert.equal(writes().length, 0, 'An old completion must never write settings from a newer account dialog')
+      assert.equal(toasts.length, 0)
+      assert.equal(changed, outcome === 'success' ? 1 : 0, 'A committed authorization still refreshes the existing pool without touching the newer dialog')
+    })
+  }
+
+  it('does not let a pending reauthorization settings update close a newer creation dialog', async () => {
+    api.completeOAuthLogin = async () => {}
+    await mount()
+    buttonNamed(await openMenu(IDS.groupedHealthy), '重新授权').click()
+    await settle()
+    const release = gateFetch((path, init) => init.method === 'PUT')
+    await submitMockedLogin()
+    assert.equal(writes().length, 1)
+    buttonNamed(dialog(), '取消').click()
+    await settle()
+    host.querySelector('.oauth-create-account').click()
+    await settle()
+    await input(field('账号名称'), '保留新的创建草稿')
+    release()
+    await settle()
+    assert.ok(dialog())
+    assert.equal(text(dialog().querySelector('h2')), '新建订阅账号')
+    assert.equal(field('账号名称').value, '保留新的创建草稿')
+    assert.equal(toasts.length, 0)
+  })
+
+  for (const providerId of ['chatgpt', 'antigravity']) {
+    it(providerId + ' keeps the existing account-pool workspace after cancelling creation opened from that pool', async () => {
+      await mount(createOAuthAccountsFixture(), { drawer: true, autoOpenCreate: true, providerId })
+      await settle()
+      const createDialog = [...document.querySelectorAll('[role="dialog"]')].find(node => text(node.querySelector('h2')) === '新建订阅账号')
+      assert.ok(createDialog)
+      assert.equal(createDialog.querySelector('select').value, providerId)
+      buttonNamed(createDialog, '取消').click()
+      await settle()
+      const workspace = dialog()
+      assert.equal(document.querySelectorAll('[role="dialog"]').length, 1)
+      const provider = mock.fixture.providers.find(provider => provider.id === providerId)
+      assert.ok(text(workspace.querySelector('h2')).includes(provider.label))
+      assert.ok(workspace.querySelector('.modal.full'), 'The six-column account table needs the full-width workspace')
+      assert.equal(workspace.querySelectorAll('[data-account-id]').length, mock.fixture.accounts.filter(account => account.provider === providerId).length)
+      assert.equal(workspace.querySelector('.oauth-provider-filter'), null)
+      assert.deepEqual([...workspace.querySelector('.oauth-schedule-cell').querySelectorAll('.oauth-schedule-line')].slice(0, 2).map(text), ['40 次 / 3 小时', '并发上限 2'])
+      assert.equal(mock.requests.some(request => request.method !== 'GET'), false)
+    })
+  }
+
+  it('keeps the provider header switch operable with shared styles outside ChannelsView', async () => {
+    let toggled
+    await mount(createOAuthAccountsFixture(), { drawer: true, onToggleEnabled: item => { toggled = item } })
+    const toggle = dialog().querySelector('.channel-status-toggle')
+    assert.equal(toggle.getAttribute('role'), 'switch')
+    assert.equal(toggle.getAttribute('aria-checked'), 'true')
+    assert.ok(toggle.querySelector('.channel-status-track > span'))
+    toggle.click()
+    await settle()
+    assert.equal(toggled.providerId, 'antigravity')
+    const styles = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+    const parentStyles = parse(readFileSync(new URL('../src/components/ChannelsView.vue', import.meta.url), 'utf8')).descriptor.styles.map(style => style.content).join('\n')
+    assert.match(styles, /(?:^|\n)\.channel-status-toggle\s*\{[^}]*display:\s*inline-flex/)
+    assert.doesNotMatch(parentStyles, /(?:^|\n)\.channel-status-toggle\s*\{/)
+  })
+
+  it('sizes quota groups and scroll hints by the account workspace rather than the browser viewport', () => {
+    const styles = readFileSync(new URL('../src/style.css', import.meta.url), 'utf8')
+    const drawerStyles = parse(readFileSync(new URL('../src/components/OAuthProviderDrawer.vue', import.meta.url), 'utf8')).descriptor.styles.map(style => style.content).join('\n')
+    assert.match(styles, /\.oauth-accounts-page\s*\{[^}]*container-type:\s*inline-size;[^}]*container-name:\s*oauth-accounts;/)
+    assert.match(styles, /\.oauth-account-col\s*\{\s*width:\s*auto;/)
+    assert.match(styles, /@container oauth-accounts\s*\(max-width:\s*1100px\)\s*\{\s*\.oauth-quota-groups\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\)/)
+    assert.match(styles, /@container oauth-accounts\s*\(max-width:\s*959px\)\s*\{\s*\.oauth-accounts-scroll-hint\s*\{\s*display:\s*block;/)
+    assert.doesNotMatch(styles, /\.oauth-accounts-table\s+\.actions-col\s*\{[^}]*position:\s*sticky/)
+    assert.match(styles, /\.oauth-schedule-line\s*\{[^}]*white-space:\s*normal;/)
+    assert.match(drawerStyles, /\.provider-tab\.is-active\s*\{[^}]*background:\s*var\(--glass-field-strong\)/)
   })
 
   it('shows the real loading placeholder until deferred mock reads resolve, not an empty or no-match state', async () => {
