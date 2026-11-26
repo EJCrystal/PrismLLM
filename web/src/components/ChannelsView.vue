@@ -122,6 +122,12 @@ const oauthProviders = ref<OAuthProviderInfo[]>([])
 const oauthAccounts = ref<OAuthAccount[]>([])
 const oauthLoadError = ref('')
 const providerKindFilter = ref<ProviderKindFilter>('all')
+const providerConnection = ref<{ kind: ProviderListItem['kind'] | ''; providerId: string } | null>(null)
+const canConnectProvider = computed(() => {
+  const draft = providerConnection.value
+  return draft?.kind === 'custom' || (draft?.kind === 'subscription'
+    && oauthProviders.value.some((provider) => provider.id === draft.providerId && provider.configured))
+})
 const activeOAuthDrawer = ref<{
   providerId: string
   tab: OAuthProviderDrawerTab
@@ -846,13 +852,19 @@ function openOAuthDrawer(
   }
 }
 
-function openQuickCreateSubscriptionAccount(): void {
-  const target = oauthProviders.value.find((provider) => provider.configured) ?? oauthProviders.value[0]
-  if (!target) {
-    notify('当前没有可用的官方订阅提供方', 'warning')
-    return
+function openProviderConnect(): void {
+  providerConnection.value = { kind: '', providerId: '' }
+}
+
+function continueProviderConnect(): void {
+  const draft = providerConnection.value
+  if (!draft || !canConnectProvider.value) return
+  providerConnection.value = null
+  if (draft.kind === 'custom') {
+    openCreate()
+  } else {
+    openOAuthDrawer(draft.providerId, { autoOpenCreate: true })
   }
-  openOAuthDrawer(target.id, { tab: 'accounts', autoOpenCreate: true })
 }
 
 function consumeAutoCreate(): void {
@@ -1501,18 +1513,9 @@ onMounted(() => {
           <Icon name="price" :size="16" />
           模型默认价
         </button>
-        <button
-          v-if="oauthProviders.length"
-          type="button"
-          class="button ghost"
-          @click="openQuickCreateSubscriptionAccount"
-        >
-          <Icon name="users" :size="16" />
-          添加订阅账号
-        </button>
-        <button type="button" class="button primary" @click="openCreate">
+        <button type="button" class="button primary" @click="openProviderConnect">
           <Icon name="plus" :size="17" />
-          新建自定义提供商
+          接入提供商
         </button>
       </div>
     </div>
@@ -1601,8 +1604,8 @@ onMounted(() => {
         icon="channels"
         title="还没有提供商"
         desc="先接入一个自定义 API 上游，或登录 ChatGPT / Antigravity 官方订阅账号。"
-        action-text="新建自定义提供商"
-        @action="openCreate"
+        action-text="接入提供商"
+        @action="openProviderConnect"
       />
       <div v-else v-scroll-hint class="table-scroll table-scroll-paged channel-table-view">
         <table class="data-table channels-table">
@@ -2060,7 +2063,36 @@ onMounted(() => {
       @close="closeTestDrawer"
     />
 
-    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建渠道'" wide roomy mobile-fullscreen @close="closeChannelForm">
+    <Modal v-if="providerConnection" title="接入提供商" eyebrow="提供商" @close="providerConnection = null">
+      <form id="provider-connect-form" class="form-grid" @submit.prevent="continueProviderConnect">
+        <fieldset class="provider-connect-options">
+          <legend class="muted small">接入方式</legend>
+          <label class="provider-connect-option">
+            <input v-model="providerConnection.kind" type="radio" name="provider-connect-kind" value="custom" />
+            <span><strong>自定义 API</strong><small class="muted">填写上游地址、协议和密钥。</small></span>
+          </label>
+          <label class="provider-connect-option">
+            <input v-model="providerConnection.kind" type="radio" name="provider-connect-kind" value="subscription" />
+            <span><strong>官方订阅</strong><small class="muted">通过 OAuth 授权，将账号加入所选平台的账号池。</small></span>
+          </label>
+        </fieldset>
+        <label v-if="providerConnection.kind === 'subscription'" class="field">
+          <span>订阅平台</span>
+          <select v-model="providerConnection.providerId" :disabled="!oauthProviders.length">
+            <option value="" disabled>{{ oauthProviders.length ? '请选择订阅平台' : loading ? '正在读取订阅平台…' : '暂无可接入的订阅平台' }}</option>
+            <option v-for="provider in oauthProviders" :key="provider.id" :value="provider.id" :disabled="!provider.configured">
+              {{ provider.label }}{{ provider.configured ? '' : '（未配置）' }}
+            </option>
+          </select>
+        </label>
+      </form>
+      <template #footer>
+        <button type="button" class="button ghost" @click="providerConnection = null">取消</button>
+        <button type="submit" form="provider-connect-form" class="button primary" :disabled="!canConnectProvider">继续</button>
+      </template>
+    </Modal>
+
+    <Modal v-if="showForm" :title="editingId ? '编辑渠道' : '新建自定义提供商'" wide roomy mobile-fullscreen @close="closeChannelForm">
       <template #subhead>
         <nav class="channel-form-tabs" role="tablist" aria-label="渠道配置分区">
           <button
@@ -2500,6 +2532,12 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.provider-connect-options { display: grid; gap: 8px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.provider-connect-options legend { margin-bottom: 8px; padding: 0; }
+.provider-connect-option { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; cursor: pointer; }
+.provider-connect-option:has(input:checked) { border-color: var(--brand); }
+.provider-connect-option input { margin-top: 3px; }
+.provider-connect-option small { display: block; margin-top: 3px; }
 .channel-enabled-field { align-items: flex-start; }
 .channel-status-stack { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; max-width: 100%; }
 .channel-status-stack > .channel-status-toggle,
