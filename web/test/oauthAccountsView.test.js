@@ -1095,6 +1095,90 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(dialog(), null)
   })
 
+  for (const providerId of ['chatgpt', 'antigravity']) {
+    for (const outcome of ['success', 'failure']) {
+      for (const reopen of [false, true]) {
+        it(providerId + ' refreshes only committed data after cancelled creation ' + outcome + (reopen ? ' while preserving a newer dialog' : ' without reopening the pool'), async () => {
+          let finishLogin
+          const fixture = createOAuthAccountsFixture()
+          const createdAccount = structuredClone(account(fixture, providerId === 'chatgpt' ? IDS.chatgptWarning : IDS.groupedHealthy))
+          fixture.accounts = fixture.accounts.filter(account => account.provider !== providerId)
+          api.completeOAuthLogin = () => new Promise((resolve, reject) => {
+            finishLogin = () => {
+              if (outcome === 'success') { mock.fixture.accounts.push(createdAccount); resolve() }
+              else reject(new Error('Delayed synthetic completion failure'))
+            }
+          })
+          await mount(fixture, { providerList: true })
+          const providerEntry = () => host.querySelector('tr[data-provider-id="' + providerId + '"]')
+          buttonNamed(providerEntry(), '添加账号').click()
+          await settle()
+          await submitMockedLogin()
+          buttonNamed(dialog(), '取消').click()
+          await settle()
+          if (reopen) {
+            buttonNamed(providerEntry(), '添加账号').click()
+            await settle()
+            await input(field('账号名称'), '新弹窗草稿不被旧提交影响')
+          }
+          const readsBeforeCompletion = mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length
+          finishLogin()
+          await settle()
+          assert.equal(mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length, readsBeforeCompletion + (outcome === 'success' ? 1 : 0))
+          buttonNamed(providerEntry(), outcome === 'success' ? '管理账号' : '添加账号')
+          assert.equal(document.querySelector('.oauth-accounts-page'), null)
+          assert.equal(toasts.length, 0)
+          if (reopen) {
+            assert.equal(text(dialog().querySelector('h2')), '新建订阅账号')
+            assert.equal(field('账号名称').value, '新弹窗草稿不被旧提交影响')
+          } else assert.equal(dialog(), null)
+        })
+      }
+    }
+
+    it(providerId + ' refreshes the actual provider list exactly once after uncancelled creation succeeds', async () => {
+      const fixture = createOAuthAccountsFixture()
+      const createdAccount = structuredClone(account(fixture, providerId === 'chatgpt' ? IDS.chatgptWarning : IDS.groupedHealthy))
+      fixture.accounts = fixture.accounts.filter(account => account.provider !== providerId)
+      api.completeOAuthLogin = async () => { mock.fixture.accounts.push(createdAccount) }
+      await mount(fixture, { providerList: true })
+      const providerEntry = () => host.querySelector('tr[data-provider-id="' + providerId + '"]')
+      buttonNamed(providerEntry(), '添加账号').click()
+      await settle()
+      const readsBeforeCompletion = mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length
+      await submitMockedLogin()
+      assert.equal(mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length, readsBeforeCompletion + 1)
+      buttonNamed(providerEntry(), '管理账号')
+      assert.equal(dialog(), null)
+      assert.equal(document.querySelector('.oauth-accounts-page'), null)
+      assert.match(text(host.querySelector('.toast')), /订阅账号已通过浏览器登录/)
+    })
+  }
+
+  it('does not fetch provider data after the provider page is unmounted during account creation', async () => {
+    let finishLogin
+    api.completeOAuthLogin = () => new Promise(resolve => { finishLogin = resolve })
+    await mount(createOAuthAccountsFixture(), { providerList: true })
+    buttonNamed(host, '接入提供商').click()
+    await settle()
+    dialog().querySelector('input[value="subscription"]').click()
+    await settle()
+    const select = dialog().querySelector('select')
+    select.value = 'antigravity'
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    buttonNamed(dialog(), '继续').click()
+    await settle()
+    await submitMockedLogin()
+    app.unmount()
+    app = null
+    const readsBeforeCompletion = mock.requests.length
+    finishLogin()
+    await settle()
+    assert.equal(mock.requests.length, readsBeforeCompletion)
+    assert.equal(toasts.length, 0)
+  })
+
   it('opens account B with new shared mappings after A saves without expanding B authorization', async () => {
     await mount()
     const b = account(mock.fixture, IDS.quotaError)

@@ -69,6 +69,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'changed'): void
   (event: 'close'): void
+  (event: 'authorization-submitted', request: Promise<OAuthAccount>): void
   /** autoOpenCreate 触发过一次新建弹窗后通知父级清除标志，避免重挂载时重复弹出。 */
   (event: 'auto-create-consumed'): void
 }>()
@@ -546,7 +547,9 @@ async function completeLogin() {
   }
   loginCompleting.value = true
   try {
-    await api.completeOAuthLogin(loginId, { callbackUrl: callback })
+    const request = api.completeOAuthLogin(loginId, { callbackUrl: callback })
+    emit('authorization-submitted', request)
+    await request
     if (generation === loginGeneration && target) {
       await api.updateOAuthAccountSettings(target.id, settings)
     }

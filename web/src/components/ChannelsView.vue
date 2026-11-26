@@ -876,6 +876,12 @@ function continueProviderConnect(): void {
   }
 }
 
+function observeOAuthAuthorization(request: Promise<OAuthAccount>): void {
+  void request.then(() => {
+    if (!listDisposed) void load()
+  }, () => {})
+}
+
 /** 订阅数据读取失败时保留上次快照，并单独暴露错误，避免把失败伪装成空列表。 */
 function applyOAuthSnapshot(
   providers: Settled<OAuthProviderInfo[]>,
@@ -2046,7 +2052,7 @@ onMounted(() => {
       :fixed-provider="newOAuthAccountProvider"
       create-only
       @close="newOAuthAccountProvider = null"
-      @changed="load"
+      @authorization-submitted="observeOAuthAuthorization"
     />
 
     <OAuthProviderDrawer
