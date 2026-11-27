@@ -168,7 +168,7 @@ onMounted(load)
 </script>
 
 <template>
-  <Modal title="Web 搜索设置" @close="$emit('close')">
+  <Modal title="Web 搜索设置" eyebrow="全局业务设置" @close="$emit('close')">
     <p class="muted small">
       Responses 请求带内置 <code>web_search</code> 时，网关会调用这里的搜索 API 代跑搜索。
       保存后立即生效并覆盖环境变量默认值；未填写密钥或地址时沿用环境变量。

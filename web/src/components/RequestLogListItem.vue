@@ -31,7 +31,8 @@ function open(event: MouseEvent | KeyboardEvent) {
     <p v-if="log.errorMessage || log.errorCode" class="log-card-error">{{ log.errorMessage || log.errorCode }}</p>
     <div class="log-card-footer">
       <div class="request-id-cell"><code :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code><CopyButton :text="log.requestId" title="复制请求 ID" variant="list" :size="13" /></div>
-      <button type="button" class="button subtle mini" :aria-label="'查看 ' + log.alias + ' 请求详情'" @click.stop="emit('open', $event)">详情</button>
+      <span v-if="active" class="log-card-active-pill">查看中</span>
+      <button v-else type="button" class="button ghost mini log-card-open-btn" :aria-label="'查看 ' + log.alias + ' 请求详情'" @click.stop="emit('open', $event)">详情</button>
     </div>
   </article>
 </template>

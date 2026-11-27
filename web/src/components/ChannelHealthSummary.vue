@@ -62,27 +62,27 @@ const observationTitle = computed(() => [
 </template>
 
 <style scoped>
-.channel-health-overview { display: grid; gap: 5px; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
-.channel-health-overview:hover .health-overview-link { color: var(--brand); }
+.channel-health-overview { display: grid; gap: 4px; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.channel-health-overview:hover .health-overview-link { color: var(--brand); opacity: 1; }
 .channel-health-overview:focus-visible { outline: 2px solid var(--brand); outline-offset: 3px; border-radius: 4px; }
-.health-overview-metrics { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
-.health-overview-metric { display: grid; align-content: start; justify-items: start; gap: 2px; min-width: 0; }
-.health-overview-rate { padding-left: 10px; border-left: 1px solid var(--line); }
-.health-overview-label, .health-overview-footer { color: var(--muted); font-size: 11px; line-height: 1.4; }
-.health-overview-label { display: flex; align-items: center; min-height: var(--channel-first-line-height, 20px); line-height: 20px; white-space: nowrap; }
-.health-overview-state { display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; min-height: 20px; font-size: 12px; font-weight: 650; line-height: 20px; }
+.health-overview-metrics { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 6px; }
+.health-overview-metric { display: grid; align-content: start; justify-items: start; gap: 1px; min-width: 0; }
+.health-overview-rate { padding-left: 8px; border-left: 1px solid var(--line); }
+.health-overview-label, .health-overview-footer { color: var(--muted); font-size: 10.5px; line-height: 1.35; }
+.health-overview-label { display: flex; align-items: center; min-height: 15px; line-height: 15px; font-size: 10px; opacity: .82; white-space: nowrap; }
+.health-overview-state { display: inline-flex; align-items: center; justify-content: flex-start; gap: 5px; min-height: 18px; font-size: 12px; font-weight: 650; line-height: 18px; }
 .health-overview-state[data-state='HEALTHY'] { color: var(--success); }
 .health-overview-state[data-state='WARNING'] { color: var(--warning); }
 .health-overview-state[data-state='CRITICAL'], .health-overview-state[data-state='NO_CREDENTIALS'] { color: var(--danger); }
 .health-overview-state[data-state='UNKNOWN'], .health-overview-state[data-state='DISABLED'] { color: var(--muted); }
 .health-overview-dot { width: 6px; height: 6px; flex: 0 0 6px; border-radius: 50%; background: currentColor; }
-.health-overview-rate strong { min-height: 20px; font-size: 16px; line-height: 20px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.health-overview-trend { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); align-items: end; gap: 2px; height: 12px; }
+.health-overview-rate strong { min-height: 18px; font-size: 14px; line-height: 18px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.health-overview-trend { display: grid; grid-template-columns: repeat(30, minmax(0, 1fr)); align-items: end; gap: 2px; height: 10px; }
 .health-overview-bar { height: 100%; border-radius: 2px; background: var(--line); }
 .health-overview-bar[data-outcome='SUCCESS'] { background: var(--success); }
 .health-overview-bar[data-outcome='FAILURE'] { height: 55%; background: var(--danger); }
 .health-overview-bar[data-outcome='EMPTY'] { height: 25%; }
-.health-overview-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 12px; font-size: 10px; }
-.health-overview-link { display: inline-flex; align-items: center; gap: 2px; }
+.health-overview-footer { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 4px 10px; font-size: 10px; }
+.health-overview-link { display: inline-flex; align-items: center; gap: 2px; opacity: .78; transition: opacity .14s ease, color .14s ease; }
 .health-overview-stale { color: var(--warning); font-size: 10px; }
 </style>

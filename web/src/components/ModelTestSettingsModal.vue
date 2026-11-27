@@ -41,7 +41,7 @@ async function save() {
 </script>
 
 <template>
-  <Modal title="全局测试配置" @close="$emit('close')">
+  <Modal title="全局测试配置" eyebrow="全局业务设置" @close="$emit('close')">
     <form class="form-grid" @submit.prevent="save">
       <label class="field">
         <span>默认测试提示词</span>

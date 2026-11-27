@@ -653,7 +653,7 @@ onBeforeUnmount(() => {
         </div>
         <div v-if="!trendRows.length" class="usage-chart-empty">该时间范围没有请求。</div>
         <div v-else class="usage-chart-wrap" @focusout="chartFocusOut">
-          <div class="usage-chart-readout">
+          <div class="usage-chart-readout" :class="{ 'is-idle': !chartRow }">
             <div class="usage-chart-values" aria-live="polite" aria-atomic="true">
               <strong>{{ chartRow ? formatTimeRange(chartRow.bucketStart) : '悬停查看，点击进入该时间段' }}</strong>
               <span v-for="series in activeTrendMetric.series" :key="series.id"><span class="usage-chart-series-label" :title="series.label">{{ series.label }}</span><b>{{ chartRow ? formatTrendValue(series.value(chartRow)) : '—' }}</b></span>

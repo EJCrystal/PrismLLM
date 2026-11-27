@@ -95,6 +95,27 @@ const auditRows = computed<AuditDisplayRow[]>(() => {
   return rows
 })
 const tableScroll = ref<HTMLDivElement | null>(null)
+const expandedEntryIds = ref<number[]>([])
+
+function isSystemAuditEntry(entry: AdminAuditLog): boolean {
+  return entry.action === 'channel_key.auto_disable'
+    || entry.action === 'channel_key.auto_recover'
+    || entry.actor === 'system'
+}
+
+function auditActorLabel(entry: AdminAuditLog): string {
+  return isSystemAuditEntry(entry) ? '系统' : (entry.actor || '未认证请求')
+}
+
+function isEntryExpanded(id: number): boolean {
+  return expandedEntryIds.value.includes(id)
+}
+
+function toggleEntryDetails(id: number): void {
+  expandedEntryIds.value = isEntryExpanded(id)
+    ? expandedEntryIds.value.filter((item) => item !== id)
+    : [...expandedEntryIds.value, id]
+}
 
 async function refresh() {
   await load()
@@ -128,6 +149,7 @@ async function applyFilters() {
     action: filterDraft.value.action || null,
     result: (filterDraft.value.result || null) as AppliedAuditFilters['result'],
   }
+  expandedEntryIds.value = []
   await refresh()
 }
 
@@ -135,6 +157,7 @@ async function clearFilters() {
   filterDraft.value = { from: '', to: '', actor: '', action: '', result: '' }
   appliedFilters.value = {}
   filterError.value = ''
+  expandedEntryIds.value = []
   await refresh()
 }
 
@@ -148,27 +171,17 @@ onMounted(load)
 
 <template>
   <section class="page-stack page-compact">
-    <div class="page-overview">
-      <div class="section-head page-actions">
+    <div class="channel-page-head">
+      <dl class="list-summary" aria-label="审计日志概况">
+        <div><dt>当前已加载</dt><dd>{{ logs.length }}</dd></div>
+        <div><dt>失败操作</dt><dd :class="failureCount ? 'text-danger' : 'text-success'">{{ failureCount }}</dd></div>
+      </dl>
+      <div class="section-head-actions channel-page-actions">
         <button type="button" class="button ghost refresh-button" :disabled="loading || loadingMore" :aria-busy="loading" @click="refresh">
           <Icon name="refresh" :size="16" />
           刷新
         </button>
       </div>
-
-      <div class="stat-row two">
-        <div class="stat-card">
-          <span>当前已加载</span>
-          <strong>{{ logs.length }}</strong>
-          <small>最近的管理写操作</small>
-        </div>
-        <div class="stat-card">
-          <span>失败操作</span>
-          <strong :class="failureCount ? 'text-danger' : 'text-success'">{{ failureCount }}</strong>
-          <small>权限、校验或执行失败</small>
-        </div>
-      </div>
-
     </div>
 
     <FilterPanel label="审计筛选" :summary="filterChips.length ? '已选 ' + filterChips.length + ' 项条件' : '全部时间与操作'" :count="filterChips.length">
@@ -224,61 +237,74 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in auditRows" :key="row.key" :class="`audit-row-${row.kind}`">
-              <template v-if="row.kind === 'day'">
-                <td colspan="6" class="audit-day-cell"><span class="audit-day-marker"></span>{{ row.label }}</td>
-              </template>
-              <template v-else-if="row.kind === 'login-group'">
-                <td colspan="6" class="audit-login-group-cell">
-                  <div class="audit-login-group">
-                    <span class="badge" :class="auditResultClass(row.result)">{{ auditResultLabel(row.result) }}</span>
-                    <strong>{{ row.actor }}</strong>
-                    <span>连续登录 {{ row.entries.length }} 次，已折叠</span>
-                    <details>
-                      <summary>展开记录</summary>
-                      <ul><li v-for="entry in row.entries" :key="entry.id">{{ formatTime(entry.createdAt) }} · {{ entry.sourceIp || '—' }} · HTTP {{ entry.statusCode }}<template v-if="entry.errorCode"> · {{ entry.errorCode }}</template> · {{ entry.method }} {{ entry.path }} · {{ entry.requestId }}</li></ul>
-                    </details>
-                  </div>
+            <template v-for="row in auditRows" :key="row.key">
+              <tr :class="[`audit-row-${row.kind}`, { 'is-expanded': row.kind === 'entry' && isEntryExpanded(row.entry.id) }]">
+                <template v-if="row.kind === 'day'">
+                  <td colspan="6" class="audit-day-cell"><span class="audit-day-marker"></span>{{ row.label }}</td>
+                </template>
+                <template v-else-if="row.kind === 'login-group'">
+                  <td colspan="6" class="audit-login-group-cell">
+                    <div class="audit-login-group">
+                      <span class="badge" :class="auditResultClass(row.result)">{{ auditResultLabel(row.result) }}</span>
+                      <strong>{{ row.actor }}</strong>
+                      <span>连续登录 {{ row.entries.length }} 次，已折叠</span>
+                      <details>
+                        <summary>展开记录</summary>
+                        <ul><li v-for="entry in row.entries" :key="entry.id">{{ formatTime(entry.createdAt) }} · {{ entry.sourceIp || '—' }} · HTTP {{ entry.statusCode }}<template v-if="entry.errorCode"> · {{ entry.errorCode }}</template> · {{ entry.method }} {{ entry.path }} · {{ entry.requestId }}</li></ul>
+                      </details>
+                    </div>
+                  </td>
+                </template>
+                <template v-else>
+                  <td>
+                    <div class="primary-cell">{{ formatTime(row.entry.createdAt) }}</div>
+                    <div class="muted small">{{ auditActorLabel(row.entry) }}</div>
+                  </td>
+                  <td>
+                    <div class="audit-action-title">{{ auditActionLabel(row.entry.action) }}</div>
+                    <div v-if="auditActionLabel(row.entry.action) !== row.entry.action" class="mono muted small">{{ row.entry.action }}</div>
+                    <div v-if="auditDetailsSummary(row.entry)" class="audit-details-summary small">{{ auditDetailsSummary(row.entry) }}</div>
+                    <button
+                      v-if="auditDetailsRows(row.entry).length"
+                      type="button"
+                      class="audit-details-toggle"
+                      :aria-expanded="isEntryExpanded(row.entry.id)"
+                      @click="toggleEntryDetails(row.entry.id)"
+                    >
+                      <Icon name="chevron" :size="12" class="audit-details-chevron" :class="{ 'is-open': isEntryExpanded(row.entry.id) }" />
+                      {{ isEntryExpanded(row.entry.id) ? '收起详情' : '查看详情' }}
+                    </button>
+                  </td>
+                  <td>
+                    <span class="badge" :class="auditResultClass(row.entry.result)">
+                      {{ auditResultLabel(row.entry.result) }}
+                    </span>
+                    <div class="muted small">{{ isSystemAuditEntry(row.entry) ? '系统执行' : `HTTP ${row.entry.statusCode}` }}</div>
+                    <div v-if="row.entry.errorCode" class="mono muted small">{{ row.entry.errorCode }}</div>
+                  </td>
+                  <td>
+                    <span class="audit-path mono audit-path-line" :title="`${row.entry.method} ${row.entry.path}`">{{ row.entry.method }} {{ row.entry.path }}</span>
+                  </td>
+                  <td>
+                    <div class="audit-request-id-cell">
+                      <span class="mono muted small" :title="row.entry.requestId">{{ row.entry.requestId.length > 14 ? row.entry.requestId.slice(0, 12) + '…' : row.entry.requestId }}</span>
+                      <CopyButton :text="row.entry.requestId" title="复制请求 ID" :size="12" />
+                    </div>
+                  </td>
+                  <td class="mono muted small">{{ row.entry.sourceIp || '—' }}</td>
+                </template>
+              </tr>
+              <tr v-if="row.kind === 'entry' && isEntryExpanded(row.entry.id) && auditDetailsRows(row.entry).length" class="audit-row-detail">
+                <td colspan="6" class="audit-detail-cell">
+                  <dl class="audit-detail-grid">
+                    <div v-for="[label, value] in auditDetailsRows(row.entry)" :key="label" class="audit-detail-item">
+                      <dt>{{ label }}</dt>
+                      <dd>{{ value }}</dd>
+                    </div>
+                  </dl>
                 </td>
-              </template>
-              <template v-else>
-                <td>
-                  <div class="primary-cell">{{ formatTime(row.entry.createdAt) }}</div>
-                  <div class="muted small">{{ row.entry.action === 'channel_key.auto_disable' ? '系统' : (row.entry.actor || '未认证请求') }}</div>
-                </td>
-                <td>
-                  <div>{{ auditActionLabel(row.entry.action) }}</div>
-                  <div v-if="auditActionLabel(row.entry.action) !== row.entry.action" class="mono muted small">{{ row.entry.action }}</div>
-                  <div v-if="auditDetailsSummary(row.entry)" class="audit-details-summary small">{{ auditDetailsSummary(row.entry) }}</div>
-                  <details v-if="auditDetailsRows(row.entry).length" class="audit-details">
-                    <summary>查看详情</summary>
-                    <dl>
-                      <template v-for="[label, value] in auditDetailsRows(row.entry)" :key="label">
-                        <dt>{{ label }}</dt>
-                        <dd>{{ value }}</dd>
-                      </template>
-                    </dl>
-                  </details>
-                </td>
-                <td>
-                  <span class="badge" :class="auditResultClass(row.entry.result)">
-                    {{ auditResultLabel(row.entry.result) }}
-                  </span>
-                  <div class="muted small">{{ row.entry.action === 'channel_key.auto_disable' ? '系统执行' : `HTTP ${row.entry.statusCode}` }}</div>
-                  <div v-if="row.entry.errorCode" class="mono muted small">{{ row.entry.errorCode }}</div>
-                </td>
-                <td>
-                  <span class="audit-path mono">{{ row.entry.method }} {{ row.entry.path }}</span>
-                </td>
-                <td>
-                  <div class="channel-id-cell">
-                    <span class="mono muted small">{{ row.entry.requestId }}</span>
-                    <CopyButton :text="row.entry.requestId" title="复制请求 ID" variant="list" :size="12" />
-                  </div>
-                </td>
-                <td class="mono muted small">{{ row.entry.sourceIp || '—' }}</td>
-              </template>
-            </tr>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>
@@ -296,18 +322,28 @@ onMounted(load)
 </template>
 
 <style scoped>
-.audit-filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); align-items: end; gap: 12px; padding: 14px; border: 1px solid var(--glass-line); border-radius: 12px; background: var(--glass-field); min-width: 0; }
-.audit-filters .field { min-width: 0; margin: 0; }
-.audit-filters > .filter-chip-group { justify-self: start; }
+.audit-filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; padding: 12px 14px; border: 1px solid var(--glass-line); border-radius: 12px; background: var(--glass-field); min-width: 0; }
+.audit-filters .field { flex: 1 1 155px; min-width: 145px; max-width: 220px; margin: 0; }
+.audit-filters > .filter-chip-group { flex: 0 0 auto; align-self: flex-end; }
 .audit-filters input, .audit-filters select { width: 100%; min-width: 0; }
-.audit-time-presets { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
-.audit-filter-actions { display: flex; gap: 8px; }
-.audit-details-summary { max-width: 320px; margin-top: 6px; white-space: normal; overflow-wrap: anywhere; }
-.audit-details { max-width: 320px; margin-top: 6px; font-size: 12px; }
-.audit-details summary { color: var(--info); cursor: pointer; }
-.audit-details dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 10px; white-space: normal; }
-.audit-details dt { color: var(--muted); }
-.audit-details dd { margin: 0; overflow-wrap: anywhere; }
+.audit-time-presets { flex: 1 0 100%; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; padding-bottom: 8px; border-bottom: 1px solid var(--glass-line); }
+.audit-filter-actions { display: flex; gap: 8px; margin-left: auto; align-self: flex-end; }
+.audit-action-title { font-weight: 600; }
+.audit-details-summary { margin-top: 3px; white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+.audit-details-toggle { display: inline-flex; align-items: center; gap: 4px; margin-top: 5px; padding: 2px 0; border: 0; background: transparent; color: var(--info); font: inherit; font-size: 11.5px; font-weight: 500; cursor: pointer; }
+.audit-details-toggle:hover { text-decoration: underline; }
+.audit-details-chevron { transition: transform .15s ease; }
+.audit-details-chevron.is-open { transform: rotate(180deg); }
+.audit-row-entry.is-expanded > td { border-bottom-color: transparent; }
+.audit-row-detail > td.audit-detail-cell { padding: 10px 16px 14px; background: color-mix(in srgb, var(--brand) 4%, var(--glass-field)); }
+.audit-detail-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px 20px; margin: 0; font-size: 12px; }
+.audit-detail-item { display: grid; gap: 2px; min-width: 0; }
+.audit-detail-item dt { color: var(--muted); font-size: 10.5px; }
+.audit-detail-item dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 11.5px; overflow-wrap: anywhere; }
+.audit-path-line { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.audit-request-id-cell { display: inline-flex; align-items: center; gap: 4px; max-width: 100%; }
+.audit-request-id-cell :deep(.icon-button) { width: 22px; min-width: 22px; height: 22px; padding: 0; opacity: .72; }
+.audit-request-id-cell :deep(.icon-button:hover), .audit-request-id-cell :deep(.icon-button:focus-visible) { opacity: 1; }
 .audit-row-day td { padding-top: 10px; padding-bottom: 10px; border-bottom-color: transparent; background: color-mix(in srgb, var(--brand) 7%, transparent); }
 .audit-day-cell { color: var(--brand); font-size: 12px; font-weight: 750; letter-spacing: .01em; }
 .audit-day-marker { display: inline-block; width: 7px; height: 7px; margin-right: 8px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 14%, transparent); }
@@ -317,6 +353,18 @@ onMounted(load)
 .audit-login-group details { margin-left: auto; }
 .audit-login-group summary { color: var(--info); cursor: pointer; }
 .audit-login-group ul { margin: 8px 0 0; padding-left: 18px; font-size: 11px; line-height: 1.7; }
-@media (max-width: 1100px) { .audit-filters { grid-template-columns: repeat(3, minmax(140px, 1fr)); } }
-@media (max-width: 640px) { .audit-filters { grid-template-columns: 1fr; } .audit-filter-actions { justify-content: flex-end; } }
+@media (max-width: 640px) {
+  .audit-filters { gap: 10px; padding: 10px 0 0; }
+  .audit-filters .field { flex-basis: 100%; max-width: none; }
+  .audit-filters input { min-height: 40px; font-size: 16px; }
+  .audit-filters > .filter-chip-group { flex: 1 1 calc(50% - 5px); min-width: 0; }
+  .audit-filters > .filter-chip-group :deep(.filter-select) { flex: 1; min-width: 0; }
+  .audit-filters > .filter-chip-group :deep(.filter-select-trigger) { width: 100%; min-height: 38px; justify-content: flex-start; }
+  .audit-filter-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; margin-left: 0; }
+  .audit-filter-actions .button { min-height: 38px; }
+  .audit-details-toggle { min-height: 36px; padding: 6px 2px; font-size: 12px; }
+  .audit-request-id-cell :deep(.icon-button) { width: 34px; min-width: 34px; height: 34px; opacity: .9; }
+  .audit-row-detail > td.audit-detail-cell { padding: 10px 12px 12px; }
+  .audit-detail-grid { position: sticky; left: 12px; width: min(100%, calc(100vw - 64px)); max-width: calc(100vw - 64px); grid-template-columns: 1fr; gap: 8px; }
+}
 </style>

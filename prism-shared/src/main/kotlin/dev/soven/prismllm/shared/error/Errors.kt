@@ -94,9 +94,20 @@ fun GatewayError.toEnvelope(): ErrorEnvelope = ErrorEnvelope(
 fun GatewayError.toAnthropicEnvelope(): AnthropicErrorEnvelope = AnthropicErrorEnvelope(
     error = AnthropicErrorBody(
         type = anthropicErrorType(status, type),
-        message = message,
+        // Anthropic 的错误正文只有 type/message，没有 upstream_code 字段。
+        // 把上游错误码附在 message 里，避免客户端（Claude Code / Cindy 等）
+        // 只看到“上游返回错误 400”而丢失 session_turn_limit_exceeded 这类关键信息。
+        message = anthropicMessageWithUpstreamCode(),
     ),
 )
+
+private fun GatewayError.anthropicMessageWithUpstreamCode(): String {
+    val code = upstreamCode?.trim().orEmpty()
+    if (code.isEmpty() || code == status.value.toString() || message.contains(code)) {
+        return message
+    }
+    return "$message (upstream_code: $code)"
+}
 
 fun anthropicErrorType(status: HttpStatusCode, fallback: String): String = when (status.value) {
     400, 413, 415, 422 -> "invalid_request_error"

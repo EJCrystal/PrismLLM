@@ -30,13 +30,13 @@ const hidden = computed(() => Math.max(0, props.items.length - props.limit))
 </template>
 
 <style scoped>
-.channel-model-preview { display: flex; align-items: flex-start; gap: 6px; min-width: 0; }
-.channel-model-list { flex: 1 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
-.channel-model-entry { min-height: var(--channel-first-line-height, 24px); }
+.channel-model-preview { display: flex; align-items: flex-start; gap: 5px; min-width: 0; }
+.channel-model-list { flex: 0 1 auto; display: flex; flex-direction: column; align-items: flex-start; gap: 3px; min-width: 0; max-width: 100%; }
+.channel-model-entry { min-height: 22px; }
 .channel-model-entry .channel-model-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .is-expanded .channel-model-name { overflow: visible; white-space: normal; overflow-wrap: anywhere; }
-.channel-model-expand-slot { display: flex; flex: 0 0 auto; align-items: center; min-height: var(--channel-first-line-height, 24px); }
-.channel-model-expand { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; min-height: 24px; padding: 2px 7px; border: 1px solid transparent; border-radius: 999px; background: var(--glass-field); color: var(--muted); font: inherit; font-size: 11px; font-weight: 500; line-height: 18px; cursor: pointer; }
+.channel-model-expand-slot { display: flex; flex: 0 0 auto; align-items: center; min-height: 22px; }
+.channel-model-expand { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; min-height: 22px; padding: 1px 7px; border: 1px solid var(--glass-line); border-radius: 999px; background: var(--glass-field); color: var(--muted); font: inherit; font-size: 11px; font-weight: 500; line-height: 18px; cursor: pointer; }
 .channel-model-expand:hover { color: var(--brand); background: var(--info-soft); }
 .channel-model-expand:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
 @media (max-width: 640px) { .channel-model-expand { min-height: 40px; min-width: 40px; } }
