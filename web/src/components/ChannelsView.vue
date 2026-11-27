@@ -512,7 +512,10 @@ const displayedProviders = computed(() => {
   const customs = matched
     .filter((item) => item.kind === 'custom')
     .sort((left, right) => left.displayName.localeCompare(right.displayName))
-  return [...subscriptions, ...customs]
+  return [...subscriptions, ...customs].sort((left, right) =>
+    (right.channel ? channelConcurrent(right.channel.id) : 0)
+      - (left.channel ? channelConcurrent(left.channel.id) : 0),
+  )
 })
 const activeOAuthDrawerItem = computed(() => {
   const target = activeOAuthDrawer.value
