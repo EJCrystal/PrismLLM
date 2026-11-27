@@ -125,6 +125,7 @@ function createProviderMappingFetch(fixture = createOAuthAccountsFixture(), orig
             mode: change.mode,
             mappingSource: 'manual',
             catalogActive: false,
+            enabled: false,
           }
           resource.mappings.push(row)
         }
@@ -293,7 +294,7 @@ describe('OAuthProviderMappingsPanel layout and interactions', () => {
     assert.deepEqual(rows().map(item => item.dataset.providerMappingModel), ['claude-opus-4-5-thinking', 'gemini-3-flash'])
 
     // 切回全部，输入不匹配的搜索词后再通过工具栏新增，搜索词应自动清空让新行可见
-    buttonNamed(dialog(), '全部 6').click()
+    buttonNamed(dialog(), '已启用 6').click()
     await settle()
     await input(dialog().querySelector('[aria-label="搜索共享模型映射"]'), 'gemini')
     assert.equal(rows().length, 4)
@@ -324,6 +325,85 @@ describe('OAuthProviderMappingsPanel layout and interactions', () => {
     await settle()
     assert.equal(row('claude-sonnet-4-6'), null)
     assert.equal(buttonNamed(dialog(), '放弃全部草稿'), undefined)
+  })
+
+  it('defaults to enabled rows, retains inactive manual mappings and keeps dirty rows visible across refresh', async () => {
+    const fixture = createOAuthAccountsFixture()
+    const flash = fixture.providerMappings.antigravity.mappings.find(item => item.upstreamModel === 'gemini-3-flash')
+    flash.enabled = false
+    const dormant = { ...flash, upstreamModel: 'future-model', publicModelId: 'saved/future', canonicalModelId: 'saved/future', catalogActive: false }
+    fixture.providerMappings.antigravity.mappings.push(dormant)
+    await mountPanel({ fixture })
+    assert.equal(rows().length, 5)
+    assert.equal(row('gemini-3-flash'), null)
+    assert.equal(row('future-model'), null)
+    const toggle = buttonNamed(dialog(), '含未启用 2')
+    assert.equal(toggle.getAttribute('aria-pressed'), 'false')
+    toggle.click()
+    await settle()
+    assert.equal(rows().length, 7)
+    assert.match(text(row('gemini-3-flash')), /未启用/)
+    assert.match(text(row('future-model')), /休眠/)
+    assert.equal(row('future-model').querySelector('.oauth-mapping-input input').value, 'saved/future')
+
+    await input(row('gemini-3-flash').querySelector('.oauth-mapping-input input'), 'saved/flash-edit')
+    toggle.click()
+    await settle()
+    assert.ok(row('gemini-3-flash'), 'unsaved edits must not disappear when hiding inactive rows')
+    assert.equal(row('future-model'), null)
+    buttonNamed(dialog(), '刷新').click()
+    await settle()
+    assert.equal(row('gemini-3-flash').querySelector('.oauth-mapping-input input').value, 'saved/flash-edit')
+    buttonNamed(dialog(), '保存映射修改（1）').click()
+    await settle()
+    assert.equal(row('gemini-3-flash').querySelector('.oauth-mapping-input input').value, 'saved/flash-edit')
+    assert.equal(flash.catalogActive, true)
+    assert.equal(flash.enabled, false)
+    assert.equal(dormant.canonicalModelId, 'saved/future')
+    assert.deepEqual(mock.requests.filter(req => req.method === 'PUT')[0].body.changes, [
+      { upstreamModel: 'gemini-3-flash', mode: 'manual', canonicalModelId: 'saved/flash-edit' },
+    ])
+  })
+
+  it('shows a recoverable empty enabled state and reveals newly saved dormant mappings', async () => {
+    const fixture = createOAuthAccountsFixture()
+    for (const mapping of fixture.providerMappings.antigravity.mappings) mapping.enabled = false
+    await mountPanel({ fixture })
+    assert.equal(rows().length, 0)
+    assert.match(text(dialog()), /当前没有已启用模型/)
+    buttonNamed(dialog(), '含未启用 6').click()
+    await settle()
+    assert.equal(rows().length, 6)
+    buttonNamed(dialog(), '含未启用 6').click()
+    await settle()
+    dialog().querySelector('.provider-add-toggle').click()
+    await settle()
+    await input(dialog().querySelector('[aria-label="新增上游模型映射"]'), 'future-model')
+    buttonNamed(dialog(), '添加').click()
+    await settle()
+    await input(row('future-model').querySelector('.oauth-mapping-input input'), 'saved/future')
+    buttonNamed(dialog(), '保存映射修改（1）').click()
+    await settle()
+    assert.match(text(row('future-model')), /休眠/)
+    assert.equal(row('future-model').querySelector('.oauth-mapping-input input').value, 'saved/future')
+    assert.equal(buttonNamed(dialog(), '含未启用 7').getAttribute('aria-pressed'), 'true')
+  })
+
+  it('updates enabled visibility on refresh without treating authorization changes as mapping conflicts', async () => {
+    await mountPanel()
+    await input(row('claude-opus-4-5-thinking').querySelector('.oauth-mapping-input input'), 'saved/opus')
+    const mappings = mock.fixture.providerMappings.antigravity.mappings
+    mappings.find(item => item.upstreamModel === 'claude-opus-4-5-thinking').enabled = false
+    mappings.find(item => item.upstreamModel === 'gemini-3-flash').enabled = false
+    buttonNamed(dialog(), '刷新').click()
+    await settle()
+    assert.ok(row('claude-opus-4-5-thinking'))
+    assert.equal(row('gemini-3-flash'), null)
+    assert.equal(dialog().querySelector('.provider-conflict-confirm'), null)
+    assert.equal(buttonNamed(dialog(), '保存映射修改（1）').disabled, false)
+    buttonNamed(row('claude-opus-4-5-thinking'), '撤销').click()
+    await settle()
+    assert.equal(row('claude-opus-4-5-thinking'), null)
   })
 
   it('saves mapping changes with expectedRevision and handles 409 conflict confirmation flow', async () => {

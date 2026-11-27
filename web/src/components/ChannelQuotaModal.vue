@@ -18,9 +18,9 @@ const saving = ref(false)
 const querying = ref(false)
 const error = ref('')
 const result = ref<ChannelQuotaSnapshot | null>(null)
-const targetKeyId = ref(props.channel.quota?.providerId ? '' : props.channel.keys?.[0]?.id || '')
+const targetKeyId = ref(props.channel.keys?.[0]?.id || '')
 const selectedKey = computed(() => props.channel.keys?.find((key) => key.id === targetKeyId.value))
-const currentQuota = computed(() => targetKeyId.value ? selectedKey.value?.quota : props.channel.quota)
+const currentQuota = computed(() => selectedKey.value?.quota)
 const providerId = ref('')
 const newApiMode = ref<'system' | 'token'>('system')
 const credentialSource = ref<NonNullable<ChannelQuotaSettings['credentialSource']>>('CHANNEL_KEY')
@@ -79,7 +79,6 @@ const dirty = computed(() => {
 })
 const missing = computed(() => providerId.value && !providers.value.some((p) => p.id === providerId.value))
 const state = computed(() => result.value ? quotaStatus(result.value) : null)
-const attemptedKeys = computed(() => result.value?.attemptedKeys ?? [])
 
 async function loadProviders() {
   error.value = ''
@@ -90,6 +89,8 @@ async function loadProviders() {
 }
 
 async function save() {
+  const keyId = selectedKey.value?.id
+  if (!keyId) return
   error.value = ''
   saving.value = true
   try {
@@ -97,10 +98,8 @@ async function save() {
     if (dedicatedMode.value && !credentialSet.value && !settings.credential && !settings.clearCredential) {
       throw new Error(systemMode.value ? '请填写系统访问令牌' : '请填写专用查询凭据')
     }
-    const channel = targetKeyId.value
-      ? await api.updateChannelKeyQuota(props.channel.id, targetKeyId.value, settings)
-      : await api.updateChannelQuota(props.channel.id, settings)
-    const quota = targetKeyId.value ? channel.keys.find((key) => key.id === targetKeyId.value)?.quota : channel.quota
+    const channel = await api.updateChannelKeyQuota(props.channel.id, keyId, settings)
+    const quota = channel.keys.find((key) => key.id === keyId)?.quota
     if (!quota) throw new Error('保存成功，但未返回目标密钥的额度配置')
     syncForm(quota)
     emit('saved', channel)
@@ -109,12 +108,12 @@ async function save() {
 }
 
 async function query() {
+  const keyId = selectedKey.value?.id
+  if (!keyId) return
   querying.value = true
   error.value = ''
   result.value = null
-  try { result.value = targetKeyId.value
-    ? await api.queryChannelKeyQuota(props.channel.id, targetKeyId.value)
-    : await api.queryChannelQuota(props.channel.id) }
+  try { result.value = await api.queryChannelKeyQuota(props.channel.id, keyId) }
   catch (cause) { error.value = cause instanceof Error ? cause.message : String(cause) }
   finally { querying.value = false }
 }
@@ -127,17 +126,17 @@ onMounted(loadProviders)
     <div class="quota-panel">
       <p class="muted small">按密钥配置其所属上游账户，分别查询余额。同一账户的多个密钥可能显示相同余额，请勿相加。</p>
       <label class="field">
-        <span>查询对象</span>
-        <select v-model="targetKeyId" :disabled="saving || querying || dirty">
+        <span>查询密钥</span>
+        <select v-model="targetKeyId" :disabled="!selectedKey || saving || querying || dirty">
+          <option v-if="!channel.keys?.length" value="" disabled>暂无已保存密钥</option>
           <option v-for="key in channel.keys" :key="key.id" :value="key.id">{{ key.name }}{{ key.quota?.providerId ? '（已配置）' : '（未启用）' }}</option>
-          <option value="">渠道配置（原有）</option>
         </select>
-        <small v-if="selectedKey">此密钥独立保存账户配置和查询令牌。查询失败时不会切换到其他密钥或使用渠道级账户。</small>
-        <small v-else>保留原有渠道级查询；多个账户请在上方选择具体密钥分别配置。</small>
+        <small v-if="selectedKey">此密钥独立保存账户配置和查询令牌，查询失败时不会切换到其他密钥。</small>
+        <small v-else>请先为此渠道添加并保存密钥，再配置和查询额度。</small>
       </label>
       <label class="field">
         <span>额度查询插件</span>
-        <select v-model="providerId" :disabled="loading || saving || querying" @change="changeProvider">
+        <select v-model="providerId" :disabled="!selectedKey || loading || saving || querying" @change="changeProvider">
           <option value="">不启用</option>
           <option v-if="missing" :value="providerId">{{ providerId }}（未加载）</option>
           <option v-for="provider in providers" :key="provider.id" :value="provider.id">{{ provider.displayName }}</option>
@@ -177,7 +176,7 @@ onMounted(loadProviders)
           <span>{{ systemMode ? '系统访问令牌' : '专用查询凭据' }} <span v-if="credentialSet && !clearCredential" class="badge success">已保存</span></span>
           <SecretInput id="quota-query-credential" v-model="credential" :placeholder="credentialSet ? '留空保留原凭据，输入新凭据可替换' : '填写同一上游账户的查询凭据，不含 Bearer 前缀'" autocomplete="new-password" :disabled="saving || querying || clearCredential" />
           <small v-if="systemMode">从上游账户设置中生成系统访问令牌。令牌单独加密保存，仅用于额度查询。</small>
-          <small v-else>凭据独立加密保存，仅用于当前查询对象的账户额度查询，不参与模型请求。</small>
+          <small v-else>凭据独立加密保存，仅用于当前密钥所属账户的额度查询，不参与模型请求。</small>
         </label>
         <div v-if="credentialSet">
           <button type="button" class="button ghost mini" :disabled="saving || querying || Boolean(credential)" @click="clearCredential = !clearCredential">{{ clearCredential ? '撤销清除' : '清除已保存凭据' }}</button>
@@ -193,7 +192,7 @@ onMounted(loadProviders)
         </label>
       </details>
       <div v-if="dirty" class="quota-unsaved">
-        <p class="muted small">配置已修改，请保存后查询。保存或放弃修改后可切换查询对象。</p>
+        <p class="muted small">配置已修改，请保存后查询。保存或放弃修改后可切换密钥。</p>
         <button type="button" class="button ghost mini" :disabled="saving || querying" @click="resetForm">放弃修改</button>
       </div>
       <p v-if="error" class="callout danger" role="alert">{{ error }}</p>
@@ -221,10 +220,6 @@ onMounted(loadProviders)
               <small class="muted quota-key-id">ID：{{ result.queryKey.id }}</small>
             </dd>
           </template>
-          <template v-if="attemptedKeys.length > 1">
-            <dt>查询顺序</dt>
-            <dd>{{ attemptedKeys.map((key) => key.name).join(' → ') }}<small class="muted quota-key-id">前一密钥认证失败后回退</small></dd>
-          </template>
           <template v-if="result.used != null"><dt>已用</dt><dd>{{ result.used }} {{ result.unit }}</dd></template>
           <template v-if="result.limit != null"><dt>总额度</dt><dd>{{ result.limit }} {{ result.unit }}</dd></template>
           <template v-if="result.planName"><dt>套餐</dt><dd>{{ result.planName }}</dd></template>
@@ -236,8 +231,8 @@ onMounted(loadProviders)
     </div>
     <template #footer>
       <button type="button" class="button ghost" @click="$emit('close')">关闭</button>
-      <button type="button" class="button subtle" :disabled="!dirty || saving || querying || loading" @click="save">{{ saving ? '保存中…' : '保存设置' }}</button>
-      <button type="button" class="button primary" :disabled="!providerId || dirty || missing || saving || querying || loading || (dedicatedMode && !credentialSet)" @click="query">{{ querying ? '查询中…' : '查询额度' }}</button>
+      <button type="button" class="button subtle" :disabled="!selectedKey || !dirty || saving || querying || loading" @click="save">{{ saving ? '保存中…' : '保存设置' }}</button>
+      <button type="button" class="button primary" :disabled="!selectedKey || !providerId || dirty || missing || saving || querying || loading || (dedicatedMode && !credentialSet)" @click="query">{{ querying ? '查询中…' : '查询额度' }}</button>
     </template>
   </Modal>
 </template>

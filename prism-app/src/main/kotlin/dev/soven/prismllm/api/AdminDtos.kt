@@ -244,6 +244,8 @@ data class ChannelResponse(
     val keyDisableMode: String = "inherit",
     /** 渠道下订阅账号摘要，供访问范围树展示；不含任何凭据。 */
     val oauthAccounts: List<ChannelOAuthAccountResponse> = emptyList(),
+    /** 订阅渠道列表的展示范围；models/modelMappings 仍保留完整目录供账号设置使用。 */
+    val enabledModels: List<String>? = null,
 )
 
 /**
@@ -412,6 +414,7 @@ fun ChannelRecord.toResponse(oauthAccounts: List<UpstreamCredential> = emptyList
     keys = keys.map { it.toResponse() },
     egressProxies = egressProxies.map { it.toResponse() },
     oauthAccounts = oauthAccounts.map { it.toOAuthAccountResponse() },
+    enabledModels = if (isProviderChannel) modelsForEnabledCredentials(oauthAccounts) else null,
     requestOverrides = requestOverrides,
     quota = ChannelQuotaSettingsResponse(quota.providerId, quota.config, quota.credentialSource, quotaCredential != null),
     kind = kind.value,
@@ -487,6 +490,7 @@ data class ClientKeyRequest(
     val maxConcurrentRequests: Int? = null,
     val requestsPerMinute: Int? = null,
     val accessPolicy: ClientKeyAccessPolicyDto? = null,
+    val ipPolicy: ClientKeyIpPolicyDto? = null,
 )
 
 /**
@@ -511,6 +515,7 @@ data class ClientKeyResponse(
     val rotatedAt: Long?,
     val revokedAt: Long?,
     val accessPolicy: ClientKeyAccessPolicyDto,
+    val ipPolicy: ClientKeyIpPolicyDto,
 )
 
 /** 映射调用方密钥的完整管理读响应，尚未加载额度时使用默认用量。 */
@@ -529,6 +534,7 @@ fun ClientKeyRecord.toResponse() = ClientKeyResponse(
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
     accessPolicy = accessPolicy.toDto(),
+    ipPolicy = ipPolicy.toDto(),
 )
 
 /** 映射调用方密钥的完整管理读响应及已加载的额度用量。 */
@@ -547,6 +553,7 @@ fun ClientKeyRecord.toResponse(usage: ClientKeyQuotaUsageResponse) = ClientKeyRe
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
     accessPolicy = accessPolicy.toDto(),
+    ipPolicy = ipPolicy.toDto(),
 )
 
 fun quotaUsageResponse(usage: ClientKeyQuotaUsage) = ClientKeyQuotaUsageResponse(
@@ -778,6 +785,7 @@ data class ClientKeyCreatedResponse(
     val rotatedAt: Long?,
     val revokedAt: Long?,
     val accessPolicy: ClientKeyAccessPolicyDto,
+    val ipPolicy: ClientKeyIpPolicyDto,
 )
 
 /** 创建或轮换时一次性回显凭据与完整访问范围。 */
@@ -796,6 +804,7 @@ fun ClientKeyRecord.toCreatedResponse(rawKey: String) = ClientKeyCreatedResponse
     rotatedAt = rotatedAt,
     revokedAt = revokedAt,
     accessPolicy = accessPolicy.toDto(),
+    ipPolicy = ipPolicy.toDto(),
 )
 
 /**
@@ -1726,6 +1735,8 @@ data class OAuthProviderModelMappingResponse(
     val mode: String,
     val mappingSource: String?,
     val catalogActive: Boolean,
+    /** 至少有一个启用账号授权且自身目录支持；与目录成员状态独立。 */
+    val enabled: Boolean = false,
 )
 
 @Serializable

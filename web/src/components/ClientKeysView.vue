@@ -18,6 +18,7 @@ import { useClientKeyActions } from '../utils/clientKeyActions'
 import { useSecretReveal } from '../utils/secretReveal'
 import { clientKeyAccessSummary, conflictingClientKeyAccessKeys, createUnrestrictedAccessPolicy, normalizeClientKeyAccessPolicy } from '../utils/clientKeyAccess'
 import { emptyAccessDimensionLabels } from '../utils/clientKeyAccessTree'
+import { buildClientKeyIpPolicy, clientKeyIpPolicySummary } from '../utils/clientKeyIpPolicy'
 
 interface ClientKeyForm {
   name: string
@@ -28,6 +29,8 @@ interface ClientKeyForm {
   maxConcurrentRequests: number | string | null
   requestsPerMinute: number | string | null
   accessPolicy: ClientKeyAccessPolicy
+  ipAllowlist: string
+  ipDenylist: string
 }
 
 const keys = ref<ClientKey[]>([])
@@ -72,6 +75,8 @@ const form = reactive<ClientKeyForm>({
   maxConcurrentRequests: '',
   requestsPerMinute: '',
   accessPolicy: createUnrestrictedAccessPolicy(),
+  ipAllowlist: '',
+  ipDenylist: '',
 })
 
 const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
@@ -108,6 +113,8 @@ function openCreate() {
     maxConcurrentRequests: '',
     requestsPerMinute: '',
     accessPolicy: createUnrestrictedAccessPolicy(),
+    ipAllowlist: '',
+    ipDenylist: '',
   })
   showForm.value = true
 }
@@ -124,6 +131,8 @@ function openEdit(key: ClientKey) {
     maxConcurrentRequests: key.maxConcurrentRequests ?? '',
     requestsPerMinute: key.requestsPerMinute ?? '',
     accessPolicy: normalizeClientKeyAccessPolicy(key.accessPolicy),
+    ipAllowlist: key.ipPolicy?.allowlist.join('\n') ?? '',
+    ipDenylist: key.ipPolicy?.denylist.join('\n') ?? '',
   })
   showForm.value = true
 }
@@ -146,6 +155,7 @@ async function save() {
     const payload = {
       ...buildClientKeyPayload(form, fromLocalInput(form.expiresAt)),
       accessPolicy: normalizeClientKeyAccessPolicy(form.accessPolicy),
+      ipPolicy: buildClientKeyIpPolicy(form.ipAllowlist, form.ipDenylist),
     }
     if (editingId.value) {
       await api.updateClientKey(editingId.value, payload)
@@ -284,6 +294,9 @@ onMounted(() => {
                     <span class="access-summary-item">{{ part }}</span>
                   </template>
                 </div>
+                <div v-if="clientKeyIpPolicySummary(key.ipPolicy)" class="client-key-access-summary muted small">
+                  {{ clientKeyIpPolicySummary(key.ipPolicy) }}
+                </div>
               </td>
               <td><code class="key-prefix" :title="key.keyPrefix">{{ key.keyPrefix }}…</code></td>
               <td>
@@ -390,6 +403,23 @@ onMounted(() => {
           </span>
         </label>
         <ClientKeyAccessFields v-model="form.accessPolicy" />
+        <section class="client-key-ip-policy" aria-labelledby="client-key-ip-policy-title">
+          <h3 id="client-key-ip-policy-title">调用 IP 限制</h3>
+          <p class="muted small">支持 IPv4、IPv6 和 CIDR 网段，每行一条或用逗号分隔，每份名单最多 256 条。两份名单同时生效，黑名单优先；拒绝的请求返回 403。</p>
+          <div class="form-grid-two">
+            <label class="field" for="client-key-ip-allowlist">
+              <span>IP 白名单</span>
+              <textarea id="client-key-ip-allowlist" v-model="form.ipAllowlist" rows="4" placeholder="203.0.113.10&#10;198.51.100.0/24&#10;2001:db8::/32" spellcheck="false" />
+              <small>留空不限制来源；填写后只放行匹配的 IP 或网段。</small>
+            </label>
+            <label class="field" for="client-key-ip-denylist">
+              <span>IP 黑名单</span>
+              <textarea id="client-key-ip-denylist" v-model="form.ipDenylist" rows="4" placeholder="203.0.113.20&#10;192.0.2.0/24" spellcheck="false" />
+              <small>匹配即拒绝，即使该地址也在白名单中；留空不额外拦截。</small>
+            </label>
+          </div>
+          <p class="muted small">来源 IP 沿用网关的可信代理配置；仅信任来自可信代理的转发头。</p>
+        </section>
       </form>
       <template #footer>
         <span class="access-footer-status" :class="{ 'is-error': emptyAccessScopes.length > 0 }" role="status">

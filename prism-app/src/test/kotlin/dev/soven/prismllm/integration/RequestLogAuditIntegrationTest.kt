@@ -1052,7 +1052,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 }
             }
 
-            migrateTo(migrationUrl, "77")
+            migrateTo(migrationUrl)
 
             val legacy = ClientKeyRecord(
                 id = "legacy-client",
@@ -1075,6 +1075,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 val found = assertNotNull(clients.find(legacy.id), "V69/V70/V71 不应重置旧 caller 的策略或其它字段")
                 assertEquals(ClientKeyAccessPolicy(), found.accessPolicy, "V69/V70/V71 不应把旧 caller 改成任何名单模式")
                 assertTrue(found.accessPolicy.isUnrestricted)
+                assertTrue(found.ipPolicy.isUnrestricted, "V81 不应为旧 caller 增加 IP 限制")
                 assertEquals(legacy, found)
                 assertEquals(legacy, clients.findByHash("legacy-hash"))
                 assertEquals(listOf(legacy), clients.list())
@@ -1211,7 +1212,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     .listAll().associateBy { it.id }
             }
 
-            migrateTo(migrationUrl, "77")
+            migrateTo(migrationUrl)
 
             val policies = listOf(
                 ClientKeyAccessPolicy(
@@ -1252,6 +1253,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     assertEquals(saved, current, "完整策略与调用方字段都应保留")
                     assertEquals(saved, clients.findByHash(saved.keyHash))
                     assertFalse(current.accessPolicy.isUnrestricted, "caller 空白名单仍是 deny-all，不是 OAuth models=[] 的跟随语义")
+                    assertTrue(current.ipPolicy.isUnrestricted, "V81 应独立保留旧 caller 的访问范围，不增加 IP 限制")
                 }
                 val migratedAccounts = accounts.listAll().associateBy { it.id }
                 assertEquals(savedAccounts, migratedAccounts, "账号的 upstream 授权、目录与关联不得改写")
@@ -1276,7 +1278,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 connection.createStatement().use { statement ->
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("77", result.getString(1))
+                        assertEquals("81", result.getString(1))
                     }
                     statement.executeQuery("select id, model_mapping_revision, key_disable_policy_revision, updated_at from channels order by id").use { result ->
                         for (id in listOf("v69-provider", "v69-static")) {

@@ -5,6 +5,9 @@ import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyAllowedChannelKey
 import dev.soven.prismllm.quota.domain.ClientKeyCredentialType
+import dev.soven.prismllm.quota.domain.ClientKeyIpPolicy
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -53,9 +56,11 @@ class ClientKeyRepository(private val database: Database) {
         expiresAt: Long?,
         quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
         accessPolicy: ClientKeyAccessPolicy = ClientKeyAccessPolicy(),
+        ipPolicy: ClientKeyIpPolicy = ClientKeyIpPolicy(),
     ): ClientKeyRecord = suspendTransaction(database) {
         exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
         val policy = accessPolicy.normalized()
+        val normalizedIpPolicy = ipPolicy.normalized()
         val now = System.currentTimeMillis()
         val id = UUID.randomUUID().toString()
         ClientKeys.insert {
@@ -71,6 +76,8 @@ class ClientKeyRepository(private val database: Database) {
             it[ClientKeys.requestsPerMinute] = quotas.requestsPerMinute
             it[createdAt] = now
             setAccessModes(it, policy)
+            it[ipAllowlist] = Json.encodeToString(normalizedIpPolicy.allowlist)
+            it[ipDenylist] = Json.encodeToString(normalizedIpPolicy.denylist)
         }
         saveAccessPolicy(id, policy)
         toRecords(ClientKeys.selectAll().where { ClientKeys.id eq id }.toList()).single()
@@ -85,10 +92,12 @@ class ClientKeyRepository(private val database: Database) {
         expiresAt: Long?,
         quotas: ClientKeyQuotaLimits = ClientKeyQuotaLimits(),
         accessPolicy: ClientKeyAccessPolicy? = null,
+        ipPolicy: ClientKeyIpPolicy? = null,
     ): ClientKeyRecord? =
         suspendTransaction(database) {
             exec("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             val policy = accessPolicy?.normalized()
+            val normalizedIpPolicy = ipPolicy?.normalized()
             val updated = ClientKeys.update({
                 (ClientKeys.id eq id) and ClientKeys.revokedAt.isNull()
             }) {
@@ -100,6 +109,10 @@ class ClientKeyRepository(private val database: Database) {
                 it[ClientKeys.maxConcurrentRequests] = quotas.maxConcurrentRequests
                 it[ClientKeys.requestsPerMinute] = quotas.requestsPerMinute
                 if (policy != null) setAccessModes(it, policy)
+                if (normalizedIpPolicy != null) {
+                    it[ipAllowlist] = Json.encodeToString(normalizedIpPolicy.allowlist)
+                    it[ipDenylist] = Json.encodeToString(normalizedIpPolicy.denylist)
+                }
             }
             if (updated == 0) {
                 null
@@ -309,5 +322,9 @@ class ClientKeyRepository(private val database: Database) {
         rotatedAt = row[ClientKeys.rotatedAt],
         revokedAt = row[ClientKeys.revokedAt],
         accessPolicy = policy,
+        ipPolicy = ClientKeyIpPolicy(
+            allowlist = Json.decodeFromString<Set<String>>(row[ClientKeys.ipAllowlist]),
+            denylist = Json.decodeFromString<Set<String>>(row[ClientKeys.ipDenylist]),
+        ),
     )
 }

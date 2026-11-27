@@ -236,6 +236,8 @@ export interface Channel {
   createdAt: number
   updatedAt: number
   models: string[]
+  /** 订阅渠道列表的展示范围；完整目录仍由 models/modelMappings 提供。 */
+  enabledModels?: string[] | null
   modelMappings: ChannelModelMapping[]
   priority: number
   keys: ChannelKey[]
@@ -517,6 +519,11 @@ export interface ClientKeyAccessPolicy {
   models: ClientKeyIdScope
 }
 
+export interface ClientKeyIpPolicy {
+  allowlist: string[]
+  denylist: string[]
+}
+
 export interface ClientKey {
   id: string
   name: string
@@ -532,6 +539,7 @@ export interface ClientKey {
   rotatedAt: number | null
   revokedAt: number | null
   accessPolicy: ClientKeyAccessPolicy
+  ipPolicy: ClientKeyIpPolicy
 }
 
 export interface ClientKeyRequest {
@@ -544,6 +552,7 @@ export interface ClientKeyRequest {
   requestsPerMinute?: number | null
   /** 更新省略或传 null 时保留已有范围；完整对象原子替换三个维度。 */
   accessPolicy?: ClientKeyAccessPolicy | null
+  ipPolicy?: ClientKeyIpPolicy | null
 }
 
 export interface ClientKeyCreated extends Omit<ClientKey, 'quotaUsage'> {
@@ -1449,6 +1458,8 @@ export interface OAuthProviderModelMapping {
   mode: OAuthModelMappingMode
   mappingSource: string | null
   catalogActive: boolean
+  /** 至少有一个启用账号授权且自身目录支持，不表示实时调度资格。 */
+  enabled: boolean
 }
 
 /** 映射按提供方共享，账号自己的 modelCatalog 与 models 仍是 upstream id。 */

@@ -36,7 +36,7 @@ export interface ProviderListItem {
   kind: 'custom' | 'subscription'
   /** UI 展示名称；内置订阅渠道自动去掉历史的「（系统）」后缀。 */
   displayName: string
-  /** 后端持久化通道；未置备的官方订阅提供方为 null。 */
+  /** 列表展示通道；订阅渠道的 models 限于启用账号授权范围，原始目录不变。 */
   channel: Channel | null
   oauthProvider: OAuthProviderInfo | null
   providerId: string | null
@@ -150,8 +150,10 @@ export function buildProviderListItems(
   const customChannels: Channel[] = []
   for (const channel of channels) {
     if (channel.kind === 'provider') {
-      providerChannelsById.set(channel.id, channel)
-      if (channel.provider) providerChannelsByProvider.set(channel.provider, channel)
+      const enabledModels = new Set(channel.enabledModels ?? [])
+      const displayChannel = { ...channel, models: channel.models.filter((model) => enabledModels.has(model)) }
+      providerChannelsById.set(channel.id, displayChannel)
+      if (channel.provider) providerChannelsByProvider.set(channel.provider, displayChannel)
     } else {
       customChannels.push(channel)
     }
@@ -188,8 +190,7 @@ export function buildProviderListItems(
   }
 
   // 兜底：存在后端已置备的 provider 渠道但不在 oauthProviders 列表里时仍然展示，不丢数据。
-  for (const channel of channels) {
-    if (channel.kind !== 'provider') continue
+  for (const channel of providerChannelsById.values()) {
     const pid = channel.provider ?? ''
     if (pid && seenProviderIds.has(pid)) continue
     const accounts = pid ? (accountsByProvider.get(pid) ?? []) : []

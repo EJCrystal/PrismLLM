@@ -8,8 +8,8 @@ import org.junit.jupiter.api.Test
 import kotlin.test.assertTrue
 
 /**
- * 配额模块的依赖边界：策略与内存限流器只允许 JDK、Kotlin 标准库与协程原语；
- * 应用服务可以依赖共享内核的错误类型；持久化可再加 Exposed，
+ * 配额模块的依赖边界：策略与内存限流器只允许 JDK、Kotlin 标准库、协程原语与共享 IP 网段值对象；
+ * 应用服务可以依赖共享内核的错误类型；持久化可再加 Exposed 与 JSON 序列化，
  * 但都不感知渠道、路由或 HTTP 框架。
  *
  * 额度策略不感知渠道、路由、持久化或 HTTP；一旦引入这些依赖，
@@ -33,6 +33,7 @@ class QuotaArchitectureTest {
         "kotlinx.coroutines..",
         "org.jetbrains.annotations..",
         "dev.soven.prismllm.quota.domain..",
+        "dev.soven.prismllm.shared.net..",
     )
 
     private val quotaInfraDependencies = arrayOf(
@@ -46,11 +47,12 @@ class QuotaArchitectureTest {
         "dev.soven.prismllm.shared.error..",
     )
 
-    /** 调用方密钥与额度账本的持久化只认识本模块领域模型与 Exposed。 */
+    /** 调用方密钥与额度账本的持久化只认识本模块领域模型、Exposed 与 JSON 序列化。 */
     private val quotaPersistenceDependencies = arrayOf(
         "java..",
         "kotlin..",
         "kotlinx.coroutines..",
+        "kotlinx.serialization..",
         "org.jetbrains.annotations..",
         "org.jetbrains.exposed..",
         "dev.soven.prismllm.quota.domain..",
