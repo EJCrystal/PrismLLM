@@ -372,10 +372,7 @@ class GatewayApplication(
     val modelTestSettingsRepository = ModelTestSettingsRepository(databaseFactory.database)
     val webSearchSettingsRepository = WebSearchSettingsRepository(databaseFactory.database, credentialCipher)
     val channelEgressSettingsRepository = ChannelEgressSettingsRepository(databaseFactory.database)
-    val channelProxyHostAllowlist = ChannelProxyHostAllowlist(
-        config.channelProxyAllowedHosts,
-        channelEgressSettingsRepository,
-    )
+    val channelProxyHostAllowlist = ChannelProxyHostAllowlist(channelEgressSettingsRepository)
     val systemPromptSettingsRepository = SystemPromptSettingsRepository(databaseFactory.database)
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)

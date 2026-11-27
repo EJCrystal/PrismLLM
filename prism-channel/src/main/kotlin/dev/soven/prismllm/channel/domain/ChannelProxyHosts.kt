@@ -16,11 +16,7 @@ object ChannelProxyHosts {
     private val loopbackHosts = setOf("127.0.0.1", "localhost", "::1")
     private val hostPattern = Regex("[a-z0-9][a-z0-9._-]*")
 
-    /** 解析逗号分隔的部署配置；未设置时返回空列表。 */
-    fun parse(raw: String?, setting: String = "CHANNEL_PROXY_ALLOWED_HOSTS"): List<String> =
-        parse(raw?.split(',') ?: emptyList(), setting)
-
-    fun parse(entries: Iterable<String>, setting: String = "CHANNEL_PROXY_ALLOWED_HOSTS"): List<String> {
+    fun parse(entries: Iterable<String>, setting: String = "渠道出口代理白名单"): List<String> {
         // 尾点在 DNS 中表示绝对域名；统一去掉后再去重和比较，避免保存后匹配不到。
         val normalized = entries.map(::normalizeEntry).filter { it.isNotEmpty() }.distinct()
         require(normalized.size <= MAX_ALLOWED_HOSTS) { "$setting 最多允许 $MAX_ALLOWED_HOSTS 个主机" }
