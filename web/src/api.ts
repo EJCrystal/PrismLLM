@@ -254,6 +254,8 @@ export const api = {
   startOAuthLogin: (payload: OAuthLoginStartRequest) =>
     request<OAuthLoginStart>('/oauth-login/start', { method: 'POST', body: JSON.stringify(payload) }),
   listAntigravityAgyAccounts: () => request<AntigravityAgyAccounts>('/antigravity/agy/accounts'),
+  deleteAntigravityAgyAccount: (profileId: string) =>
+    request<void>(`/antigravity/agy/accounts/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
   startAntigravityAgyLogin: (payload: { name?: string; sourceAccountId?: string | null; accountId?: string | null }) =>
     request<AntigravityAgyLogin>('/antigravity/agy/logins', { method: 'POST', body: JSON.stringify(payload) }),
   getAntigravityAgyLogin: (loginId: string) =>

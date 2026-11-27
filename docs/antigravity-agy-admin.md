@@ -63,8 +63,11 @@ ANTIGRAVITY_AGY_PROXY=http://127.0.0.1:7897
    ACP 取消当前 turn。同一个 AGY profile 可供后续请求重新启动和复用，不会重新登录或切换模型。
 
 关闭弹窗、切换提供方或点击取消会终止本次所属 CLI；登录最长十分钟，不自动重试。
-取消或失败不会创建成功档案，但 CLI 可能已经保存了登录中途产生的自身状态；不会据此放行路由。
+取消或登录校验失败不会创建成功档案，但 CLI 可能已经保存了登录中途产生的自身状态；不会据此放行路由。
+若 CLI 校验已成功、后续数据库登记失败，已持久化的档案仍会占用名额；没有账号或路由引用时可显式清理，不能据此放行路由。
 重新登录已有旧账号关联的 CLI 档案时复用同一独立 home，由 CLI 管理续期；不要主动清除凭据。
+
+孤儿档案可在管理台逐项清理。只有不再被任何订阅账号、迁移来源、已保存模型路由或进行中的登录引用的档案才会显示清理按钮；确认后会删除其独立 agy home 与档案记录，释放一个档案名额。清理不可撤销，后续使用需要重新授权。该操作只删除本机 agy 凭据和档案元数据，不会撤销 Google 已签发的授权。系统不会自动清理档案，也不会清理仍关联或正在使用的账号凭据。
 
 ## 管理 API
 
@@ -78,6 +81,7 @@ ANTIGRAVITY_AGY_PROXY=http://127.0.0.1:7897
 | GET | `/antigravity/agy/logins/{loginId}` | 轮询脱敏状态和官方登录链接 |
 | POST | `/antigravity/agy/logins/{loginId}/code` | `{ "code": "一次性验证码" }`，202 |
 | DELETE | `/antigravity/agy/logins/{loginId}` | 取消本次登录，204 |
+| DELETE | `/antigravity/agy/accounts/{profileId}` | 确认后删除孤儿档案与本地 agy home；成功 204，仍被引用或登录占用时 409 |
 
 状态为 `PREPARING`、`AWAITING_CODE`、`VERIFYING`、`REGISTERING`、`AUTHENTICATED`、`FAILED`、`CANCELLED`、`EXPIRED`。CLI 验证成功后先进入 `REGISTERING`，仅在订阅路由账号登记成功后进入 `AUTHENTICATED`；此阶段不可取消。档案列表和状态查询只读，不会创建、恢复或重置数据库账号。
 发起和提交验证码不是可无条件重试的操作：全局只允许一个在途登录，第二次发起返回 409；

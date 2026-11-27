@@ -17,13 +17,17 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.IOException
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.file.Files
+import java.nio.file.FileVisitResult
 import java.nio.file.LinkOption.NOFOLLOW_LINKS
 import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.UUID
 import java.util.concurrent.TimeUnit
@@ -76,6 +80,30 @@ internal class AntigravityAgyLoginService(
     fun list(): List<AntigravityAgyAccount> = synchronized(monitor) {
         load()
         accounts.toList()
+    }
+
+    fun isProfileInUse(profileId: String): Boolean = synchronized(monitor) {
+        sessions.values.any {
+            it.profileId == profileId && (!terminal(it.snapshot.state) || it.process != null)
+        }
+    }
+
+    fun deleteOrphan(profileId: String, isReferenced: (AntigravityAgyAccount) -> Boolean) = synchronized(monitor) {
+        if (closed) throw conflict("agy_login_unavailable", "官方 CLI 登录服务正在停止")
+        load()
+        val profile = accounts.find { it.id == profileId }
+            ?: throw notFound("agy_account_not_found", "CLI 授权档案不存在")
+        if (isProfileInUse(profileId)) {
+            throw conflict("agy_profile_busy", "该 CLI 档案正在授权或登记，暂不能清理")
+        }
+        if (isReferenced(profile)) {
+            throw conflict("agy_profile_referenced", "该 CLI 档案仍被订阅账号或模型路由引用，不能清理")
+        }
+        deleteProfileHome(profile.id)
+        val next = accounts.filterNot { it.id == profileId }
+        save(next)
+        accounts.clear()
+        accounts.addAll(next)
     }
 
     fun start(owner: String, name: String?, sourceAccountId: String?, accountId: String? = null): AntigravityAgyLogin = synchronized(monitor) {
@@ -259,6 +287,31 @@ internal class AntigravityAgyLoginService(
         } finally {
             Files.deleteIfExists(temporary)
         }
+    }
+
+    private fun deleteProfileHome(profileId: String) {
+        val stateDirectory = config.stateDir.toAbsolutePath().normalize()
+        if (generateSequence(stateDirectory) { it.parent }.any(Files::isSymbolicLink)) {
+            throw conflict("agy_profile_unsafe_path", "档案路径安全校验失败，未执行清理")
+        }
+        val home = stateDirectory.resolve(profileId).normalize()
+        check(home.parent == stateDirectory)
+        if (!Files.exists(home, NOFOLLOW_LINKS)) return
+        if (!Files.isDirectory(home, NOFOLLOW_LINKS) || Files.isSymbolicLink(home)) {
+            throw conflict("agy_profile_unsafe_path", "档案目录安全校验失败，未执行清理")
+        }
+        Files.walkFileTree(home, object : SimpleFileVisitor<Path>() {
+            override fun visitFile(file: Path, attributes: BasicFileAttributes): FileVisitResult {
+                Files.delete(file)
+                return FileVisitResult.CONTINUE
+            }
+
+            override fun postVisitDirectory(directory: Path, exception: IOException?): FileVisitResult {
+                if (exception != null) throw exception
+                Files.delete(directory)
+                return FileVisitResult.CONTINUE
+            }
+        })
     }
 
     private fun terminate(process: Process) {

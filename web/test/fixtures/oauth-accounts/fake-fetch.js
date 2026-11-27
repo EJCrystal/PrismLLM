@@ -30,7 +30,7 @@ export function createOAuthFixtureFetch({ fixture = createOAuthAccountsFixture()
     if (method === 'GET') {
       const lists = {
         '/admin/api/oauth-accounts': fixture.accounts,
-        '/admin/api/antigravity/agy/accounts': { configured: false, accounts: [] },
+        '/admin/api/antigravity/agy/accounts': fixture.agyAccounts ?? { configured: false, accounts: [] },
         '/admin/api/oauth-providers': fixture.providers,
         '/admin/api/channels': fixture.channels,
         '/admin/api/model-prices': [],
@@ -63,6 +63,15 @@ export function createOAuthFixtureFetch({ fixture = createOAuthAccountsFixture()
       log.allowed = true; log.body = body
       if (fixture.controls.failSuggestions) return error('合成候选读取失败', 503)
       return respond({ loaded: true, error: null, data: body.models.map(model => ({ model, candidates: [{ id: model, canonicalId: `catalog/${model}`, provider: 'Fixture catalog', providerId: 'fixture', developer: 'Synthetic developer', developerId: 'fixture' }] })) })
+    }
+    const agyDelete = /^\/admin\/api\/antigravity\/agy\/accounts\/([^/]+)$/.exec(url.pathname)
+    if (method === 'DELETE' && agyDelete) {
+      const accounts = fixture.agyAccounts?.accounts ?? []
+      const index = accounts.findIndex(account => account.id === agyDelete[1])
+      if (index < 0) return error('Synthetic agy account not found', 404, 'fixture_not_found')
+      log.allowed = true
+      accounts.splice(index, 1)
+      return respond(null, 204)
     }
     const match = /^\/admin\/api\/oauth-accounts\/(fixture-[a-z0-9-]+)(?:\/(settings|policy|models|channels|refresh|models\/refresh|quota\/refresh|cooldown\/clear))?$/.exec(url.pathname)
     if (!match) return deny('Fixture blocks authentication, upstream tests and unmatched routes')

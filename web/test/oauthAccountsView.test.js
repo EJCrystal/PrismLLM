@@ -1205,6 +1205,44 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     })
   }
 
+  it('requires explicit confirmation before deleting an orphan agy profile', async () => {
+    const fixture = createOAuthAccountsFixture()
+    fixture.agyAccounts = {
+      configured: true,
+      accounts: [{
+        id: 'orphan-agy-profile', name: '孤儿 CLI 档案', sourceAccountId: null,
+        subscriptionTier: 'PRO', currentModelId: 'gemini-4-argon', authorizedAt: FIXTURE_NOW,
+        routingEnabled: false, registered: false, cleanupEligible: true,
+      }, {
+        id: 'referenced-agy-profile', name: '仍关联的 CLI 档案', sourceAccountId: 'legacy-account',
+        subscriptionTier: 'PRO', currentModelId: 'gemini-4-argon', authorizedAt: FIXTURE_NOW,
+        routingEnabled: false, registered: false, cleanupEligible: false,
+      }],
+    }
+    const confirmations = []
+    let confirmed = false
+    window.confirm = message => { confirmations.push(message); return confirmed }
+    await mount(fixture)
+    const section = host.querySelector('section[aria-label="Antigravity agy 授权账号"]')
+    assert.ok(section)
+    buttonNamed(section, '清理孤儿档案').click()
+    await settle()
+    assert.equal(confirmations.length, 1)
+    assert.match(confirmations[0], /永久删除.*本地凭据目录/)
+    assert.equal(mock.requests.filter(request => request.method === 'DELETE').length, 0)
+
+    confirmed = true
+    buttonNamed(section, '清理孤儿档案').click()
+    await settle()
+    assert.equal(confirmations.length, 2)
+    assert.deepEqual(mock.requests.filter(request => request.method === 'DELETE').map(request => request.path), [
+      '/admin/api/antigravity/agy/accounts/orphan-agy-profile',
+    ])
+    assert.deepEqual(fixture.agyAccounts.accounts.map(account => account.id), ['referenced-agy-profile'])
+    assert.equal(section.querySelectorAll('article').length, 1)
+    assert.equal(section.querySelector('article button.danger'), null)
+  })
+
   it('cancels a late official agy start after the dialog is closed', async () => {
     let finish
     const cancelled = []

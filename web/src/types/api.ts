@@ -1432,6 +1432,7 @@ export interface AntigravityAgyAccount {
   accountId?: string | null
   enabled?: boolean
   routeModels?: string[]
+  cleanupEligible?: boolean
 }
 
 export interface AntigravityAgyAccounts {

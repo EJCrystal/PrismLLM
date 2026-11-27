@@ -120,6 +120,15 @@ open class OAuthAccountRepository(
         check(TransactionManager.current().db === database) { "oauth repository transaction database mismatch" }
     }
 
+    fun referencedAgyProfileIdsInTransaction(candidateIds: Set<String>): Set<String> {
+        requireTransaction()
+        if (candidateIds.isEmpty()) return emptySet()
+        return OAuthAccounts.select(OAuthAccounts.id, OAuthAccounts.agyProfileId)
+            .where { (OAuthAccounts.id inList candidateIds) or (OAuthAccounts.agyProfileId inList candidateIds) }
+            .flatMap { listOfNotNull(it[OAuthAccounts.id], it[OAuthAccounts.agyProfileId]) }
+            .toSet()
+    }
+
     fun findDetailedInTransaction(id: String, lock: Boolean = false): OAuthAccountRecord? {
         requireTransaction()
         val query = selectAccounts().where { OAuthAccounts.id eq id }

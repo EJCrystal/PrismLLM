@@ -14,6 +14,8 @@ import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import kotlinx.serialization.Serializable
+import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.transactions.transaction
 
 @Serializable
 data class AntigravityAgyAccountView(
@@ -28,6 +30,7 @@ data class AntigravityAgyAccountView(
     val enabled: Boolean = false,
     val routeModels: List<String> = emptyList(),
     val routingEnabled: Boolean = false,
+    val cleanupEligible: Boolean = false,
 )
 
 @Serializable
@@ -43,14 +46,20 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
     get("/antigravity/agy/accounts") {
         call.requireAdmin(app)
         call.response.headers.append("Cache-Control", "no-store")
-        val profiles = app.antigravityAgyLogin?.list().orEmpty()
-        val registered = app.oauthAccountRepository.listAll()
+        val loginService = app.antigravityAgyLogin
+        val profiles = loginService?.list().orEmpty()
+        val oauthAccounts = app.oauthAccountRepository.listAll()
+        val routes = app.modelCredentialRouteRepository.list()
+        val protectedIds = suspendTransaction(app.databaseFactory.database) {
+            app.agyProfileProtectedIds(profiles)
+        }
+        val registered = oauthAccounts
             .filter { it.authMethod == OAuthAccountAuthMethod.AGY }
             .associateBy { it.agyProfileId }
         val registeredById = registered.values.associateBy { it.id }
         val channels = app.channelRepository.list().associateBy { it.id }
         val routedModels = mutableMapOf<String, MutableSet<String>>()
-        app.modelCredentialRouteRepository.list().forEach { route ->
+        routes.forEach { route ->
             route.entries.filter { it.credentialType.value == "oauth" }.forEach { entry ->
                 val account = registeredById[entry.credentialId] ?: return@forEach
                 val channel = channels[entry.channelId] ?: return@forEach
@@ -76,9 +85,23 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
                 enabled = account?.enabled == true,
                 routeModels = models,
                 routingEnabled = account?.enabled == true && account.accountPlan == "PRO" && models.isNotEmpty(),
+                cleanupEligible = profile.id !in protectedIds &&
+                    profile.sourceAccountId?.let(protectedIds::contains) != true &&
+                    loginService?.isProfileInUse(profile.id) != true,
             )
         }
         call.respond(AntigravityAgyAccountsResponse(app.antigravityAgyLogin != null, views))
+    }
+    delete("/antigravity/agy/accounts/{profileId}") {
+        call.requireAdmin(app)
+        val service = app.antigravityAgyLogin ?: throw notFound("agy_login_not_found", "官方 CLI 登录未启用")
+        service.deleteOrphan(requireNotNull(call.parameters["profileId"])) { profile ->
+            transaction(app.databaseFactory.database) {
+                val protectedIds = app.agyProfileProtectedIds(listOf(profile))
+                profile.id in protectedIds || profile.sourceAccountId?.let(protectedIds::contains) == true
+            }
+        }
+        call.respond(HttpStatusCode.NoContent)
     }
     post("/antigravity/agy/logins") {
         val admin = call.requireAdmin(app)
@@ -117,6 +140,12 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
         service.stop(requireNotNull(call.parameters["loginId"]), admin.username)
         call.respond(HttpStatusCode.NoContent)
     }
+}
+
+private fun GatewayApplication.agyProfileProtectedIds(profiles: List<AntigravityAgyAccount>): Set<String> {
+    val candidateIds = profiles.flatMap { listOfNotNull(it.id, it.sourceAccountId) }.toSet()
+    return oauthAccountRepository.referencedAgyProfileIdsInTransaction(candidateIds) +
+        modelCredentialRouteRepository.referencedCredentialIdsInTransaction(candidateIds)
 }
 
 internal suspend fun GatewayApplication.registerAgyProfile(profile: AntigravityAgyAccount) {

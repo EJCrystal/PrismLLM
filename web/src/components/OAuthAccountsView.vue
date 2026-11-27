@@ -859,6 +859,7 @@ async function deleteAccount(account: OAuthAccount) {
   busyId.value = account.id
   try {
     await api.deleteOAuthAccount(account.id)
+    if (account.provider === 'antigravity') agyAccountsRevision.value++
     notify('订阅账号已删除')
     await load()
     emit('changed')

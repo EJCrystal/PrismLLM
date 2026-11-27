@@ -16,6 +16,7 @@ import java.net.URLEncoder
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
+import java.util.UUID
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -153,14 +154,141 @@ class AntigravityAgyLoginServiceTest {
             waitFor(service, login.loginId, "AWAITING_CODE")
             service.submit(login.loginId, "admin", "fixture-code")
 
-            assertEquals("fixture-model", withTimeout(8_000) { registering.await() }.currentModelId)
+            val registeringProfile = withTimeout(8_000) { registering.await() }
+            assertEquals("fixture-model", registeringProfile.currentModelId)
             assertEquals("REGISTERING", service.get(login.loginId, "admin").state)
             assertFailsWith<GatewayError> { service.stop(login.loginId, "admin") }
+            assertEquals("agy_profile_busy", assertFailsWith<GatewayError> {
+                service.deleteOrphan(registeringProfile.id) { false }
+            }.code)
 
             finishRegistration.complete(Unit)
             waitFor(service, login.loginId, "AUTHENTICATED")
             repeat(3) { service.get(login.loginId, "admin") }
             assertEquals(1, registrations)
+        }
+    }
+
+    @Test
+    fun orphanProfileCleanupDeletesItsHomeAndReleasesTheProfileSlot() = runBlocking {
+        val configuration = config()
+        val profiles = seedProfiles(configuration, 100)
+        val home = Files.createDirectory(configuration.stateDir.resolve(profiles.first().id))
+        val credentials = Files.createDirectories(home.resolve("nested/credentials"))
+        Files.writeString(credentials.resolve("credential.fixture"), "synthetic credential")
+        val outside = Files.createDirectory(root.resolve("outside"))
+        Files.writeString(outside.resolve("keep.fixture"), "untouched")
+        Files.createSymbolicLink(home.resolve("outside-link"), outside)
+        val sibling = Files.createDirectory(configuration.stateDir.resolve(profiles.last().id))
+        Files.writeString(sibling.resolve("keep.fixture"), "sibling unchanged")
+        AntigravityAgyLoginService(
+            configuration,
+        ) { AcpPilotCatalog(listOf("fixture-model"), "fixture-model", "PRO") }.use { service ->
+            assertEquals("agy_account_limit", assertFailsWith<GatewayError> {
+                service.start("admin", "one too many", null)
+            }.code)
+            service.deleteOrphan(profiles.first().id) { false }
+            assertEquals(99, service.list().size)
+            assertFalse(Files.exists(home))
+            assertEquals("untouched", Files.readString(outside.resolve("keep.fixture")))
+            assertEquals("sibling unchanged", Files.readString(sibling.resolve("keep.fixture")))
+            assertFalse(profiles.first().id in Files.readString(configuration.stateDir.resolve("accounts.json")))
+
+            val login = service.start("admin", "orphan fixture", null)
+            waitFor(service, login.loginId, "AWAITING_CODE")
+            service.submit(login.loginId, "admin", "fixture-code")
+            waitFor(service, login.loginId, "AUTHENTICATED")
+            assertEquals(100, service.list().size)
+        }
+        AntigravityAgyLoginService(configuration).use { service ->
+            assertEquals(100, service.list().size)
+            assertTrue(service.list().none { it.id == profiles.first().id })
+        }
+    }
+
+    @Test
+    fun orphanProfileCleanupRejectsReferencesAndInFlightLogin() = runBlocking {
+        AntigravityAgyLoginService(
+            config(),
+        ) { AcpPilotCatalog(listOf("fixture-model"), "fixture-model", "PRO") }.use { service ->
+            val login = service.start("admin", "busy fixture", "legacy-account")
+            waitFor(service, login.loginId, "AWAITING_CODE")
+            service.submit(login.loginId, "admin", "fixture-code")
+            waitFor(service, login.loginId, "AUTHENTICATED")
+            val profile = service.list().single()
+
+            waitForIdle(service, profile.id)
+            assertEquals("agy_profile_referenced", assertFailsWith<GatewayError> {
+                service.deleteOrphan(profile.id) { it.id == profile.id }
+            }.code)
+            assertEquals("agy_profile_referenced", assertFailsWith<GatewayError> {
+                service.deleteOrphan(profile.id) { it.sourceAccountId == "legacy-account" }
+            }.code)
+            val reauthorization = service.start("admin", null, null, profile.id)
+            waitFor(service, reauthorization.loginId, "AWAITING_CODE")
+            var checkedReferences = false
+            assertEquals("agy_profile_busy", assertFailsWith<GatewayError> {
+                service.deleteOrphan(profile.id) { checkedReferences = true; false }
+            }.code)
+            assertFalse(checkedReferences)
+            service.stop(reauthorization.loginId, "admin")
+            assertEquals(profile.id, service.list().single().id)
+            waitForIdle(service, profile.id)
+            service.deleteOrphan(profile.id) { false }
+            assertTrue(service.list().isEmpty())
+        }
+    }
+
+    @Test
+    fun failedRegistrationLeavesAnExplicitlyCleanableProfile() = runBlocking {
+        AntigravityAgyLoginService(
+            config(),
+            onAuthenticated = { error("synthetic registration failure") },
+        ) { AcpPilotCatalog(listOf("fixture-model"), "fixture-model", "PRO") }.use { service ->
+            val login = service.start("admin", "failed registration", null)
+            waitFor(service, login.loginId, "AWAITING_CODE")
+            service.submit(login.loginId, "admin", "fixture-code")
+            waitFor(service, login.loginId, "FAILED")
+            val profile = service.list().single()
+            waitForIdle(service, profile.id)
+            service.deleteOrphan(profile.id) { false }
+            assertTrue(service.list().isEmpty())
+        }
+    }
+
+    @Test
+    fun cleanupRejectsSymlinkedHomesAndUnknownPathsWithoutTouchingOutsideFiles() {
+        val configuration = config()
+        val profile = seedProfiles(configuration, 1).single()
+        val outside = Files.createDirectory(root.resolve("outside"))
+        val sentinel = Files.writeString(outside.resolve("keep.fixture"), "untouched")
+        val home = Files.createSymbolicLink(configuration.stateDir.resolve(profile.id), outside)
+        AntigravityAgyLoginService(configuration).use { service ->
+            assertEquals("agy_profile_unsafe_path", assertFailsWith<GatewayError> {
+                service.deleteOrphan(profile.id) { false }
+            }.code)
+            assertEquals("agy_account_not_found", assertFailsWith<GatewayError> {
+                service.deleteOrphan("../outside") { false }
+            }.code)
+            assertEquals("untouched", Files.readString(sentinel))
+            assertEquals(1, service.list().size)
+            Files.delete(home)
+            service.deleteOrphan(profile.id) { false }
+            assertTrue(service.list().isEmpty())
+            assertEquals("untouched", Files.readString(sentinel))
+        }
+    }
+
+    private fun seedProfiles(configuration: AntigravityAgyConfig, count: Int): List<AntigravityAgyAccount> {
+        val profiles = List(count) { AntigravityAgyAccount(UUID.randomUUID().toString(), "synthetic profile", authorizedAt = 1) }
+        val path = Files.writeString(configuration.stateDir.resolve("accounts.json"), Json.encodeToString(profiles))
+        Files.setPosixFilePermissions(path, PosixFilePermissions.fromString("rw-------"))
+        return profiles
+    }
+
+    private suspend fun waitForIdle(service: AntigravityAgyLoginService, profileId: String) {
+        withTimeout(8_000) {
+            while (service.isProfileInUse(profileId)) delay(15)
         }
     }
 
