@@ -9,6 +9,7 @@ import { JSDOM } from 'jsdom'
 describe('channel health detail dashboard', () => {
   let server
   let component
+  let summaryComponent
   let api
   let originals
   let healthCalls
@@ -50,6 +51,7 @@ describe('channel health detail dashboard', () => {
       optimizeDeps: { noDiscovery: true, include: [] }, server: { middlewareMode: true }, appType: 'custom',
     })
     component = (await server.ssrLoadModule('/src/components/ChannelHealthModal.vue')).default
+    summaryComponent = (await server.ssrLoadModule('/src/components/ChannelHealthSummary.vue')).default
     api = (await server.ssrLoadModule('/src/api.ts')).api
     originals = { getChannelHealthDetail: api.getChannelHealthDetail, getUsageReport: api.getUsageReport, clearChannelCooldown: api.clearChannelCooldown }
   })
@@ -90,6 +92,62 @@ describe('channel health detail dashboard', () => {
     assert.ok(document.querySelector('.health-metric-warning'))
     assert.doesNotMatch(document.body.textContent, /绿色实色表示/)
     assert.equal(document.querySelectorAll('.health-responsive-table td[data-label]').length, 5)
+  })
+
+  it('matches the list daily verdict by default even when recent health differs', async () => {
+    const data = fixture()
+    const summary = data.report.channels[0]
+    summary.state = 'HEALTHY'
+    summary.reason = '成功率正常'
+    summary.metrics = { ...metrics, attempts: 2981, successes: 2947, failures: 34, successRate: 2947 / 2981, p50FirstTokenMs: 6100, p95FirstTokenMs: 25700 }
+    summary.recent = {
+      from: timestamp - 3_600_000, to: timestamp, state: 'WARNING', reason: '上游失败率达到 5%',
+      metrics: { ...metrics, attempts: 100, successes: 90, failures: 10, successRate: 0.9 },
+    }
+    const { document } = await render({ data })
+    const listHtml = await renderToString(createSSRApp(summaryComponent, { channel, summary, loading: false, error: '' }))
+    const list = new JSDOM(listHtml).window.document
+    const overall = document.querySelector('[aria-label="24 小时整体状态"]')
+    assert.equal(healthCalls.at(-1)[1], '24h')
+    assert.equal(document.querySelectorAll('.health-verdict').length, 1)
+    assert.equal(document.querySelector('[aria-label="近 1 小时状态"]'), null)
+    assert.equal(overall?.getAttribute('data-state'), 'HEALTHY')
+    assert.equal(list.querySelector('.health-overview-state')?.getAttribute('data-state'), overall.getAttribute('data-state'))
+    assert.equal(list.querySelector('.health-overview-state')?.getAttribute('title'), summary.reason)
+    assert.match(list.querySelector('.health-overview-rate').textContent, /98\.9%/)
+    assert.match(overall.textContent, /24 小时整体/)
+    assert.match(overall.textContent, /健康/)
+    assert.match(overall.textContent, /成功率正常/)
+    assert.match(document.querySelector('.health-metric-grid').textContent, /98\.9%/)
+    assert.equal(document.querySelector('.health-metric-grid .health-metric-warning'), null)
+    assert.doesNotMatch(overall.textContent, /上游失败率达到 5%|90\.0%/)
+  })
+
+  it('uses only the selected window verdict after switching the detail range', async () => {
+    for (const [window, label] of [['24h', '24 小时'], ['7d', '7 天'], ['15d', '15 天'], ['30d', '30 天']]) {
+      const data = fixture()
+      data.report.window = window
+      data.report.channels[0].recent = {
+        from: timestamp - 3_600_000, to: timestamp, state: 'HEALTHY', reason: '成功率正常',
+        metrics: { ...metrics, successes: 100, failures: 0, successRate: 1, p50FirstTokenMs: 6100, p95FirstTokenMs: 25700 },
+      }
+      const { document } = await render({ data, initialWindow: window })
+      assert.equal(document.querySelectorAll('.health-verdict').length, 1)
+      assert.equal(document.querySelector('[aria-label="近 1 小时状态"]'), null)
+      assert.equal(document.querySelector('[aria-label="' + label + '整体状态"]')?.getAttribute('data-state'), 'WARNING')
+      assert.match(document.querySelector('.health-metric-grid').textContent, /95\.0%/)
+      assert.ok(document.querySelector('.health-metric-grid .health-metric-warning'))
+    }
+  })
+
+  it('does not fabricate a recent verdict when the snapshot is missing', async () => {
+    for (const recent of [undefined, null]) {
+      const data = fixture()
+      data.report.channels[0].recent = recent
+      const { document } = await render({ data })
+      assert.equal(document.querySelector('[aria-label="近 1 小时状态"]'), null)
+      assert.equal(document.querySelector('[aria-label="24 小时整体状态"]')?.getAttribute('data-state'), 'WARNING')
+    }
   })
 
   it('preserves the performance dimension while switching cache views without refetching', async () => {

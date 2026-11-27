@@ -97,6 +97,7 @@ onBeforeUnmount(() => {
   clearingController?.abort()
 })
 const summary = computed(() => detail.value?.report.channels[0])
+const windowLabel = computed(() => HEALTH_WINDOWS.find(option => option.id === window.value)?.label ?? window.value)
 const metrics = computed(() => summary.value?.metrics)
 const warnings = computed(() => summary.value && detail.value ? healthMetricWarnings(summary.value.state, summary.value.metrics, detail.value.report) : null)
 const cacheHitText = computed(() => healthCacheHitText(usage.value?.total, usageState.value === 'loading'))
@@ -186,9 +187,12 @@ function tryClose() {
       <ErrorState v-if="error" :message="error" @retry="load" />
       <p v-if="loading" class="muted" role="status">正在汇总渠道健康度…</p>
       <template v-if="detail && summary && metrics">
-        <div class="health-verdict" :data-state="summary.state">
+        <div class="health-verdict" :data-state="summary.state" role="group" :aria-label="windowLabel + '整体状态'">
           <span class="health-status-icon" :data-state="summary.state" aria-hidden="true">{{ healthSymbol(summary.state) }}</span>
-          <div class="health-verdict-copy"><strong>{{ HEALTH_LABELS[summary.state] }}</strong><p class="small">{{ summary.reason }}</p></div>
+          <div class="health-verdict-copy">
+            <div class="health-verdict-title"><span class="muted small">{{ windowLabel }}整体</span><strong>{{ HEALTH_LABELS[summary.state] }}</strong></div>
+            <p class="small">{{ summary.reason }}</p>
+          </div>
           <span class="muted small health-updated">{{ formatTime(detail.report.to) }} 更新</span>
         </div>
         <p v-if="detail.report.indexing" class="callout warning" role="status">历史数据正在分批补齐，当前统计尚不完整，请稍后刷新。</p>
@@ -336,12 +340,13 @@ function tryClose() {
 .health-runtime-meta dd { margin: 0; overflow-wrap: anywhere; }
 .health-refresh { margin-left: auto; }
 .health-runtime-meta + .health-refresh { margin-left: 0; }
-.health-verdict { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); }
+.health-verdict { display: flex; min-width: 0; align-items: center; gap: 10px; padding: 10px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); }
 .health-verdict[data-state='WARNING'], .health-verdict[data-state='UNKNOWN'] { background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 35%, var(--glass-line)); }
 .health-verdict[data-state='CRITICAL'], .health-verdict[data-state='NO_CREDENTIALS'] { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 35%, var(--glass-line)); }
 .health-verdict[data-state='HEALTHY'] { background: var(--success-soft); }
 .health-verdict-copy { min-width: 0; overflow-wrap: anywhere; }
 .health-verdict-copy p { margin-top: 2px; }
+.health-verdict-title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; }
 .health-updated { margin-left: auto; text-align: right; }
 .health-card { min-width: 0; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--surface-solid); }
 .health-metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
