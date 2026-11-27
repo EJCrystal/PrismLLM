@@ -1,6 +1,13 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { agyEnvironmentStatus, countUpstreamOverrides } from '../src/utils/systemConfig'
+import { agyEnvironmentStatus, countUpstreamOverrides, isAgyEnvironmentPreparing } from '../src/utils/systemConfig'
+
+describe('agy 准备状态判定', () => {
+  it('仅检查、安装、准备和停止阶段需要继续观察', () => {
+    for (const status of ['CHECKING', 'INSTALLING', 'PREPARING', 'STOPPING']) assert.equal(isAgyEnvironmentPreparing(status), true)
+    for (const status of ['READY', 'FAILED', 'DISABLED', 'unknown', undefined]) assert.equal(isAgyEnvironmentPreparing(status), false)
+  })
+})
 
 describe('systemConfig: 系统配置展示', () => {
   it('区分 agy 检查、按需安装、准备、失败和可用状态', () => {

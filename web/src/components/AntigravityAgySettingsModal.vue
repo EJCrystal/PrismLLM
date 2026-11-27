@@ -3,17 +3,18 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import type { AntigravityAgySettings } from '../types/api'
-import { agyEnvironmentStatus } from '../utils/systemConfig'
+import { agyEnvironmentStatus, isAgyEnvironmentPreparing } from '../utils/systemConfig'
 import Modal from './Modal.vue'
 
-const emit = defineEmits<{ (event: 'close'): void; (event: 'saved'): void }>()
+const props = defineProps<{ onSaved?: (settings: AntigravityAgySettings) => void }>()
+defineEmits<{ (event: 'close'): void }>()
 const current = ref<AntigravityAgySettings | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const enabled = ref(false)
 const proxy = ref('http://127.0.0.1:7897')
 const error = ref('')
-const preparing = computed(() => current.value && ['CHECKING', 'INSTALLING', 'PREPARING', 'STOPPING'].includes(current.value.status))
+const preparing = computed(() => isAgyEnvironmentPreparing(current.value?.status))
 let timer: ReturnType<typeof setTimeout> | undefined
 let closed = false
 let requestVersion = 0
@@ -40,7 +41,7 @@ async function load(initial = true) {
       enabled.value = settings.enabled
       proxy.value = settings.proxy
     }
-    if (changed) emit('saved')
+    if (changed) props.onSaved?.(settings)
   } catch (cause) {
     if (!closed && version === requestVersion) error.value = message(cause)
   } finally {
@@ -58,9 +59,11 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
-    current.value = await api.updateAntigravityAgySettings({ enabled: enabled.value, proxy: proxy.value.trim() })
+    const settings = await api.updateAntigravityAgySettings({ enabled: enabled.value, proxy: proxy.value.trim() })
+    props.onSaved?.(settings)
+    if (closed) return
+    current.value = settings
     notify(enabled.value ? '设置已保存，服务端将检查并按需安装运行环境' : '关闭设置已保存，不会删除账号凭据')
-    emit('saved')
   } catch (cause) {
     error.value = message(cause)
   } finally {

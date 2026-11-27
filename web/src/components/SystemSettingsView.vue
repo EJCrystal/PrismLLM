@@ -14,7 +14,7 @@ import type {
   WebSearchSettings,
 } from '../types/api'
 import { formatTime } from '../utils/format'
-import { agyEnvironmentStatus, countUpstreamOverrides } from '../utils/systemConfig'
+import { agyEnvironmentStatus, countUpstreamOverrides, isAgyEnvironmentPreparing } from '../utils/systemConfig'
 import { clearAllUpstreamModelCache } from '../upstreamModelCache'
 import Icon from './Icon.vue'
 import ChannelEgressSettingsModal from './ChannelEgressSettingsModal.vue'
@@ -196,7 +196,7 @@ async function loadAntigravityAgy() {
   try {
     cards.antigravityAgy.data = await api.getAntigravityAgySettings()
     clearTimeout(agyRefreshTimer)
-    if (!disposed && ['CHECKING', 'INSTALLING', 'PREPARING', 'STOPPING'].includes(cards.antigravityAgy.data.status)) {
+    if (!disposed && isAgyEnvironmentPreparing(cards.antigravityAgy.data.status)) {
       agyRefreshTimer = setTimeout(() => { void loadAntigravityAgy() }, 2000)
     }
   } catch (cause) {

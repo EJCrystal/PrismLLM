@@ -23,6 +23,10 @@ export function countUpstreamOverrides(overrides: UpstreamRequestOverrides): num
     protocols.reduce((total, protocol) => total + countProtocolOverrides(protocol), 0)
   )
 }
+export function isAgyEnvironmentPreparing(status: string | undefined): boolean {
+  return status !== undefined && ['CHECKING', 'INSTALLING', 'PREPARING', 'STOPPING'].includes(status)
+}
+
 export function agyEnvironmentStatus(status: string): string {
   return ({
     DISABLED: '已关闭',
