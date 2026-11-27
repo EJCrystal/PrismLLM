@@ -5,6 +5,12 @@ export interface PriceChannel {
   name?: string | null
   models?: string[] | null
   modelMappings?: ChannelModelMapping[] | null
+  kind?: Channel['kind']
+  enabledModels?: string[] | null
+}
+
+function isPriceModelEnabled(channel: PriceChannel, upstreamModel: string): boolean {
+  return channel.kind !== 'provider' || channel.enabledModels?.includes(upstreamModel) === true
 }
 
 function toChannel(value: PriceChannel | Channel): Channel | null {
@@ -41,7 +47,7 @@ export function channelModelOptionsForChannel(channel: PriceChannel | null | und
   )
   const addAuthorized = (modelId: string | null | undefined) => {
     const id = String(modelId ?? '').trim()
-    if (!id) return
+    if (!id || !isPriceModelEnabled(channel, id)) return
     const mapping = mappings.get(id)
     entries.set(id, {
       id,
@@ -60,7 +66,7 @@ export function channelModelOptionsForChannel(channel: PriceChannel | null | und
   }
   for (const model of Array.isArray(discoveredModels) ? discoveredModels : []) {
     const id = String(model?.id ?? '').trim()
-    if (!id || model?.authorized !== true) continue
+    if (!id || model?.authorized !== true || !isPriceModelEnabled(channel, id)) continue
     entries.set(id, {
       ...entries.get(id),
       ...model,
@@ -153,12 +159,13 @@ export function defaultPriceModelOptions(
     const mapped = new Set<string>()
     for (const mapping of Array.isArray(channel.modelMappings) ? channel.modelMappings : []) {
       const upstream = String(mapping?.upstreamModel ?? '').trim()
+      if (!isPriceModelEnabled(channel, upstream)) continue
       mapped.add(upstream)
       add(upstream, mapping?.canonicalModelId, channel.name)
     }
     for (const model of Array.isArray(channel.models) ? channel.models : []) {
       const upstream = String(model ?? '').trim()
-      if (upstream && !mapped.has(upstream)) add(upstream, null, channel.name)
+      if (upstream && !mapped.has(upstream) && isPriceModelEnabled(channel, upstream)) add(upstream, null, channel.name)
     }
   }
 
@@ -281,7 +288,8 @@ export function unpricedChannelModels(
       channel.models
         .filter((model) => typeof model === 'string')
         .map((model) => model.trim())
-        .filter(Boolean),
+        .filter(Boolean)
+        .filter((model) => isPriceModelEnabled(channel, model)),
     ),
   ]
   return models.filter((model) => resolveChannelModelPrice(channel, model, prices, defaultPrices).source === 'none')
