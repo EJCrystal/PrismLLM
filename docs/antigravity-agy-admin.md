@@ -79,7 +79,7 @@ ANTIGRAVITY_AGY_PROXY=http://127.0.0.1:7897
 | POST | `/antigravity/agy/logins/{loginId}/code` | `{ "code": "一次性验证码" }`，202 |
 | DELETE | `/antigravity/agy/logins/{loginId}` | 取消本次登录，204 |
 
-状态为 `PREPARING`、`AWAITING_CODE`、`VERIFYING`、`AUTHENTICATED`、`FAILED`、`CANCELLED`、`EXPIRED`。
+状态为 `PREPARING`、`AWAITING_CODE`、`VERIFYING`、`REGISTERING`、`AUTHENTICATED`、`FAILED`、`CANCELLED`、`EXPIRED`。CLI 验证成功后先进入 `REGISTERING`，仅在订阅路由账号登记成功后进入 `AUTHENTICATED`；此阶段不可取消。档案列表和状态查询只读，不会创建、恢复或重置数据库账号。
 发起和提交验证码不是可无条件重试的操作：全局只允许一个在途登录，第二次发起返回 409；
 验证码只在 `AWAITING_CODE` 接受一次。网络失败先查询当前状态，不自动重发验证码。
 服务重启后在途登录不会恢复，已成功档案的脱敏元数据和 CLI 登录 home 持久保留。

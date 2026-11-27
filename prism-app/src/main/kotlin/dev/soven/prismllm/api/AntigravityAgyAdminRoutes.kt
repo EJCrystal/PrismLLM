@@ -44,7 +44,6 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
         call.requireAdmin(app)
         call.response.headers.append("Cache-Control", "no-store")
         val profiles = app.antigravityAgyLogin?.list().orEmpty()
-        profiles.forEach { registerAgyProfile(app, it) }
         val registered = app.oauthAccountRepository.listAll()
             .filter { it.authMethod == OAuthAccountAuthMethod.AGY }
             .associateBy { it.agyProfileId }
@@ -102,7 +101,6 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
         val service = app.antigravityAgyLogin ?: throw notFound("agy_login_not_found", "官方 CLI 登录未启用")
         call.response.headers.append("Cache-Control", "no-store")
         val login = service.get(requireNotNull(call.parameters["loginId"]), admin.username)
-        if (login.state == "AUTHENTICATED") login.account?.let { registerAgyProfile(app, it) }
         call.respond(login)
     }
     post("/antigravity/agy/logins/{loginId}/code") {
@@ -121,9 +119,9 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
     }
 }
 
-private suspend fun registerAgyProfile(app: GatewayApplication, profile: AntigravityAgyAccount) {
+internal suspend fun GatewayApplication.registerAgyProfile(profile: AntigravityAgyAccount) {
     if (profile.subscriptionTier != "PRO") return
-    val account = app.oauthAccountRepository.registerAgyProfile(
+    val account = oauthAccountRepository.registerAgyProfile(
         AgyProfileRegistration(
             profileId = profile.id,
             sourceAccountId = profile.sourceAccountId,
@@ -133,8 +131,8 @@ private suspend fun registerAgyProfile(app: GatewayApplication, profile: Antigra
         ),
     )
     if (account.providerChannelPending) {
-        app.providerChannelProvisioner.attachAccount(account.id)
+        providerChannelProvisioner.attachAccount(account.id)
     } else {
-        app.providerChannelProvisioner.syncModelUnion(OAuthProvider.ANTIGRAVITY)
+        providerChannelProvisioner.syncModelUnion(OAuthProvider.ANTIGRAVITY)
     }
 }

@@ -2,6 +2,7 @@ package dev.soven.prismllm.antigravity
 
 import dev.soven.prismllm.config.AntigravityAgyConfig
 import dev.soven.prismllm.shared.error.GatewayError
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -132,6 +133,34 @@ class AntigravityAgyLoginServiceTest {
             waitFor(service, login.loginId, "FAILED")
             assertFalse("raw-secret" in Json.encodeToString(service.get(login.loginId, "admin")))
             assertTrue(service.list().isEmpty())
+        }
+    }
+
+    @Test
+    fun authenticatedProfileRegistrationIsSingleAndNotCancellable() = runBlocking {
+        val registering = CompletableDeferred<AntigravityAgyAccount>()
+        val finishRegistration = CompletableDeferred<Unit>()
+        var registrations = 0
+        AntigravityAgyLoginService(
+            config(),
+            onAuthenticated = { account ->
+                registrations++
+                registering.complete(account)
+                finishRegistration.await()
+            },
+        ) { AcpPilotCatalog(listOf("fixture-model"), "fixture-model", "PRO") }.use { service ->
+            val login = service.start("admin", "single commit", null)
+            waitFor(service, login.loginId, "AWAITING_CODE")
+            service.submit(login.loginId, "admin", "fixture-code")
+
+            assertEquals("fixture-model", withTimeout(8_000) { registering.await() }.currentModelId)
+            assertEquals("REGISTERING", service.get(login.loginId, "admin").state)
+            assertFailsWith<GatewayError> { service.stop(login.loginId, "admin") }
+
+            finishRegistration.complete(Unit)
+            waitFor(service, login.loginId, "AUTHENTICATED")
+            repeat(3) { service.get(login.loginId, "admin") }
+            assertEquals(1, registrations)
         }
     }
 

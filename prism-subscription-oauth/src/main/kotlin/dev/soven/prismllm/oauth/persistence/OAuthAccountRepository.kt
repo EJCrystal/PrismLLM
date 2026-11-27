@@ -392,6 +392,29 @@ open class OAuthAccountRepository(
             if (currentMethod == OAuthAccountAuthMethod.AGY && row[OAuthAccounts.agyProfileId] != registration.profileId) {
                 throw AgyProfileRegistrationConflictException()
             }
+            if (currentMethod == OAuthAccountAuthMethod.AGY) {
+                OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+                    it[OAuthAccounts.accountPlan] = registration.subscriptionTier
+                    it[OAuthAccounts.refreshTokenCiphertext] = null
+                    it[OAuthAccounts.refreshTokenNonce] = null
+                    it[OAuthAccounts.refreshTokenKeyVersion] = null
+                    it[OAuthAccounts.accessTokenCiphertext] = null
+                    it[OAuthAccounts.accessTokenNonce] = null
+                    it[OAuthAccounts.accessTokenKeyVersion] = null
+                    it[OAuthAccounts.accessTokenExpiresAt] = null
+                    it[OAuthAccounts.tokenType] = "Bearer"
+                    it[OAuthAccounts.scope] = null
+                    it[OAuthAccounts.authState] = OAuthAuthState.ACTIVE.value
+                    it[OAuthAccounts.refreshFailureCount] = 0
+                    it[OAuthAccounts.lastRefreshError] = null
+                    it[OAuthAccounts.lastRefreshedAt] = null
+                    it[OAuthAccounts.modelCatalog] = Json.encodeToString(catalog)
+                    it[OAuthAccounts.modelCatalogSyncedAt] = now
+                    it[OAuthAccounts.authorizedAt] = now
+                    it[OAuthAccounts.updatedAt] = now
+                }
+                return@suspendTransaction requireNotNull(findDetailedInTransaction(accountId))
+            }
             OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
                 it[OAuthAccounts.name] = registration.name
                 it[OAuthAccounts.authMethod] = OAuthAccountAuthMethod.AGY.value

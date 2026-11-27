@@ -51,6 +51,7 @@ data class AntigravityAgyLogin(
 
 internal class AntigravityAgyLoginService(
     private val config: AntigravityAgyConfig,
+    private val onAuthenticated: suspend (AntigravityAgyAccount) -> Unit = {},
     private val inspect: suspend (Path) -> AcpPilotCatalog = { state ->
         AntigravityAcpPilot(config.inspectCommand(state), state, agentWorkspace = Path.of("/workspace")).inspect()
     },
@@ -135,6 +136,9 @@ internal class AntigravityAgyLoginService(
     fun stop(loginId: String, owner: String, state: String = "CANCELLED") {
         val process = synchronized(monitor) {
             val session = owned(loginId, owner)
+            if (session.snapshot.state == "REGISTERING") {
+                throw conflict("agy_login_committing", "官方 CLI 登录已完成，账号正在登记，不能取消")
+            }
             if (terminal(session.snapshot.state)) return
             session.snapshot = session.snapshot.copy(state = state, authorizeUrl = null)
             session.job?.cancel()
@@ -196,12 +200,23 @@ internal class AntigravityAgyLoginService(
                 save(next)
                 accounts.clear()
                 accounts.addAll(next)
+                session.snapshot = session.snapshot.copy(state = "REGISTERING", authorizeUrl = null, account = account)
+            }
+            onAuthenticated(account)
+            synchronized(monitor) {
+                if (session.snapshot.state != "REGISTERING") return
                 session.snapshot = session.snapshot.copy(state = "AUTHENTICATED", account = account)
             }
         } catch (_: Exception) {
             synchronized(monitor) {
                 if (!terminal(session.snapshot.state)) session.snapshot = session.snapshot.copy(
-                    state = "FAILED", authorizeUrl = null, error = "OFFICIAL_CLI_LOGIN_FAILED",
+                    state = "FAILED",
+                    authorizeUrl = null,
+                    error = if (session.snapshot.state == "REGISTERING") {
+                        "AGY_ACCOUNT_REGISTRATION_FAILED"
+                    } else {
+                        "OFFICIAL_CLI_LOGIN_FAILED"
+                    },
                 )
             }
         } finally {

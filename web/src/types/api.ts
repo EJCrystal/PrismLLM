@@ -1441,7 +1441,7 @@ export interface AntigravityAgyAccounts {
 
 export interface AntigravityAgyLogin {
   loginId: string
-  state: 'PREPARING' | 'AWAITING_CODE' | 'VERIFYING' | 'AUTHENTICATED' | 'FAILED' | 'CANCELLED' | 'EXPIRED'
+  state: 'PREPARING' | 'AWAITING_CODE' | 'VERIFYING' | 'REGISTERING' | 'AUTHENTICATED' | 'FAILED' | 'CANCELLED' | 'EXPIRED'
   expiresAt: number
   authorizeUrl?: string | null
   account?: AntigravityAgyAccount | null

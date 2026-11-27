@@ -12,13 +12,16 @@ const busy = ref(false)
 const error = ref('')
 let disposed = false
 let timer: ReturnType<typeof setTimeout> | undefined
-const active = computed(() => session.value != null && ['PREPARING', 'AWAITING_CODE', 'VERIFYING'].includes(session.value.state))
+const active = computed(() => session.value != null && ['PREPARING', 'AWAITING_CODE', 'VERIFYING', 'REGISTERING'].includes(session.value.state))
 const status = computed(() => ({
   PREPARING: '正在准备隔离环境并启动官方 agy…',
   AWAITING_CODE: '请打开官方登录链接，完成 Google 授权后提交页面显示的验证码。',
   VERIFYING: '官方 CLI 正在完成登录，并只读核对当前会话；不会发起模型生成。',
+  REGISTERING: '官方 CLI 登录已完成，正在登记订阅路由账号。',
   AUTHENTICATED: '官方 CLI 登录成功，凭据由 agy 保存和续期。',
-  FAILED: '官方 CLI 登录或会话核对失败；没有回退到旧 OAuth，请重新发起。',
+  FAILED: session.value?.error === 'AGY_ACCOUNT_REGISTRATION_FAILED'
+    ? '官方 CLI 登录成功，但订阅账号登记失败；请重新发起登录。'
+    : '官方 CLI 登录或会话核对失败；没有回退到旧 OAuth，请重新发起。',
   CANCELLED: '本次登录已取消。',
   EXPIRED: '登录已过期，请重新发起。',
 }[session.value?.state ?? 'PREPARING']))
@@ -97,7 +100,9 @@ onBeforeUnmount(() => {
   disposed = true
   clearTimeout(timer)
   code.value = ''
-  if (active.value && session.value) void api.cancelAntigravityAgyLogin(session.value.loginId).catch(() => {})
+  if (active.value && session.value && session.value.state !== 'REGISTERING') {
+    void api.cancelAntigravityAgyLogin(session.value.loginId).catch(() => {})
+  }
 })
 </script>
 
@@ -123,7 +128,7 @@ onBeforeUnmount(() => {
     <div class="form-actions">
       <button v-if="!active" type="button" class="button primary" :disabled="busy" @click="start">{{ busy ? '启动中…' : '启动官方 agy 登录' }}</button>
       <button v-if="session?.state === 'AWAITING_CODE'" type="button" class="button primary" :disabled="busy || !code.trim()" @click="submit">提交给官方 CLI</button>
-      <button v-if="active" type="button" class="button" :disabled="busy" @click="cancel">取消 CLI 登录</button>
+      <button v-if="active && session?.state !== 'REGISTERING'" type="button" class="button" :disabled="busy" @click="cancel">取消 CLI 登录</button>
       <button v-if="active && error" type="button" class="button" :disabled="busy" @click="poll">刷新登录状态</button>
     </div>
   </section>

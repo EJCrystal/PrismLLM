@@ -1637,7 +1637,7 @@ private suspend fun proxyAgyStream(
                 state.streamError = failure
                 state.errorCode = failure.code
                 val lines = converter?.fail(failure.message)
-                    ?: listOf("data: \${Json.encodeToString(failure.toEnvelope())}", "")
+                    ?: listOf("data: ${Json.encodeToString(failure.toEnvelope())}", "")
                 lines.forEach { emitLine(it) }
             }
         } finally {

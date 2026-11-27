@@ -314,7 +314,11 @@ class GatewayApplication(
 
     internal val requestDrain = RequestDrain()
     internal val antigravityAcp = config.antigravityAcp?.let(::AntigravityAcpGateway)
-    internal val antigravityAgyLogin = config.antigravityAgy?.let { AntigravityAgyLoginService(it) }
+    internal val antigravityAgyLogin = config.antigravityAgy?.let {
+        AntigravityAgyLoginService(it, onAuthenticated = { profile ->
+            this@GatewayApplication.registerAgyProfile(profile)
+        })
+    }
     internal val antigravityAgy = config.antigravityAgy?.let { AntigravityAgyGateway(it) }
     val shuttingDown: Boolean
         get() = requestDrain.shuttingDown

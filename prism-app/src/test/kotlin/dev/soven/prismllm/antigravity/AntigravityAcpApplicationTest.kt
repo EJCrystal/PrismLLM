@@ -46,6 +46,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.Timeout
@@ -319,6 +320,28 @@ class AntigravityAcpApplicationTest {
             assertEquals("2", Files.readString(profileRoot.resolve("startups")))
             assertTrue(Files.readAllLines(profileRoot.resolve("methods")).contains("session/cancel"))
             assertTrue(ordinaryRequests.isEmpty())
+            assertEquals(routeAfterMigration, app.modelCredentialRouteRepository.find(MODEL))
+            awaitReleased()
+        }
+    }
+
+    @Test
+    fun ordinaryAgyStreamingQuotaExhaustionEmitsValidErrorWithoutFailingOver() = runBlocking {
+        withGateway(agyScenario = "agy-quota", assertRoutesUnchanged = false) {
+            val profileRoot = configureAgyRoute()
+            val routeAfterMigration = app.modelCredentialRouteRepository.find(MODEL)
+            val response = post(path = "/v1/chat/completions", body = requestBody(stream = true))
+            val body = response.bodyAsText()
+
+            assertEquals(HttpStatusCode.OK, response.status, body)
+            assertTrue(response.headers[HttpHeaders.ContentType].orEmpty().startsWith("text/event-stream"))
+            val frames = body.lineSequence().filter { it.startsWith("data: ") }.map { it.removePrefix("data: ") }.toList()
+            val errorFrames = frames.filter { Json.parseToJsonElement(it).jsonObject.containsKey("error") }
+            assertEquals(1, errorFrames.size, body)
+            val error = Json.parseToJsonElement(errorFrames.single()).jsonObject.getValue("error").jsonObject
+            assertEquals("antigravity_acp_quota_exhausted", error.getValue("code").jsonPrimitive.content)
+            assertEquals("1", Files.readString(profileRoot.resolve("startups")))
+            assertTrue(ordinaryRequests.isEmpty(), "Quota exhaustion must not fall through to a paid/static candidate")
             assertEquals(routeAfterMigration, app.modelCredentialRouteRepository.find(MODEL))
             awaitReleased()
         }

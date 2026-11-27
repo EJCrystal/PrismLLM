@@ -62,6 +62,32 @@ class ProviderModelAvailabilityTest {
     private lateinit var catalog: UpstreamModelCatalog
     private val cipher = CredentialCipher(ByteArray(32) { 13 })
 
+    @Test
+    fun reauthorizingAgyProfilePreservesAdministratorSettings() = runBlocking {
+        val channel = channel(
+            mappings = listOf(ChannelModelRecord("agy-upstream", "agy-public", "manual")),
+            name = "antigravity-provider",
+            protocols = listOf(GatewayProtocol.GEMINI),
+            provider = OAuthProvider.ANTIGRAVITY,
+        )
+        val legacy = account(channel.id, models = listOf("agy-upstream"), provider = OAuthProvider.ANTIGRAVITY)
+        val registration = AgyProfileRegistration(
+            profileId = UUID.randomUUID().toString(),
+            sourceAccountId = legacy.id,
+            name = "migrated-agy",
+            subscriptionTier = "PRO",
+            currentModelId = "agy-upstream",
+        )
+        val migrated = accounts.registerAgyProfile(registration, now = 1_000)
+        accounts.updateSettings(migrated.id, name = "admin name", proxyUrl = "http://proxy.example.invalid:8080", now = 2_000)
+
+        val reauthorized = accounts.registerAgyProfile(registration.copy(name = "CLI name"), now = 3_000)
+
+        assertEquals("admin name", reauthorized.name)
+        assertEquals("http://proxy.example.invalid:8080", reauthorized.proxyUrl)
+        assertEquals(3_000, reauthorized.authorizedAt)
+    }
+
     @BeforeAll
     fun start() {
         val postgres = SharedPostgres.container
