@@ -38,7 +38,9 @@ client --[client key]--> PrismLLM --[auth & protocol converter]--> upstream LLMs
 
 ## 快速开始
 
-### 方式一：Docker Compose（推荐）
+### 方式一：Docker Compose 拉取镜像（推荐）
+
+GitHub Actions 在 `main` 的 CI 成功后发布 `ghcr.io/ejcrystal/prismllm:main` 与 `sha-<完整提交 SHA>` 镜像。私有镜像首次使用前须登录 GHCR，详见[镜像部署与更新](docs/container-deployment.md)。
 
 ```bash
 # 复制环境变量模板
@@ -47,13 +49,20 @@ cp .env.example .env
 # 生成并填写 GATEWAY_MASTER_KEY，设置 ADMIN_PASSWORD
 openssl rand -base64 32
 
-# 启动服务
-docker compose up -d --build
+# 拉取镜像并启动服务
+docker compose pull
+docker compose up -d --no-build
 ```
 
 启动后访问管理后台：`http://localhost:8080/admin/`，使用 `.env` 中设置的管理员账号密码登录。
 
 以上为本地启动示例；生产环境必须使用 TLS 并设置 `COOKIE_SECURE=true`，将 `/admin/`、`/admin/api/*` 与 `/metrics` 限制在私网或受控运维入口。默认 Compose 给 gateway 设置 `stop_grace_period: 60s`，为默认 30 秒 Drain 及 server、队列清理留出余量；增大 `DRAIN_TIMEOUT_MS` 时必须同步增大容器或编排器的停止预算，这不是完整停机耗时的绝对上界。部署与安全备份要求见 [配置指南](docs/configuration.md)。
+
+已有部署只需拉取并重建 gateway，不需要拉取源码或重建数据库；务必保留原 `.env`、`GATEWAY_MASTER_KEY` 与数据卷，具体步骤见[保留现有数据更新](docs/container-deployment.md#保留现有数据更新)。从源码构建容器时显式使用构建覆盖文件：
+
+~~~bash
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+~~~
 
 ### 方式二：本地运行
 

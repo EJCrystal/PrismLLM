@@ -126,6 +126,8 @@ jobs:
               - '.github/workflows/**'
               - '.github/scripts/**'
               - '.coderabbit.yaml'
+              - 'docker-compose.yml'
+              - 'docker-compose.build.yml'
 
   workflow:
     name: Validate workflow
@@ -168,6 +170,9 @@ jobs:
           else
             echo "::warning::PyYAML 不可用，跳过 .coderabbit.yaml 解析"
           fi
+
+      - name: Validate container publication and deployment
+        run: python3 .github/scripts/test_container_deployment.py
 
   frontend:
     name: Test frontend
