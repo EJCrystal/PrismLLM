@@ -19,6 +19,9 @@ interface UpstreamCredential {
 
     val isOAuth: Boolean
 
+    /** Native upstream protocol override for credentials whose transport differs from their channel. */
+    val nativeProtocols: List<GatewayProtocol>? get() = null
+
     fun supports(upstreamModel: String): Boolean
 
     fun isRoutable(now: Long = System.currentTimeMillis()): Boolean

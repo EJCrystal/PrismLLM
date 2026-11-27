@@ -1663,7 +1663,7 @@ onMounted(() => {
                       <span class="channel-status-track" aria-hidden="true"><span></span></span>
                       <span class="channel-status-label">{{ item.enabled ? '启用' : '停用' }}</span>
                     </button>
-                    <span v-else-if="!item.configured" class="badge warning small">未配置 OAuth</span>
+                    <span v-else-if="!item.configured" class="badge warning small">{{ item.providerId === 'antigravity' ? '尚未部署 agy 登录服务' : '未配置 OAuth' }}</span>
                   </div>
                   <div v-if="item.channel" class="channel-id-cell">
                     <span class="mono muted small channel-id-text" :title="item.channel.id">{{ item.channel.id }}</span>
@@ -2108,7 +2108,7 @@ onMounted(() => {
           <select v-model="providerConnection.providerId" :disabled="!oauthProviders.length">
             <option value="" disabled>{{ oauthProviders.length ? '请选择订阅平台' : loading ? '正在读取订阅平台…' : '暂无可接入的订阅平台' }}</option>
             <option v-for="provider in oauthProviders" :key="provider.id" :value="provider.id" :disabled="!provider.configured">
-              {{ provider.label }}{{ provider.configured ? '' : '（未配置）' }}
+              {{ provider.label }}{{ provider.id === 'antigravity' ? provider.configured ? '（官方 agy）' : '（需部署官方 agy）' : provider.configured ? '' : '（未配置）' }}
             </option>
           </select>
         </label>

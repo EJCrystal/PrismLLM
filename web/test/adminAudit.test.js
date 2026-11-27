@@ -18,6 +18,7 @@ describe('adminAudit: 管理操作审计展示', () => {
     assert.equal(auditActionLabel('oauth_account.import'), '导入订阅账号')
     assert.equal(auditActionLabel('oauth_account.refresh'), '刷新订阅账号 Token')
     assert.equal(auditActionLabel('oauth_account.quota.refresh'), '读取订阅账号上游额度')
+    assert.equal(auditActionLabel('antigravity.agy.profile.delete'), '清理孤儿 agy 档案')
     assert.equal(auditActionLabel('iq_test.run'), '运行智商检测')
     assert.equal(auditActionLabel('future.action'), 'future.action')
   })

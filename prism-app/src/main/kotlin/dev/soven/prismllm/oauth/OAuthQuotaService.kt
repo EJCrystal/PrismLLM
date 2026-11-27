@@ -101,6 +101,7 @@ class OAuthQuotaService(
     }
 
     private suspend fun refreshAccount(account: OAuthAccountRecord): OAuthQuotaResult {
+        if (account.isAgy) return OAuthQuotaResult.NotSupported
         if (account.provider == OAuthProvider.ANTIGRAVITY) return refreshAntigravity(account)
         if (account.provider != OAuthProvider.CHATGPT) return OAuthQuotaResult.NotSupported
         val usageUrl = config.chatGpt.usageUrl ?: return OAuthQuotaResult.NotSupported

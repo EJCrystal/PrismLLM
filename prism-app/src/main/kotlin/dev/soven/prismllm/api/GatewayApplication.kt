@@ -1,6 +1,8 @@
 package dev.soven.prismllm.api
 
 import dev.soven.prismllm.antigravity.AntigravityAcpGateway
+import dev.soven.prismllm.antigravity.AntigravityAgyGateway
+import dev.soven.prismllm.antigravity.AntigravityAgyLoginService
 import dev.soven.prismllm.shared.error.AnthropicErrorBody
 import dev.soven.prismllm.shared.error.AnthropicErrorEnvelope
 import dev.soven.prismllm.shared.error.ErrorBody
@@ -312,6 +314,12 @@ class GatewayApplication(
 
     internal val requestDrain = RequestDrain()
     internal val antigravityAcp = config.antigravityAcp?.let(::AntigravityAcpGateway)
+    internal val antigravityAgyLogin = config.antigravityAgy?.let {
+        AntigravityAgyLoginService(it, onAuthenticated = { profile ->
+            this@GatewayApplication.registerAgyProfile(profile)
+        })
+    }
+    internal val antigravityAgy = config.antigravityAgy?.let { AntigravityAgyGateway(it) }
     val shuttingDown: Boolean
         get() = requestDrain.shuttingDown
     /** 跨协议携带的 Responses 密封推理，按内容哈希暂存在进程内。 */
@@ -511,7 +519,8 @@ class GatewayApplication(
     init {
         databaseFactory.beforeMigration("74") {
             val migrationChannels = ChannelRepository(databaseFactory.database, credentialCipher, includeEgressConfiguration = false)
-            val migrationProvisioner = ProviderChannelProvisioner(migrationChannels, oauthAccountRepository)
+            val migrationAccounts = OAuthAccountRepository(databaseFactory.database, OAuthProviderChannelLookup(), includeAgyColumns = false)
+            val migrationProvisioner = ProviderChannelProvisioner(migrationChannels, migrationAccounts)
             runBlocking { migrationProvisioner.reconcileBeforeModelCredentialRouteMigration() }
         }
     }
@@ -925,6 +934,8 @@ class GatewayApplication(
         (notificationSender as? AutoCloseable)?.close()
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
         oauthQuotaService.close()
+        antigravityAgyLogin?.close()
+        antigravityAgy?.close()
         oauthTokenService.close()
         scope.cancel()
         metrics.close()

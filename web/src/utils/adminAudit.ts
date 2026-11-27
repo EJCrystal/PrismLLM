@@ -31,6 +31,7 @@ const actionLabels: Record<string, string> = {
   'oauth_account.login': '完成订阅账号 OAuth 授权',
   'oauth_account.import': '导入订阅账号',
   'oauth_account.delete': '删除订阅账号',
+  'antigravity.agy.profile.delete': '清理孤儿 agy 档案',
   'oauth_account.settings.update': '更新订阅账号设置',
   'oauth_account.policy.update': '更新订阅账号调度策略',
   'oauth_account.refresh': '刷新订阅账号 Token',

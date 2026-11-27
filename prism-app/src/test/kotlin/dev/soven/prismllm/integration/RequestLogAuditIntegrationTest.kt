@@ -561,7 +561,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("81", result.getString(1))
+                        assertEquals("82", result.getString(1))
                     }
                     statement.executeQuery("select count(*) from channels where egress_proxies <> '[]'").use { result ->
                         assertTrue(result.next())
@@ -1208,7 +1208,8 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
 
             // 账号表不在黑名单迁移范围内，Exposed 可在 V68 阶段安全读取，用于升级前后对比。
             val savedAccounts = TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
-                OAuthAccountRepository(database.database, OAuthProviderChannelLookup()).listAll().associateBy { it.id }
+                OAuthAccountRepository(database.database, OAuthProviderChannelLookup(), includeAgyColumns = false)
+                    .listAll().associateBy { it.id }
             }
 
             migrateTo(migrationUrl)
@@ -1244,7 +1245,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
             }
             TestDatabase(migrationUrl, postgres.username, postgres.password).use { database ->
                 val clients = ClientKeyRepository(database.database)
-                val accounts = OAuthAccountRepository(database.database, OAuthProviderChannelLookup())
+                val accounts = OAuthAccountRepository(database.database, OAuthProviderChannelLookup(), includeAgyColumns = false)
 
                 assertEquals(savedClients.associateBy { it.id }, clients.list().associateBy { it.id })
                 savedClients.forEach { saved ->
@@ -1277,7 +1278,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 connection.createStatement().use { statement ->
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("81", result.getString(1))
+                        assertEquals("82", result.getString(1))
                     }
                     statement.executeQuery("select id, model_mapping_revision, key_disable_policy_revision, updated_at from channels order by id").use { result ->
                         for (id in listOf("v69-provider", "v69-static")) {

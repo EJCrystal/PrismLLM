@@ -2,6 +2,7 @@ package dev.soven.prismllm.oauth.domain
 
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.shared.domain.UpstreamCredential
+import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.shared.domain.saturatedAdd
 import kotlinx.serialization.Serializable
 
@@ -18,6 +19,16 @@ enum class OAuthAuthState(val value: String) {
 
     companion object {
         fun fromValue(value: String): OAuthAuthState? = entries.firstOrNull { it.value == value }
+    }
+}
+
+enum class OAuthAccountAuthMethod(val value: String) {
+    OAUTH("oauth"),
+    AGY("agy"),
+    ;
+
+    companion object {
+        fun fromValue(value: String): OAuthAccountAuthMethod? = entries.firstOrNull { it.value == value }
     }
 }
 
@@ -62,9 +73,11 @@ data class OAuthAccountRecord(
     val accountEmail: String? = null,
     val accountPlan: String? = null,
     /** 长期凭据只以密文形式在进程内传递，禁止解密后写入日志或响应。 */
-    val refreshTokenCiphertext: String,
-    val refreshTokenNonce: String,
-    val refreshTokenKeyVersion: Int,
+    val refreshTokenCiphertext: String?,
+    val refreshTokenNonce: String?,
+    val refreshTokenKeyVersion: Int?,
+    val authMethod: OAuthAccountAuthMethod = OAuthAccountAuthMethod.OAUTH,
+    val agyProfileId: String? = null,
     val accessTokenCiphertext: String? = null,
     val accessTokenNonce: String? = null,
     val accessTokenKeyVersion: Int? = null,
@@ -83,6 +96,7 @@ data class OAuthAccountRecord(
     val modelCatalog: List<OAuthAccountModelCatalogEntry>? = null,
     val modelCatalogSyncedAt: Long? = null,
     val channelIds: Set<String> = emptySet(),
+    val providerChannelPending: Boolean = false,
     val refreshFailureCount: Int = 0,
     val lastRefreshError: String? = null,
     val lastRefreshedAt: Long? = null,
@@ -99,6 +113,9 @@ data class OAuthAccountRecord(
     val authorizedAt: Long = createdAt,
 ) : UpstreamCredential {
     override val isOAuth: Boolean get() = true
+    val isAgy: Boolean get() = authMethod == OAuthAccountAuthMethod.AGY
+    override val nativeProtocols: List<GatewayProtocol>?
+        get() = listOf(GatewayProtocol.CHAT_COMPLETIONS).takeIf { isAgy }
 
     /**
      * 账号能调度的上游变体：既要在显式授权列表内（空列表表示不限制），
@@ -117,6 +134,9 @@ data class OAuthAccountRecord(
     val hasAccessToken: Boolean
         get() = accessTokenCiphertext != null && accessTokenNonce != null &&
             accessTokenKeyVersion != null && accessTokenExpiresAt != null
+
+    val hasRefreshToken: Boolean
+        get() = refreshTokenCiphertext != null && refreshTokenNonce != null && refreshTokenKeyVersion != null
 
     /**
      * 下次应该刷新的时间。短寿命 token 把提前量压到寿命的一半，避免每次请求都触发刷新。

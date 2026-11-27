@@ -103,15 +103,29 @@ class OAuthTokenService(
      */
     override suspend fun resolveCredential(credential: UpstreamCredential): String = when (credential) {
         is ChannelKeyRecord -> cipher.decrypt(credential.credentialCiphertext, credential.credentialNonce)
-        is OAuthAccountRecord -> accessToken(credential.id)?.accessToken
-            ?: throw OAuthTokenUnavailableException(
-                OAuthUnavailableReason.REAUTH_REQUIRED,
-                "订阅账号已删除",
-            )
+        is OAuthAccountRecord -> {
+            if (credential.isAgy) {
+                throw OAuthTokenUnavailableException(
+                    OAuthUnavailableReason.PROVIDER_NOT_CONFIGURED,
+                    "agy 档案必须通过官方 ACP 执行，不能解析成 OAuth token",
+                )
+            }
+            accessToken(credential.id)?.accessToken
+                ?: throw OAuthTokenUnavailableException(
+                    OAuthUnavailableReason.REAUTH_REQUIRED,
+                    "订阅账号已删除",
+                )
+        }
         else -> throw IllegalStateException("未知的上游凭据类型: ${credential::class.qualifiedName}")
     }
 
     private suspend fun accessToken(account: OAuthAccountRecord, forceRefresh: Boolean): OAuthAccessToken {
+        if (account.isAgy) {
+            throw OAuthTokenUnavailableException(
+                OAuthUnavailableReason.PROVIDER_NOT_CONFIGURED,
+                "agy 档案不能通过 OAuth token 服务刷新",
+            )
+        }
         if (!forceRefresh) cachedAccessToken(account)?.let { return it }
         return lockFor(account.id).withLock {
             val latest = repository.find(account.id)
@@ -126,7 +140,8 @@ class OAuthTokenService(
 
     /** 管理面手动刷新。即使账号已标记为需要重新授权，也允许再试一次。 */
     suspend fun refreshNow(accountId: String): OAuthRefreshResult {
-        if (repository.find(accountId) == null) return OAuthRefreshResult.NotOAuthAccount
+        val existing = repository.find(accountId) ?: return OAuthRefreshResult.NotOAuthAccount
+        if (existing.isAgy) return OAuthRefreshResult.NotOAuthAccount
         return lockFor(accountId).withLock {
             val latest = repository.find(accountId) ?: return@withLock OAuthRefreshResult.NotOAuthAccount
             try {

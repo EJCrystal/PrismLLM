@@ -6,9 +6,12 @@ on:
       - '.github/workflows/antigravity-acp.yml'
       - 'scripts/antigravity-acp-release.json'
       - 'scripts/antigravity_acp_*.py'
+      - 'scripts/antigravity_agy_admin.py'
       - 'scripts/test_antigravity_acp_*.py'
       - 'prism-app/src/main/kotlin/dev/soven/prismllm/antigravity/**'
       - 'prism-app/src/main/kotlin/dev/soven/prismllm/api/AntigravityAcpRoutes.kt'
+      - 'prism-app/src/main/kotlin/dev/soven/prismllm/api/AntigravityAgyAdminRoutes.kt'
+      - 'prism-app/src/main/kotlin/dev/soven/prismllm/config/AntigravityAgyConfig.kt'
       - 'prism-app/src/main/kotlin/dev/soven/prismllm/config/AntigravityAcpConfig.kt'
   push:
     branches: [main]

@@ -76,10 +76,10 @@ internal class AntigravityAcpGateway(
     }
 }
 
-private fun AcpPilotException.gatewayError(): GatewayError {
+internal fun AcpPilotException.gatewayError(): GatewayError {
     val status = when (kind) {
         AcpPilotException.Kind.BUSY, AcpPilotException.Kind.QUOTA_EXHAUSTED -> HttpStatusCode.TooManyRequests
-        AcpPilotException.Kind.SERVICE_DISABLED -> HttpStatusCode.Forbidden
+        AcpPilotException.Kind.SERVICE_DISABLED, AcpPilotException.Kind.SUBSCRIPTION_REQUIRED -> HttpStatusCode.Forbidden
         AcpPilotException.Kind.TIMED_OUT -> HttpStatusCode.GatewayTimeout
         AcpPilotException.Kind.START_FAILED -> HttpStatusCode.ServiceUnavailable
         AcpPilotException.Kind.MODEL_UNAVAILABLE, AcpPilotException.Kind.MODEL_MISMATCH -> HttpStatusCode.Conflict

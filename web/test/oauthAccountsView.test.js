@@ -78,6 +78,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
   let api
   let originalStartOAuthLogin
   let originalCompleteOAuthLogin
+  let originalAgyApi
   let app
   let host
   let mock
@@ -169,7 +170,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.ok(panel, 'Expected actual teleported ActionMenu')
     return panel
   }
-  async function mount(fixture = createOAuthAccountsFixture(), { deferLoad = false, failLoad = false, drawer = false, autoOpenCreate = false, createOnly = false, providerList = false, providerId = 'antigravity', onClose, onChanged, onToggleEnabled } = {}) {
+  async function mount(fixture = createOAuthAccountsFixture(), { deferLoad = false, failLoad = false, drawer = false, autoOpenCreate = false, createOnly = false, providerList = false, providerId = createOnly ? 'chatgpt' : 'antigravity', onClose, onChanged, onToggleEnabled } = {}) {
     assert.equal(fixture.now, FIXTURE_NOW)
     mock = createOAuthFixtureFetch({ fixture, origin: window.location.origin })
     let releaseLoad
@@ -210,7 +211,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     app.mount(host)
     await settle()
     if (!deferLoad) assert.equal(host.querySelector('.loading-state'), null)
-    assert.deepEqual(mock.requests.filter(request => !providerList || ['/admin/api/oauth-accounts', '/admin/api/oauth-providers', '/admin/api/channels'].includes(request.path)).map(request => [request.method, request.path]).sort(), [
+    assert.deepEqual(mock.requests.filter(request => ['/admin/api/oauth-accounts', '/admin/api/oauth-providers', '/admin/api/channels'].includes(request.path)).map(request => [request.method, request.path]).sort(), [
       ['GET', '/admin/api/oauth-accounts'],
       ['GET', '/admin/api/oauth-providers'],
       ['GET', '/admin/api/channels'],
@@ -239,6 +240,8 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
         SearchSelect: await loadClientComponent(server, 'SearchSelect', { Icon: icon }),
       }),
     }
+    children.AntigravityAgyLogin = await loadClientComponent(server, 'AntigravityAgyLogin', children)
+    children.AntigravityAgyAccounts = await loadClientComponent(server, 'AntigravityAgyAccounts', children)
     view = await loadClientComponent(server, 'OAuthAccountsView', children)
     providerDrawer = await loadClientComponent(server, 'OAuthProviderDrawer', {
       ...children,
@@ -260,6 +263,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     toastStack = await loadClientComponent(server, 'ToastStack')
     toasts = (await server.ssrLoadModule('/src/toast.ts')).toasts
     api = (await server.ssrLoadModule('/src/api.ts')).api
+    originalAgyApi = Object.fromEntries(['startAntigravityAgyLogin', 'getAntigravityAgyLogin', 'submitAntigravityAgyCode', 'cancelAntigravityAgyLogin'].map(key => [key, api[key]]))
     originalStartOAuthLogin = api.startOAuthLogin
     originalCompleteOAuthLogin = api.completeOAuthLogin
   })
@@ -287,6 +291,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       toasts?.splice(0)
       api.startOAuthLogin = originalStartOAuthLogin
       api.completeOAuthLogin = originalCompleteOAuthLogin
+      Object.assign(api, originalAgyApi)
       window.confirm = originalConfirm
       globalThis.fetch = window.fetch = noUnmockedFetch
       await settle()
@@ -419,7 +424,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await mount(createOAuthAccountsFixture(), { createOnly: true, onChanged: () => events.push('changed'), onClose: () => events.push('close') })
     buttonNamed(dialog(), '生成登录链接').click()
     await settle()
-    assert.deepEqual(started, { provider: 'antigravity', accountId: null, name: null, channelIds: [] })
+    assert.deepEqual(started, { provider: 'chatgpt', accountId: null, name: null, channelIds: [] })
     await input(dialog().querySelector('textarea'), 'http://localhost/callback?code=fixture&state=fixture')
     dialog().querySelector('form').dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     await settle()
@@ -447,20 +452,20 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     let changed = 0
     api.completeOAuthLogin = async () => {}
     await mount(createOAuthAccountsFixture(), { onChanged: () => changed++ })
-    buttonNamed(await openMenu(IDS.groupedHealthy), '重新授权').click()
+    buttonNamed(await openMenu(IDS.chatgptWarning), '重新授权').click()
     await settle()
     await input(field('账号名称'), '重新授权后名称')
     await submitMockedLogin()
     assert.equal(dialog(), null)
     assert.equal(changed, 1)
-    assert.equal(account(mock.fixture, IDS.groupedHealthy).name, '重新授权后名称')
+    assert.equal(account(mock.fixture, IDS.chatgptWarning).name, '重新授权后名称')
     assert.equal(writes().length, 1)
-    assert.equal(writes()[0].path, '/admin/api/oauth-accounts/' + IDS.groupedHealthy + '/settings')
+    assert.equal(writes()[0].path, '/admin/api/oauth-accounts/' + IDS.chatgptWarning + '/settings')
     assert.match(text(host.querySelector('.toast')), /订阅账号已重新授权/)
   })
 
   for (const outcome of ['success', 'failure']) {
-    for (const providerId of ['chatgpt', 'antigravity']) {
+    for (const providerId of ['chatgpt']) {
       it(providerId + ' ignores late login-completion ' + outcome + ' after standalone creation is cancelled', async () => {
         let finishLogin
         const events = []
@@ -490,7 +495,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       await submitMockedLogin()
       buttonNamed(dialog(), '取消').click()
       await settle()
-      buttonNamed(await openMenu(IDS.groupedHealthy), '重新授权').click()
+      buttonNamed(await openMenu(IDS.chatgptWarning), '重新授权').click()
       await settle()
       await input(field('账号名称'), '保留新的重新授权草稿')
       finishLogin()
@@ -508,7 +513,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
   it('does not let a pending reauthorization settings update close a newer creation dialog', async () => {
     api.completeOAuthLogin = async () => {}
     await mount()
-    buttonNamed(await openMenu(IDS.groupedHealthy), '重新授权').click()
+    buttonNamed(await openMenu(IDS.chatgptWarning), '重新授权').click()
     await settle()
     const release = gateFetch((path, init) => init.method === 'PUT')
     await submitMockedLogin()
@@ -626,7 +631,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(host.querySelector('.empty-state'), null)
     assert.equal(rows().length, 9)
     assert.deepEqual(stats(), [9, 7, 2, 1])
-    assert.equal(mock.requests.length, 6)
+    assert.equal(mock.requests.length, 7)
     assert.ok(mock.requests.every(request => request.method === 'GET'))
   })
 
@@ -662,7 +667,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assertRows([IDS.groupedHealthy, IDS.groupedWarning, IDS.quotaUnknown])
     assert.equal(host.querySelector('.oauth-full-models'), null)
     assert.equal(JSON.stringify(mock.fixture), before)
-    assert.equal(mock.requests.length, 3)
+    assert.equal(mock.requests.length, 4)
     assert.deepEqual(stats(), [9, 7, 2, 1])
   })
 
@@ -711,7 +716,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await settle()
     assert.equal(host.querySelector('.empty-state'), null)
     assert.equal(rows().length, 9)
-    assert.equal(mock.requests.length, 3)
+    assert.equal(mock.requests.length, 4)
   })
 
   it('does not hide disabled REAUTH credentials or their refresh error', async () => {
@@ -840,7 +845,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await settle()
     assert.equal(toggle.getAttribute('aria-expanded'), 'false')
     assert.equal(document.getElementById(listId), null)
-    assert.equal(mock.requests.length, 3)
+    assert.equal(mock.requests.length, 4)
   })
 
   it('offers an accessible full-model disclosure even when a single model has no hidden badge', async () => {
@@ -867,7 +872,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       const actions = [...panel.querySelectorAll('[role="menuitem"]')].map(text)
       assert.equal(actions.includes('账号设置'), false)
       assert.ok(actions.includes('调度策略'))
-      assert.ok(actions.includes('重新授权'))
+      assert.ok(actions.includes(id === IDS.groupedHealthy ? '使用 agy 登录迁移' : '重新授权'))
       panel.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))
       await settle()
       assert.equal(document.querySelector('.floating-menu'), null)
@@ -881,7 +886,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       assert.match(text(dialog), /账号代理/)
       assert.match(text(dialog), /模型授权/)
       assert.ok(dialog.querySelector('.oauth-model-picker'))
-      assert.deepEqual(mock.requests.slice(3).map(request => [request.method, request.path]), [
+      assert.deepEqual(mock.requests.slice(4).map(request => [request.method, request.path]), [
         ['GET', `/admin/api/oauth-providers/${account(mock.fixture, id).provider}/model-mappings`],
         ['POST', '/admin/api/model-suggestions'],
       ], 'Opening settings reads only shared mappings and batch candidates, never upstream or login routes')
@@ -1095,7 +1100,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(dialog(), null)
   })
 
-  for (const providerId of ['chatgpt', 'antigravity']) {
+  for (const providerId of ['chatgpt']) {
     for (const outcome of ['success', 'failure']) {
       for (const reopen of [false, true]) {
         it(providerId + ' refreshes only committed data after cancelled creation ' + outcome + (reopen ? ' while preserving a newer dialog' : ' without reopening the pool'), async () => {
@@ -1155,6 +1160,116 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     })
   }
 
+  for (const migrate of [false, true]) {
+    it('antigravity uses official agy instead of legacy oauth for ' + (migrate ? 'legacy account authorization' : 'new accounts'), async () => {
+      const calls = []
+      api.startOAuthLogin = async () => { throw new Error('Legacy OAuth must not be called') }
+      api.completeOAuthLogin = async () => { throw new Error('Legacy OAuth must not be called') }
+      const login = { loginId: 'fixture-agy-login', state: 'AWAITING_CODE', expiresAt: FIXTURE_NOW + 600000,
+        authorizeUrl: 'https://accounts.google.com/o/oauth2/v2/auth?fixture=official-cli' }
+      api.startAntigravityAgyLogin = async payload => { calls.push(['start', payload]); return login }
+      api.submitAntigravityAgyCode = async (id, code) => {
+        calls.push(['code', id, code])
+        if (migrate) Object.assign(account(mock.fixture, IDS.groupedHealthy), {
+          authMethod: 'agy', accountPlan: 'Google AI Pro', modelCatalog: ['gemini-4-argon'],
+          modelCatalogSyncedAt: FIXTURE_NOW,
+        })
+        return { ...login, state: 'AUTHENTICATED', authorizeUrl: null, account: { id: 'fixture-cli-account', name: 'CLI Pro', subscriptionTier: 'PRO', routingEnabled: false } }
+      }
+      await mount(createOAuthAccountsFixture(), { createOnly: !migrate, providerId: 'antigravity' })
+      if (migrate) {
+        buttonNamed(await openMenu(IDS.groupedHealthy), '使用 agy 登录迁移').click()
+        await settle()
+      }
+      assert.equal(dialog().querySelector('textarea'), null)
+      assert.match(text(dialog()), /不自动切换|不创建旧 OAuth/)
+      buttonNamed(dialog(), '启动官方 agy 登录').click()
+      await settle()
+      assert.equal(calls[0][1].sourceAccountId ?? null, migrate ? IDS.groupedHealthy : null)
+      assert.ok(dialog().querySelector('a[href^="https://accounts.google.com/"]'))
+      const accountReadsBeforeCompletion = mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length
+      await input(field('官方页面验证码'), '4/fixture-code')
+      buttonNamed(dialog(), '提交给官方 CLI').click()
+      await settle()
+      assert.deepEqual(calls[1], ['code', 'fixture-agy-login', '4/fixture-code'])
+      assert.equal(dialog(), null)
+      if (migrate) {
+        assert.equal(mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length, accountReadsBeforeCompletion + 1)
+        const migratedRow = row(IDS.groupedHealthy)
+        assert.match(text(migratedRow), /官方 agy ACP/)
+        assert.match(text(migratedRow.querySelector('.oauth-account-models')), /gemini-4-argon/)
+        assert.doesNotMatch(text(migratedRow.querySelector('.oauth-account-models')), /claude-sonnet-4-5/)
+      }
+      assert.equal(writes().length, 0, 'CLI login must not overwrite legacy credentials, settings or routing')
+      assert.match(text(host.querySelector('.toast')), /官方 agy 登录成功/)
+    })
+  }
+
+  it('requires explicit confirmation before deleting an orphan agy profile', async () => {
+    const fixture = createOAuthAccountsFixture()
+    fixture.agyAccounts = {
+      configured: true,
+      accounts: [{
+        id: 'orphan-agy-profile', name: '孤儿 CLI 档案', sourceAccountId: null,
+        subscriptionTier: 'PRO', currentModelId: 'gemini-4-argon', authorizedAt: FIXTURE_NOW,
+        routingEnabled: false, registered: false, cleanupEligible: true,
+      }, {
+        id: 'referenced-agy-profile', name: '仍关联的 CLI 档案', sourceAccountId: 'legacy-account',
+        subscriptionTier: 'PRO', currentModelId: 'gemini-4-argon', authorizedAt: FIXTURE_NOW,
+        routingEnabled: false, registered: false, cleanupEligible: false,
+      }],
+    }
+    const confirmations = []
+    let confirmed = false
+    window.confirm = message => { confirmations.push(message); return confirmed }
+    await mount(fixture)
+    const section = host.querySelector('section[aria-label="Antigravity agy 授权账号"]')
+    assert.ok(section)
+    buttonNamed(section, '清理孤儿档案').click()
+    await settle()
+    assert.equal(confirmations.length, 1)
+    assert.match(confirmations[0], /永久删除.*本地凭据目录/)
+    assert.equal(mock.requests.filter(request => request.method === 'DELETE').length, 0)
+
+    confirmed = true
+    buttonNamed(section, '清理孤儿档案').click()
+    await settle()
+    assert.equal(confirmations.length, 2)
+    assert.deepEqual(mock.requests.filter(request => request.method === 'DELETE').map(request => request.path), [
+      '/admin/api/antigravity/agy/accounts/orphan-agy-profile',
+    ])
+    assert.deepEqual(fixture.agyAccounts.accounts.map(account => account.id), ['referenced-agy-profile'])
+    assert.equal(section.querySelectorAll('article').length, 1)
+    assert.equal(section.querySelector('article button.danger'), null)
+  })
+
+  it('cancels a late official agy start after the dialog is closed', async () => {
+    let finish
+    const cancelled = []
+    api.startAntigravityAgyLogin = () => new Promise(resolve => { finish = resolve })
+    api.cancelAntigravityAgyLogin = async id => { cancelled.push(id) }
+    await mount(createOAuthAccountsFixture(), { createOnly: true, providerId: 'antigravity' })
+    buttonNamed(dialog(), '启动官方 agy 登录').click()
+    await settle()
+    buttonNamed(dialog(), '取消').click()
+    await settle()
+    finish({ loginId: 'late-agy', state: 'PREPARING', expiresAt: FIXTURE_NOW + 600000 })
+    await settle()
+    assert.deepEqual(cancelled, ['late-agy'])
+    assert.equal(dialog(), null)
+    assert.equal(toasts.length, 0)
+  })
+
+  it('does not fall back to oauth when the official CLI is not configured', async () => {
+    api.startOAuthLogin = async () => { throw new Error('Legacy OAuth must not be called') }
+    api.startAntigravityAgyLogin = async () => { throw new Error('官方 agy 登录环境尚未配置') }
+    await mount(createOAuthAccountsFixture(), { createOnly: true, providerId: 'antigravity' })
+    buttonNamed(dialog(), '启动官方 agy 登录').click()
+    await settle()
+    assert.match(text(dialog().querySelector('[role="alert"]')), /尚未配置/)
+    assert.equal(dialog().querySelector('textarea'), null)
+  })
+
   it('does not fetch provider data after the provider page is unmounted during account creation', async () => {
     let finishLogin
     api.completeOAuthLogin = () => new Promise(resolve => { finishLogin = resolve })
@@ -1164,7 +1279,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     dialog().querySelector('input[value="subscription"]').click()
     await settle()
     const select = dialog().querySelector('select')
-    select.value = 'antigravity'
+    select.value = 'chatgpt'
     select.dispatchEvent(new Event('change', { bubbles: true }))
     await settle()
     buttonNamed(dialog(), '继续').click()
@@ -1707,7 +1822,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(panel.getAttribute('role'), 'menu')
     assert.deepEqual([...panel.querySelectorAll('[role="heading"]')].map(text), ['日常运维', '配置管理', '危险操作'])
     assert.equal(panel.querySelectorAll('[role="separator"]').length, 2)
-    assert.deepEqual([...panel.querySelectorAll('[role="menuitem"]')].map(text), ['刷新 token', '刷新额度', '解除冷却', '调度策略', '重新授权', '删除账号'])
+    assert.deepEqual([...panel.querySelectorAll('[role="menuitem"]')].map(text), ['刷新 token', '刷新额度', '解除冷却', '调度策略', '使用 agy 登录迁移', '删除账号'])
     assert.equal(buttonNamed(panel, '删除账号').classList.contains('danger'), true)
     buttonNamed(panel, '解除冷却').click()
     await settle()

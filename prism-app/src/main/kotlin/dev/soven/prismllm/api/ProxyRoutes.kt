@@ -6,6 +6,7 @@ import dev.soven.prismllm.shared.error.GatewayError
 import dev.soven.prismllm.shared.error.badRequest
 import dev.soven.prismllm.shared.error.notFound
 import dev.soven.prismllm.shared.error.serviceUnavailable
+import dev.soven.prismllm.shared.error.toEnvelope
 import dev.soven.prismllm.shared.error.unauthorized
 
 import dev.soven.prismllm.quota.domain.ClientKeyRecord
@@ -1503,6 +1504,149 @@ private suspend fun searchChatCaller(
     }
 }
 
+private fun agyChatRequest(
+    requestJson: JsonObject,
+    protocol: GatewayProtocol,
+    candidate: RouteCandidate,
+    stream: Boolean,
+    app: GatewayApplication,
+): AcpChatRequest {
+    if (requestJson.containsKey("stream_options")) {
+        throw badRequest("antigravity_agy_unsupported_option", "agy ACP 不支持 stream_options")
+    }
+    val converted = ProtocolConversion.convertRequest(
+        protocol,
+        GatewayProtocol.CHAT_COMPLETIONS,
+        requestJson,
+        candidate.upstreamModel,
+        carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+    )
+    return parseAcpChatRequest(
+        JsonObject(converted - "stream_options" + ("stream" to JsonPrimitive(stream))),
+        candidate.upstreamModel,
+    )
+}
+
+private suspend fun proxyAgyJson(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    alias: String,
+    candidate: RouteCandidate,
+    timeoutMs: Long,
+    state: ProxyState,
+    protocol: GatewayProtocol,
+) {
+    val gateway = app.antigravityAgy
+        ?: throw serviceUnavailable("antigravity_agy_unavailable", "官方 agy 数据面尚未启用")
+    val account = candidate.oauthAccount
+        ?: throw GatewayError(HttpStatusCode.Conflict, "antigravity_agy_account_missing", "agy 路由账号不存在")
+    val request = agyChatRequest(requestJson, protocol, candidate, stream = false, app)
+    val text = StringBuilder()
+    state.upstreamCallStarted = true
+    state.upstreamStatus = HttpStatusCode.OK.value
+    state.upstreamReportedModel = candidate.upstreamModel
+    val finishReason = withTimeout(timeoutMs) {
+        gateway.prompt(account, candidate.upstreamModel, request.text) { text.append(it) }
+    }
+    val chatResponse = request.response(text.toString(), finishReason)
+    val response = ProtocolConversion.convertResponse(
+        protocol,
+        GatewayProtocol.CHAT_COMPLETIONS,
+        chatResponse,
+        alias,
+        carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+    )
+    state.committed = true
+    state.statusCode = HttpStatusCode.OK.value
+    call.respondText(response.toString(), ContentType.Application.Json, HttpStatusCode.OK)
+}
+
+private suspend fun proxyAgyStream(
+    app: GatewayApplication,
+    call: ApplicationCall,
+    requestJson: JsonObject,
+    alias: String,
+    candidate: RouteCandidate,
+    permit: CooldownPermit,
+    startedAt: Long,
+    attemptStartedNanos: Long,
+    timeoutMs: Long,
+    state: ProxyState,
+    protocol: GatewayProtocol,
+    traceparent: String,
+) {
+    val gateway = app.antigravityAgy
+        ?: throw serviceUnavailable("antigravity_agy_unavailable", "官方 agy 数据面尚未启用")
+    val account = candidate.oauthAccount
+        ?: throw GatewayError(HttpStatusCode.Conflict, "antigravity_agy_account_missing", "agy 路由账号不存在")
+    val request = agyChatRequest(requestJson, protocol, candidate, stream = true, app)
+    val converter = ProtocolConversion.streamConverter(
+        protocol,
+        GatewayProtocol.CHAT_COMPLETIONS,
+        alias,
+        carry = app.reasoningCarryCache.scoped(candidate.channel.id),
+    )
+    state.upstreamCallStarted = true
+    state.upstreamStatus = HttpStatusCode.OK.value
+    state.upstreamReportedModel = candidate.upstreamModel
+    state.committed = true
+    state.statusCode = HttpStatusCode.OK.value
+    call.response.headers.append("X-Accel-Buffering", "no")
+    call.response.headers.append("traceparent", traceparent)
+    val responseJob = checkNotNull(currentCoroutineContext()[Job])
+    call.cancelOnClientDisconnect(responseJob).use {
+        call.respondBytesWriter(contentType = ContentType.Text.EventStream) {
+        val writeLock = Mutex()
+        suspend fun emitLine(line: String) = writeLock.withLock { writeSseLine(line) }
+        fun convertedLines(payload: JsonObject): List<String> {
+            val source = "data: $payload"
+            return if (converter == null) {
+                listOf(source, "")
+            } else {
+                converter.feed(source) + converter.feed("")
+            }
+        }
+        try {
+            emitLine(": connected")
+            convertedLines(request.chunk(role = true)).forEach { emitLine(it) }
+            try {
+                val finishReason = withTimeout(timeoutMs) {
+                    gateway.prompt(account, candidate.upstreamModel, request.text) { chunk ->
+                        val line = "data: ${request.chunk(text = chunk)}"
+                        markFirstToken(
+                            line,
+                            GatewayProtocol.CHAT_COMPLETIONS,
+                            state,
+                            startedAt,
+                            attemptStartedNanos,
+                            app,
+                            alias,
+                            candidate,
+                            permit,
+                        )
+                        recordUsage(line, state, GatewayProtocol.CHAT_COMPLETIONS)
+                        if (converter?.failed != true) convertedLines(request.chunk(text = chunk)).forEach { emitLine(it) }
+                    }
+                }
+                if (converter?.failed != true) {
+                    convertedLines(request.chunk(finishReason = finishReason)).forEach { emitLine(it) }
+                    (converter?.finish() ?: listOf("data: [DONE]", "")).forEach { emitLine(it) }
+                }
+            } catch (failure: GatewayError) {
+                state.streamError = failure
+                state.errorCode = failure.code
+                val lines = converter?.fail(failure.message)
+                    ?: listOf("data: ${Json.encodeToString(failure.toEnvelope())}", "")
+                lines.forEach { emitLine(it) }
+            }
+        } finally {
+            converter?.finish()?.forEach { emitLine(it) }
+        }
+        }
+    }
+}
+
 private suspend fun proxyStream(
     app: GatewayApplication,
     call: ApplicationCall,
@@ -1522,6 +1666,23 @@ private suspend fun proxyStream(
     headerProfiles: List<UpstreamHeaderProfile>,
     clientKeyId: String? = null,
 ) {
+    if (candidate.oauthAccount?.isAgy == true) {
+        proxyAgyStream(
+            app,
+            call,
+            requestJson,
+            alias,
+            candidate,
+            permit,
+            startedAt,
+            attemptStartedNanos,
+            timeoutMs,
+            state,
+            protocol,
+            traceparent,
+        )
+        return
+    }
     val envelope = candidate.channel.upstreamEnvelope
     val upstreamUrl = upstreamRequestUrl(
         candidate.channel.baseUrl,
@@ -1900,6 +2061,10 @@ private suspend fun proxyJson(
     headerProfiles: List<UpstreamHeaderProfile>,
     clientKeyId: String? = null,
 ) {
+    if (candidate.oauthAccount?.isAgy == true) {
+        proxyAgyJson(app, call, requestJson, alias, candidate, timeoutMs, state, protocol)
+        return
+    }
     val envelope = candidate.channel.upstreamEnvelope
     val upstreamUrl = upstreamRequestUrl(
         candidate.channel.baseUrl,

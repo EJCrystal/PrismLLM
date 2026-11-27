@@ -112,7 +112,7 @@ class ModelCredentialRoutesIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(listOf(oauth.credentialId, static.credentialId), saved.payload().entryIds())
             assertEquals(1L, saved.payload()["revision"]!!.jsonPrimitive.long)
             assertTrue(saved.payload()["configured"]!!.jsonPrimitive.boolean)
-            listOf(staticSecret, refreshSecret, accessSecret, account.refreshTokenCiphertext).forEach { secret ->
+            listOf(staticSecret, refreshSecret, accessSecret, requireNotNull(account.refreshTokenCiphertext)).forEach { secret ->
                 assertFalse(saved.bodyAsText().contains(secret))
             }
             val metadataKeys = saved.payload()["entries"]!!.jsonArray.first().jsonObject.keys
@@ -126,7 +126,7 @@ class ModelCredentialRoutesIntegrationTest : GatewayIntegrationTestBase() {
             val optionKeys = option["entries"]!!.jsonArray.first().jsonObject.keys
             assertTrue(optionKeys.containsAll(setOf("channelId", "credentialType", "credentialId", "selectable")))
             assertTrue(optionKeys.all { it in setOf("channelId", "credentialType", "credentialId", "selectable", "reason") })
-            listOf(staticSecret, refreshSecret, accessSecret, account.refreshTokenCiphertext).forEach { secret ->
+            listOf(staticSecret, refreshSecret, accessSecret, requireNotNull(account.refreshTokenCiphertext)).forEach { secret ->
                 assertFalse(options.bodyAsText().contains(secret))
             }
 

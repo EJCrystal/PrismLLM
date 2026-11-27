@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { ApiError } from '../types/api'
-import type { Channel, OAuthAccount, OAuthAccountSettingsRequest, OAuthLoginStart, OAuthProviderInfo, OAuthProviderModelMappingsResponse, OAuthModelMappingMode, ModelSuggestionsResponse } from '../types/api'
+import type { AntigravityAgyAccount, Channel, OAuthAccount, OAuthAccountSettingsRequest, OAuthLoginStart, OAuthProviderInfo, OAuthProviderModelMappingsResponse, OAuthModelMappingMode, ModelSuggestionsResponse } from '../types/api'
 import { createLatestRequestGuard } from '../utils/latestRequest'
 import OAuthMappingInput from './OAuthMappingInput.vue'
 import ActionMenu from './ActionMenu.vue'
@@ -13,6 +13,8 @@ import Icon from './Icon.vue'
 import Modal from './Modal.vue'
 import OAuthModelTestModal from './OAuthModelTestModal.vue'
 import TablePlaceholder from './TablePlaceholder.vue'
+import AntigravityAgyAccounts from './AntigravityAgyAccounts.vue'
+import AntigravityAgyLogin from './AntigravityAgyLogin.vue'
 import { formatTime } from '../utils/format'
 import type { OAuthAccountStatusFilter, OAuthMappingDraft } from '../utils/oauthAccount'
 import {
@@ -89,6 +91,8 @@ const loginStarting = ref(false)
 const loginCompleting = ref(false)
 const loginSession = ref<OAuthLoginStart | null>(null)
 const callbackUrl = ref('')
+const agyAccountsRevision = ref(0)
+const agyReauthTarget = ref<AntigravityAgyAccount | null>(null)
 /** 会话按发起时的提供方生成；切换提供方或重开弹窗后旧请求不得写回界面。 */
 let loginGeneration = 0
 const reauthTarget = ref<OAuthAccount | null>(null)
@@ -161,6 +165,7 @@ const hasListFilters = computed(() =>
 const listProviderOptions = computed(() => [...new Set([...providers.value.map((item) => item.id), ...accounts.value.map((item) => item.provider)])]
   .sort((a, b) => oauthProviderLabel(a).localeCompare(oauthProviderLabel(b))))
 const configuredProviders = computed(() => providers.value.filter((item) => item.configured))
+const officialAgyLogin = computed(() => importForm.provider === 'antigravity')
 const channelOptions = computed(() => [...channels.value].sort((a, b) => a.name.localeCompare(b.name)))
 /** 模型授权可选项：优先用账号自己的目录，未同步时退回所关联渠道的模型。 */
 const settingsModelOptions = computed(() => [...new Set([
@@ -473,10 +478,11 @@ function resetImportForm(provider: string) {
   })
 }
 
-function openImport() {
+function openImport(providerOverride?: string) {
+  agyReauthTarget.value = null
   reauthTarget.value = null
   resetLoginSession()
-  const provider = props.fixedProvider || configuredProviders.value[0]?.id || providers.value[0]?.id || 'chatgpt'
+  const provider = providerOverride || props.fixedProvider || configuredProviders.value[0]?.id || providers.value[0]?.id || 'chatgpt'
   resetImportForm(provider)
   showImport.value = true
 }
@@ -488,6 +494,7 @@ function closeImport() {
 }
 
 function openReauth(account: OAuthAccount) {
+  agyReauthTarget.value = null
   reauthTarget.value = account
   resetLoginSession()
   Object.assign(importForm, {
@@ -500,6 +507,7 @@ function openReauth(account: OAuthAccount) {
 }
 
 async function beginLogin() {
+  if (officialAgyLogin.value) return
   if (loginStarting.value) return
   const generation = loginGeneration
   loginStarting.value = true
@@ -527,6 +535,7 @@ watch(
 )
 
 async function completeLogin() {
+  if (officialAgyLogin.value) return
   if (loginCompleting.value) return
   if (!loginSession.value) {
     notify('请先生成登录链接并完成浏览器授权', 'error')
@@ -572,6 +581,23 @@ async function completeLogin() {
   } finally {
     if (generation === loginGeneration) loginCompleting.value = false
   }
+}
+
+function openAgyReauth(account: AntigravityAgyAccount) {
+  openImport('antigravity')
+  agyReauthTarget.value = account
+  importForm.name = account.name
+}
+
+async function onAgyAuthenticated() {
+  const migrated = agyReauthTarget.value != null
+  agyAccountsRevision.value++
+  closeImport()
+  if (!props.createOnly) await load()
+  notify(migrated
+    ? '官方 agy 登录成功；旧 OAuth token 已清除，原账号路由身份和顺序已保留'
+    : '官方 agy 登录成功并登记；新账号需在模型凭据路由中手动加入')
+  emit('changed')
 }
 
 async function refreshToken(account: OAuthAccount) {
@@ -833,6 +859,7 @@ async function deleteAccount(account: OAuthAccount) {
   busyId.value = account.id
   try {
     await api.deleteOAuthAccount(account.id)
+    if (account.provider === 'antigravity') agyAccountsRevision.value++
     notify('订阅账号已删除')
     await load()
     emit('changed')
@@ -857,20 +884,16 @@ interface OAuthAccountActionItem {
 function accountActionItems(account: OAuthAccount): OAuthAccountActionItem[] {
   const busy = busyId.value === account.id
   return [
-    {
-      id: 'refresh-token',
-      label: '刷新 token',
-      icon: 'refresh',
-      group: '日常运维',
-      disabled: busy,
+    ...(account.authMethod === 'agy' ? [] : [{
+      id: 'refresh-token', label: '刷新 token', icon: 'refresh', group: '日常运维', disabled: busy,
       title: '用 refresh token 换取新的 access token；正常调用时网关会自动续期',
-    },
-    { id: 'refresh-quota', label: '刷新额度', icon: 'chart', group: '日常运维', disabled: busy },
+    }]),
+    ...(account.authMethod === 'agy' ? [] : [{ id: 'refresh-quota', label: '刷新额度', icon: 'chart', group: '日常运维', disabled: busy }]),
     ...(isOAuthAccountCooling(account, now.value)
       ? [{ id: 'clear-cooldown', label: '解除冷却', icon: 'check', group: '日常运维', disabled: busy }]
       : []),
     { id: 'policy', label: '调度策略', icon: 'bolt', group: '配置管理' },
-    { id: 'reauth', label: '重新授权', icon: 'lock', group: '配置管理' },
+    ...(account.authMethod === 'agy' ? [] : [{ id: 'reauth', label: account.provider === 'antigravity' ? '使用 agy 登录迁移' : '重新授权', icon: 'lock', group: '配置管理' }]),
     { id: 'delete', label: '删除账号', icon: 'trash', group: '危险操作', danger: true, disabled: busy },
   ]
 }
@@ -925,6 +948,12 @@ onBeforeUnmount(() => {
 
 <template>
   <section v-if="!createOnly" class="page-stack page-compact oauth-accounts-page" :class="{ 'is-embedded': embedded }">
+    <AntigravityAgyAccounts
+      v-if="!fixedProvider || fixedProvider === 'antigravity'"
+      :key="agyAccountsRevision"
+      @create="openImport('antigravity')"
+      @reauthorize="openAgyReauth"
+    />
     <div class="stat-row four oauth-account-stats" aria-label="订阅账号状态筛选">
       <button type="button" class="stat-card" :class="{ 'is-selected': statusFilter === 'all' }" :aria-pressed="statusFilter === 'all'" @click="toggleStatusFilter('all')">
         <span>订阅账号</span><strong>{{ scopedAccounts.length }}</strong><small>全部账号 · 独立凭据</small>
@@ -954,7 +983,7 @@ onBeforeUnmount(() => {
       </label>
       <span class="oauth-filter-count small muted" role="status">展示 {{ filteredAccounts.length }} / 共 {{ scopedAccounts.length }}</span>
       <button v-if="hasListFilters" type="button" class="button ghost mini" @click="resetListFilters">重置筛选</button>
-      <button type="button" class="button primary oauth-create-account" @click="openImport">
+      <button type="button" class="button primary oauth-create-account" @click="openImport()">
         <Icon name="plus" :size="17" />新建账号
       </button>
     </div>
@@ -972,7 +1001,7 @@ onBeforeUnmount(() => {
         title="还没有订阅账号"
         :desc="fixedProvider ? `还没有接入 ${oauthProviderLabel(fixedProvider)} 订阅账号，点击新建后通过浏览器登录授权即可使用。` : '直接新建 ChatGPT 或 Antigravity 账号，再按需关联渠道；账号不再依赖任何渠道密钥。'"
         action-text="新建账号"
-        @action="openImport"
+        @action="openImport()"
       />
       <TablePlaceholder
         v-else-if="filteredAccounts.length === 0"
@@ -1005,6 +1034,7 @@ onBeforeUnmount(() => {
                 <div v-if="account.accountEmail && account.accountEmail !== account.name" class="oauth-account-name small muted" :title="account.name">{{ account.name }}</div>
                 <div class="oauth-account-meta">
                   <span class="badge neutral small">{{ oauthProviderLabel(account.provider) }}</span>
+                  <span v-if="account.authMethod === 'agy'" class="badge info small">官方 agy ACP</span>
                   <span v-if="account.accountPlan" class="small muted">{{ account.accountPlan }}</span>
                 </div>
                 <div class="oauth-account-channels small muted" :title="channelSummary(account)">渠道：{{ channelSummary(account) }}</div>
@@ -1068,7 +1098,8 @@ onBeforeUnmount(() => {
                 </div>
               </td>
               <td class="oauth-quota-cell">
-                <div v-if="accountQuotaView(account).visible.length" :id="`oauth-quotas-${account.id}`" class="oauth-quota-groups">
+                <div v-if="account.authMethod === 'agy'" class="muted small">额度由官方 agy 会话管理；后台不读取或轮询额度</div>
+                <div v-else-if="accountQuotaView(account).visible.length" :id="`oauth-quotas-${account.id}`" class="oauth-quota-groups">
                   <div v-for="group in visibleQuotaGroups(account)" :key="group.key" class="oauth-quota-group">
                     <div v-if="group.label" class="oauth-quota-group-label">{{ group.label }}</div>
                     <div v-for="window in group.windows" :key="window.key" class="oauth-quota-window">
@@ -1111,16 +1142,18 @@ onBeforeUnmount(() => {
                 </div>
               </td>
               <td class="oauth-refresh-cell small">
-                <div :title="'最近一次成功续期 access token 的时间'">
+                <div v-if="account.authMethod === 'agy'" class="muted" title="CLI 凭据由官方 agy 管理和续期">官方 agy 管理凭据</div>
+                <div v-else :title="'最近一次成功续期 access token 的时间'">
                   {{ account.lastRefreshedAt ? formatTime(account.lastRefreshedAt) : '尚未刷新' }}
                 </div>
-                <div class="muted" :title="'账号授权的建立时间；access token 到期会自动续期，不影响授权。'">
+                <div class="muted" :title="account.authMethod === 'agy' ? 'agy CLI 授权建立时间' : '账号授权的建立时间；access token 到期会自动续期，不影响授权。'">
                   授权于 {{ formatTime(authorizedAt(account)) }}
                 </div>
               </td>
               <td class="actions-col">
                 <div class="row-actions">
-                  <button type="button" class="button ghost mini" @click="openTest(account)">测试</button>
+                  <button v-if="account.authMethod !== 'agy'" type="button" class="button ghost mini" @click="openTest(account)">测试</button>
+                  <span v-else class="badge neutral small">ACP</span>
                   <button
                     type="button"
                     class="icon-button"
@@ -1158,18 +1191,18 @@ onBeforeUnmount(() => {
         <label class="field">
           <span>提供方</span>
           <select v-model="importForm.provider" :disabled="reauthTarget != null || !!fixedProvider">
-            <option v-for="provider in providers" :key="provider.id" :value="provider.id" :disabled="!provider.configured">
-              {{ provider.label }}{{ provider.configured ? '' : '（未配置）' }}
+            <option v-for="provider in providers" :key="provider.id" :value="provider.id" :disabled="provider.id !== 'antigravity' && !provider.configured">
+              {{ provider.label }}{{ provider.id === 'antigravity' ? '（官方 agy）' : provider.configured ? '' : '（未配置）' }}
             </option>
           </select>
-          <small v-if="configuredProviders.length === 0" class="text-danger">
+          <small v-if="configuredProviders.length === 0 && !officialAgyLogin" class="text-danger">
             尚未配置任何 OAuth 提供方，请先设置客户端参数。
           </small>
         </label>
 
         <div v-if="importChannelsManaged" class="field">
           <span>上游端点</span>
-          <p class="muted small">订阅账号只服务官方端点，系统会自动创建并维护对应渠道，无需手工关联。</p>
+          <p class="muted small">{{ officialAgyLogin ? '官方 agy 使用独立登录档案；本次不创建旧 OAuth 记录、不自动关联或切换普通路由。' : '订阅账号只服务官方端点，系统会自动创建并维护对应渠道，无需手工关联。' }}</p>
         </div>
         <div v-else class="field">
           <span>关联渠道</span>
@@ -1183,6 +1216,15 @@ onBeforeUnmount(() => {
           <small>同一账号可以关联多个渠道；不关联时账号保留，但不会参与任何路由。</small>
         </div>
 
+        <AntigravityAgyLogin
+          v-if="officialAgyLogin"
+          :name="importForm.name"
+          :source-account-id="reauthTarget?.id"
+          :account-id="agyReauthTarget?.id"
+          @authenticated="onAgyAuthenticated"
+        />
+
+        <template v-else>
         <div class="field">
           <span>授权方式</span>
           <p class="muted small">只能通过浏览器登录授权：网关走提供方的官方授权页换取并加密保存 token，无需手动复制凭据。</p>
@@ -1207,10 +1249,11 @@ onBeforeUnmount(() => {
           <textarea v-model="callbackUrl" rows="3" spellcheck="false" placeholder="登录完成后把浏览器地址栏里的完整 URL 粘贴到这里"></textarea>
           <small>回调地址形如 {{ loginSession.redirectUri }}?code=…&amp;state=…</small>
         </label>
+        </template>
 
         <div class="form-actions">
           <button type="button" class="button" @click="closeImport">取消</button>
-          <button type="submit" class="button primary" :disabled="loginCompleting">
+          <button v-if="!officialAgyLogin" type="submit" class="button primary" :disabled="loginCompleting">
             {{ loginCompleting ? '提交中…' : reauthTarget ? '重新授权' : '创建账号' }}
           </button>
         </div>

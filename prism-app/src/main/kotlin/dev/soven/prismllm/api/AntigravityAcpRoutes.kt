@@ -81,7 +81,7 @@ internal fun Route.antigravityAcpRoutes(
                 ?: throw serviceUnavailable("gateway_shutting_down", "网关正在停止，请稍后重试")
             lease.use {
                 lease.trackResponse(call)
-                call.cancelOnAcpDisconnect(requestJob).use {
+                call.cancelOnClientDisconnect(requestJob).use {
                     val key = authenticateKey(call)
                     gateway.authorize(key)
                     val request = parseAcpChatRequest(call.receiveLimitedJson(minOf(requestBodyLimitBytes, 262_144)), gateway.modelId)
@@ -105,7 +105,7 @@ internal fun Route.antigravityAcpRoutes(
     }
 }
 
-private data class AcpChatRequest(
+internal data class AcpChatRequest(
     val model: String,
     val text: String,
     val stream: Boolean,
@@ -140,7 +140,7 @@ private data class AcpChatRequest(
     }
 }
 
-private fun parseAcpChatRequest(body: JsonObject, model: String): AcpChatRequest {
+internal fun parseAcpChatRequest(body: JsonObject, model: String): AcpChatRequest {
     if (body.keys.any { it !in setOf("model", "messages", "stream") }) {
         throw badRequest("antigravity_acp_unsupported_option", "ACP 首版仅支持 model、单条 user 纯文本 messages 和 stream")
     }
@@ -207,7 +207,7 @@ private suspend fun streamAcpChat(call: ApplicationCall, gateway: AntigravityAcp
     }
 }
 
-private fun ApplicationCall.cancelOnAcpDisconnect(job: Job): AutoCloseable {
+internal fun ApplicationCall.cancelOnClientDisconnect(job: Job): AutoCloseable {
     val response = response as? BaseApplicationResponse
         ?: attributes.getOrNull(BaseApplicationResponse.EngineResponseAttributeKey)
     val engineCall = response?.call as? NettyApplicationCall ?: return AutoCloseable {}

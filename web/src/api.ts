@@ -1,5 +1,7 @@
 import { ApiError } from './types/api'
 import type {
+  AntigravityAgyAccounts,
+  AntigravityAgyLogin,
   RequestLogPageOptions,
   RequestLogFilterOptions,
   AdminAuditLog,
@@ -251,6 +253,19 @@ export const api = {
     request<OAuthAccount>(`/oauth-accounts/${encodeURIComponent(id)}/quota/refresh`, { method: 'POST' }),
   startOAuthLogin: (payload: OAuthLoginStartRequest) =>
     request<OAuthLoginStart>('/oauth-login/start', { method: 'POST', body: JSON.stringify(payload) }),
+  listAntigravityAgyAccounts: () => request<AntigravityAgyAccounts>('/antigravity/agy/accounts'),
+  deleteAntigravityAgyAccount: (profileId: string) =>
+    request<void>(`/antigravity/agy/accounts/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
+  startAntigravityAgyLogin: (payload: { name?: string; sourceAccountId?: string | null; accountId?: string | null }) =>
+    request<AntigravityAgyLogin>('/antigravity/agy/logins', { method: 'POST', body: JSON.stringify(payload) }),
+  getAntigravityAgyLogin: (loginId: string) =>
+    request<AntigravityAgyLogin>(`/antigravity/agy/logins/${encodeURIComponent(loginId)}`),
+  submitAntigravityAgyCode: (loginId: string, code: string) =>
+    request<AntigravityAgyLogin>(`/antigravity/agy/logins/${encodeURIComponent(loginId)}/code`, {
+      method: 'POST', body: JSON.stringify({ code }),
+    }),
+  cancelAntigravityAgyLogin: (loginId: string) =>
+    request<void>(`/antigravity/agy/logins/${encodeURIComponent(loginId)}`, { method: 'DELETE' }),
   completeOAuthLogin: (loginId: string, payload: OAuthLoginCompleteRequest) =>
     request<OAuthAccount>(`/oauth-login/${encodeURIComponent(loginId)}/complete`, {
       method: 'POST',

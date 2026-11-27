@@ -111,6 +111,22 @@ describe('API 契约的运行时形状', () => {
     assert.deepEqual(JSON.parse(calls[1].body), { windowLimit: 5 })
   })
 
+  it('agy 孤儿档案清理使用 DELETE 并编码 profile id', async (t) => {
+    const originalFetch = globalThis.fetch
+    const originalDocument = globalThis.document
+    const calls = []
+    t.after(() => { globalThis.fetch = originalFetch; globalThis.document = originalDocument })
+    globalThis.document = { cookie: '' }
+    globalThis.fetch = async (input, init = {}) => {
+      calls.push({ url: String(input), method: init.method })
+      return new Response(null, { status: 204 })
+    }
+
+    await api.deleteAntigravityAgyAccount('profile/a')
+
+    assert.deepEqual(calls, [{ url: '/admin/api/antigravity/agy/accounts/profile%2Fa', method: 'DELETE' }])
+  })
+
   it('共享OAuth映射GET编码provider，settings原子携带增量而保留旧账号响应', async (t) => {
     const originalFetch = globalThis.fetch
     const originalDocument = globalThis.document

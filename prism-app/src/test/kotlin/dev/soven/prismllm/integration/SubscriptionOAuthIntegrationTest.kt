@@ -1,6 +1,8 @@
 package dev.soven.prismllm.integration
 
 import dev.soven.prismllm.api.GatewayApplication
+import dev.soven.prismllm.antigravity.AntigravityAgyAccount
+import dev.soven.prismllm.config.AntigravityAgyConfig
 import dev.soven.prismllm.config.OAuthConfig
 import dev.soven.prismllm.oauth.domain.OAuthRoutingStrategy
 import dev.soven.prismllm.channel.domain.ChannelRecord
@@ -26,6 +28,8 @@ import dev.soven.prismllm.oauth.infra.OAuthAccountDenyReason
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.resilience.FailureKind
+import dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity
+import dev.soven.prismllm.routing.readmodel.CredentialRouteType
 import io.ktor.client.request.header
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
@@ -40,6 +44,7 @@ import io.ktor.http.contentType
 import io.ktor.server.application.install
 import io.ktor.server.testing.testApplication
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.double
@@ -50,6 +55,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermissions
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -727,8 +735,8 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             assertEquals(HttpStatusCode.OK, providers.status)
             val byProvider = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["configured"]!!.jsonPrimitive.boolean }
-            // Antigravity 与 ChatGPT 一样内置公开客户端参数，不需要部署方预先配置。
-            assertEquals(mapOf("chatgpt" to true, "antigravity" to true), byProvider)
+            // ChatGPT 使用内置 OAuth 客户端；Antigravity 仅在官方 agy 环境启用后可新增账号。
+            assertEquals(mapOf("chatgpt" to true, "antigravity" to false), byProvider)
             val managed = Json.parseToJsonElement(providers.bodyAsText()).jsonArray
                 .associate { it.jsonObject["id"]!!.jsonPrimitive.content to it.jsonObject["managedChannel"]!!.jsonPrimitive.boolean }
             // Antigravity 走 Code Assist 信封协议，账号同样挂到系统置备渠道。
@@ -739,7 +747,10 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             assertNotEquals("oauth-refresh-token", stored.refreshTokenCiphertext)
             assertEquals(
                 "oauth-refresh-token",
-                app.credentialCipher.decrypt(stored.refreshTokenCiphertext, stored.refreshTokenNonce),
+                app.credentialCipher.decrypt(
+                    requireNotNull(stored.refreshTokenCiphertext),
+                    requireNotNull(stored.refreshTokenNonce),
+                ),
             )
             assertEquals("free@example.com", stored.accountEmail)
         }
@@ -1102,7 +1113,10 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
             val storedAccount = assertNotNull(app.oauthAccountRepository.find(accountId))
             assertEquals(
                 "login-refresh-token",
-                app.credentialCipher.decrypt(storedAccount.refreshTokenCiphertext, storedAccount.refreshTokenNonce),
+                app.credentialCipher.decrypt(
+                    requireNotNull(storedAccount.refreshTokenCiphertext),
+                    requireNotNull(storedAccount.refreshTokenNonce),
+                ),
             )
             assertEquals(
                 "login-access-token",
@@ -1129,51 +1143,297 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
     }
 
     @Test
-    fun `admin oauth interactive login supports antigravity through google oauth`() = runBlocking {
+    fun `antigravity rejects legacy oauth and agy remains administrator and csrf protected`() = runBlocking {
         testApplication {
             application { app.install(this) }
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/admin/api/antigravity/agy/accounts").status)
+            assertEquals(HttpStatusCode.Unauthorized, client.delete("/admin/api/antigravity/agy/accounts/fixture").status)
             val (cookie, csrf) = client.loginAdmin()
-            val started = client.post("/admin/api/oauth-login/start") {
+            assertEquals(HttpStatusCode.Forbidden, client.delete("/admin/api/antigravity/agy/accounts/fixture") {
+                header(HttpHeaders.Cookie, cookie)
+            }.status)
+            val listing = client.get("/admin/api/antigravity/agy/accounts") { header(HttpHeaders.Cookie, cookie) }
+            assertEquals(HttpStatusCode.OK, listing.status)
+            assertTrue(listing.bodyAsText().contains("\"configured\":false"))
+            assertEquals("no-store", listing.headers["Cache-Control"])
+            val providers = Json.parseToJsonElement(client.get("/admin/api/oauth-providers") {
+                header(HttpHeaders.Cookie, cookie)
+            }.bodyAsText()).jsonArray.map { it.jsonObject }
+            assertFalse(providers.first { it.getValue("id").jsonPrimitive.content == "antigravity" }
+                .getValue("configured").jsonPrimitive.boolean)
+            assertTrue(providers.first { it.getValue("id").jsonPrimitive.content == "chatgpt" }
+                .getValue("configured").jsonPrimitive.boolean)
+            val forbidden = client.post("/admin/api/antigravity/agy/logins") {
+                header(HttpHeaders.Cookie, cookie)
+                contentType(ContentType.Application.Json)
+                setBody("{}")
+            }
+            assertEquals(HttpStatusCode.Forbidden, forbidden.status)
+            val notConfigured = client.post("/admin/api/antigravity/agy/logins") {
+                header(HttpHeaders.Cookie, cookie)
+                header("X-CSRF-Token", csrf)
+                contentType(ContentType.Application.Json)
+                setBody("{}")
+            }
+            assertEquals(HttpStatusCode.BadRequest, notConfigured.status)
+            assertTrue(notConfigured.bodyAsText().contains("agy_not_configured"))
+            val legacy = client.post("/admin/api/oauth-login/start") {
                 header(HttpHeaders.Cookie, cookie)
                 header("X-CSRF-Token", csrf)
                 contentType(ContentType.Application.Json)
                 setBody("""{"provider":"antigravity"}""")
             }
-            assertEquals(HttpStatusCode.OK, started.status)
-            val startedBody = Json.parseToJsonElement(started.bodyAsText()).jsonObject
-            val loginId = startedBody["loginId"]!!.jsonPrimitive.content
-            val authorizeUrl = startedBody["authorizeUrl"]!!.jsonPrimitive.content
-            assertTrue(authorizeUrl.startsWith("https://accounts.google.com/o/oauth2/v2/auth?"))
-            assertTrue(authorizeUrl.contains("client_id=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID}"))
-            assertTrue(authorizeUrl.contains("redirect_uri=http%3A%2F%2Flocalhost%3A8085%2Fcallback"))
-            assertTrue(authorizeUrl.contains("access_type=offline"))
-            assertTrue(authorizeUrl.contains("prompt=consent"))
-            assertTrue(authorizeUrl.contains("code_challenge_method=S256"))
-            assertTrue(authorizeUrl.contains("scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fcloud-platform"))
-            val state = authorizeUrl.substringAfter("state=").substringBefore("&")
+            assertEquals(HttpStatusCode.BadRequest, legacy.status)
+            assertTrue(legacy.bodyAsText().contains("antigravity_agy_required"))
+            assertTrue(fake.tokenRequests.isEmpty())
+        }
+    }
 
-            val completed = client.post("/admin/api/oauth-login/$loginId/complete") {
-                header(HttpHeaders.Cookie, cookie)
-                header("X-CSRF-Token", csrf)
-                contentType(ContentType.Application.Json)
-                setBody("""{"callbackUrl":"http://localhost:8085/callback?code=google-code&state=$state"}""")
+    @Test
+    fun agyAdminHttpLoginMigratesLegacyCredentialsWithoutChangingRouteConfiguration() = runBlocking {
+        val directory = java.nio.file.Files.createTempDirectory("prism-agy-http-fixture-")
+        val loginScript = directory.resolve("login.py")
+        java.nio.file.Files.writeString(loginScript, """
+            import json, os, sys
+            root = sys.argv[sys.argv.index('--state') + 1]
+            os.makedirs(root, mode=0o700, exist_ok=True)
+            print(json.dumps({'event':'authorize', 'authorizeUrl':'https://accounts.google.com/o/oauth2/v2/auth?client_id=fixture.apps.googleusercontent.com&response_type=code&state=fixture&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback'}), flush=True)
+            assert json.loads(input())['code'] == 'fixture-code'
+            print(json.dumps({'event':'logged_in'}), flush=True)
+        """.trimIndent())
+        java.nio.file.Files.writeString(directory.resolve("antigravity_acp_pilot.py"), """
+            import json, sys
+            for line in sys.stdin:
+                request = json.loads(line)
+                method = request['method']
+                assert method in ['initialize', 'session/new']
+                result = {'protocolVersion':1} if method == 'initialize' else {'sessionId':'fixture-session', 'models':{'availableModels':[{'modelId':'fixture-model'}], 'currentModelId':'fixture-model'}, '_meta':{'antigravity':{'tier':{'name':'Pro'}}}}
+                print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
+        """.trimIndent())
+        app.close()
+        app = GatewayApplication(config().copy(antigravityAgy = dev.soven.prismllm.config.AntigravityAgyConfig(
+            loginScript, directory.resolve("profiles"))))
+        try {
+            testApplication {
+                application { app.install(this) }
+                val channel = createChannel("agy-legacy-fixture", "ok")
+                val legacy = createOAuthAccount(channel, "fixture-legacy@example.invalid", provider = OAuthProvider.ANTIGRAVITY)
+                val routesBeforeMigration = app.modelCredentialRouteRepository.list()
+                val (cookie, csrf) = client.loginAdmin()
+                val providers = Json.parseToJsonElement(client.get("/admin/api/oauth-providers") {
+                    header(HttpHeaders.Cookie, cookie)
+                }.bodyAsText()).jsonArray.map { it.jsonObject }
+                assertTrue(providers.first { it.getValue("id").jsonPrimitive.content == "antigravity" }
+                    .getValue("configured").jsonPrimitive.boolean)
+                val started = client.post("/admin/api/antigravity/agy/logins") {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"name":"CLI Pro","sourceAccountId":"SOURCE_ID"}""".replace("SOURCE_ID", legacy.id))
+                }
+                assertEquals(HttpStatusCode.Accepted, started.status)
+                val id = Json.parseToJsonElement(started.bodyAsText()).jsonObject.getValue("loginId").jsonPrimitive.content
+                suspend fun snapshot(loginId: String) = client.get("/admin/api/antigravity/agy/logins/LOGIN_ID".replace("LOGIN_ID", loginId)) {
+                    header(HttpHeaders.Cookie, cookie)
+                }
+                suspend fun awaitState(loginId: String, expected: String) = kotlinx.coroutines.withTimeout(8_000) {
+                    while (true) {
+                        val value = Json.parseToJsonElement(snapshot(loginId).bodyAsText()).jsonObject
+                        if (value.getValue("state").jsonPrimitive.content == expected) break
+                        kotlinx.coroutines.delay(15)
+                    }
+                }
+                awaitState(id, "AWAITING_CODE")
+                val submitted = client.post("/admin/api/antigravity/agy/logins/LOGIN_ID/code".replace("LOGIN_ID", id)) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"code":"fixture-code"}""")
+                }
+                assertEquals(HttpStatusCode.Accepted, submitted.status)
+                awaitState(id, "AUTHENTICATED")
+                val listing = client.get("/admin/api/antigravity/agy/accounts") { header(HttpHeaders.Cookie, cookie) }
+                val profile = Json.parseToJsonElement(listing.bodyAsText()).jsonObject.getValue("accounts").jsonArray.single().jsonObject
+                assertEquals("PRO", profile.getValue("subscriptionTier").jsonPrimitive.content)
+                assertEquals(legacy.id, profile.getValue("sourceAccountId").jsonPrimitive.content)
+                assertEquals(true, profile.getValue("registered").jsonPrimitive.boolean)
+                assertEquals(false, profile.getValue("routingEnabled").jsonPrimitive.boolean)
+                assertEquals(false, profile.getValue("cleanupEligible").jsonPrimitive.boolean)
+                assertTrue(profile.getValue("routeModels").jsonArray.isEmpty())
+                assertFalse(listing.bodyAsText().contains("fixture-code"))
+                val after = requireNotNull(app.oauthAccountRepository.findDetailed(legacy.id))
+                assertTrue(after.isAgy)
+                assertEquals(profile.getValue("id").jsonPrimitive.content, after.agyProfileId)
+                assertNull(after.refreshTokenCiphertext)
+                assertNull(after.refreshTokenNonce)
+                assertNull(after.refreshTokenKeyVersion)
+                assertNull(after.accessTokenCiphertext)
+                assertNull(after.accessTokenNonce)
+                assertNull(after.accessTokenKeyVersion)
+                assertEquals(legacy.channelIds, after.channelIds)
+                assertEquals(routesBeforeMigration, app.modelCredentialRouteRepository.list())
+                val audit = client.get("/admin/api/audit-logs?limit=30") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+                assertTrue(audit.contains("antigravity.agy.login.code"))
+                assertFalse(audit.contains("fixture-code"))
+                assertFalse(audit.contains("accounts.google.com"))
+                assertTrue(fake.tokenRequests.none { it.body.contains("grant_type=authorization_code") })
+
+                val edited = requireNotNull(app.oauthAccountRepository.updateSettings(
+                    legacy.id,
+                    name = "Admin label",
+                    proxyUrl = "http://proxy.example.invalid:8080",
+                    now = after.authorizedAt + 1_000,
+                ))
+                repeat(3) { snapshot(id) }
+                val refreshed = client.get("/admin/api/antigravity/agy/accounts") { header(HttpHeaders.Cookie, cookie) }
+                assertEquals(HttpStatusCode.OK, refreshed.status)
+                val refreshedAccount = requireNotNull(app.oauthAccountRepository.findDetailed(legacy.id))
+                assertEquals("Admin label", refreshedAccount.name)
+                assertEquals("http://proxy.example.invalid:8080", refreshedAccount.proxyUrl)
+                assertEquals(edited.authorizedAt, refreshedAccount.authorizedAt)
+
+                val protectedCleanup = client.delete("/admin/api/antigravity/agy/accounts/" + profile.getValue("id").jsonPrimitive.content) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.Conflict, protectedCleanup.status)
+                assertTrue(protectedCleanup.bodyAsText().contains("agy_profile_referenced"))
+
+                val deletedMigration = client.delete("/admin/api/oauth-accounts/" + legacy.id) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.NoContent, deletedMigration.status)
+                assertNull(app.oauthAccountRepository.findDetailed(legacy.id))
+                val afterMigrationDelete = client.get("/admin/api/antigravity/agy/accounts") {
+                    header(HttpHeaders.Cookie, cookie)
+                }
+                assertEquals(HttpStatusCode.OK, afterMigrationDelete.status, afterMigrationDelete.bodyAsText())
+                val orphanedMigration = Json.parseToJsonElement(afterMigrationDelete.bodyAsText()).jsonObject
+                    .getValue("accounts").jsonArray.single().jsonObject
+                assertEquals(false, orphanedMigration.getValue("registered").jsonPrimitive.boolean)
+                assertEquals(false, orphanedMigration.getValue("cleanupEligible").jsonPrimitive.boolean)
+
+                val routeProtectedCleanup = client.delete("/admin/api/antigravity/agy/accounts/" + profile.getValue("id").jsonPrimitive.content) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.Conflict, routeProtectedCleanup.status)
+                assertTrue(routeProtectedCleanup.bodyAsText().contains("agy_profile_referenced"))
+                routesBeforeMigration.forEach { route ->
+                    app.modelCredentialRouteRepository.save(
+                        route.modelId,
+                        route.revision,
+                        route.entries.filterNot { it.credentialId == legacy.id },
+                    )
+                }
+                val eligibleListing = client.get("/admin/api/antigravity/agy/accounts") {
+                    header(HttpHeaders.Cookie, cookie)
+                }
+                assertTrue(Json.parseToJsonElement(eligibleListing.bodyAsText()).jsonObject
+                    .getValue("accounts").jsonArray.single().jsonObject.getValue("cleanupEligible").jsonPrimitive.boolean)
+                val cleanup = client.delete("/admin/api/antigravity/agy/accounts/" + profile.getValue("id").jsonPrimitive.content) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.NoContent, cleanup.status, cleanup.bodyAsText())
+                assertFalse(java.nio.file.Files.exists(directory.resolve("profiles").resolve(profile.getValue("id").jsonPrimitive.content)))
+                val afterProfileCleanup = client.get("/admin/api/antigravity/agy/accounts") {
+                    header(HttpHeaders.Cookie, cookie)
+                }
+                assertTrue(Json.parseToJsonElement(afterProfileCleanup.bodyAsText()).jsonObject
+                    .getValue("accounts").jsonArray.isEmpty())
+                val cleanupAudit = client.get("/admin/api/audit-logs?limit=30") { header(HttpHeaders.Cookie, cookie) }.bodyAsText()
+                assertTrue(cleanupAudit.contains("antigravity.agy.profile.delete"))
+                assertFalse(cleanupAudit.contains(directory.toString()))
+
+                val newStarted = client.post("/admin/api/antigravity/agy/logins") {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"name":"New CLI account"}""")
+                }
+                assertEquals(HttpStatusCode.Accepted, newStarted.status)
+                val newLoginId = Json.parseToJsonElement(newStarted.bodyAsText()).jsonObject
+                    .getValue("loginId").jsonPrimitive.content
+                awaitState(newLoginId, "AWAITING_CODE")
+                val newSubmitted = client.post("/admin/api/antigravity/agy/logins/LOGIN_ID/code".replace("LOGIN_ID", newLoginId)) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                    contentType(ContentType.Application.Json)
+                    setBody("""{"code":"fixture-code"}""")
+                }
+                assertEquals(HttpStatusCode.Accepted, newSubmitted.status)
+                awaitState(newLoginId, "AUTHENTICATED")
+                val newProfileId = Json.parseToJsonElement(snapshot(newLoginId).bodyAsText()).jsonObject
+                    .getValue("account").jsonObject.getValue("id").jsonPrimitive.content
+                assertNotNull(app.oauthAccountRepository.findDetailed(newProfileId))
+                val deletedNew = client.delete("/admin/api/oauth-accounts/" + newProfileId) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.NoContent, deletedNew.status)
+                val afterNewDelete = client.get("/admin/api/antigravity/agy/accounts") {
+                    header(HttpHeaders.Cookie, cookie)
+                }
+                assertEquals(HttpStatusCode.OK, afterNewDelete.status, afterNewDelete.bodyAsText())
+                assertEquals(false, Json.parseToJsonElement(afterNewDelete.bodyAsText()).jsonObject
+                    .getValue("accounts").jsonArray.map { it.jsonObject }
+                    .single { it.getValue("id").jsonPrimitive.content == newProfileId }
+                    .getValue("registered").jsonPrimitive.boolean)
+                assertNull(app.oauthAccountRepository.findDetailed(newProfileId))
             }
-            assertEquals(HttpStatusCode.OK, completed.status)
-            val account = Json.parseToJsonElement(completed.bodyAsText()).jsonObject
-            assertEquals("antigravity", account["provider"]!!.jsonPrimitive.content)
-            assertEquals("ACTIVE", account["authState"]!!.jsonPrimitive.content)
+        } finally {
+            app.close()
+            directory.toFile().deleteRecursively()
+        }
+    }
 
-            // Google 的授权码交换同样带 client_secret，且不带 Codex 的身份头。
-            val tokenRequest = fake.tokenRequests.single()
-            assertTrue(tokenRequest.body.contains("grant_type=authorization_code"))
-            assertTrue(tokenRequest.body.contains("code=google-code"))
-            assertTrue(tokenRequest.body.contains("client_id=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_ID}"))
-            // 断言消息不要带上请求体：请求体包含真实的 client_secret。
-            assertTrue(
-                tokenRequest.body.split("&").contains("client_secret=${OAuthConfig.DEFAULT_ANTIGRAVITY_CLIENT_SECRET}"),
-                "token request 缺少 client_secret",
-            )
-            assertNull(tokenRequest.requestHeaders["originator"])
+    @Test
+    fun agyCleanupProtectsLegacySourceAndAllSavedCredentialIdentities() = runBlocking {
+        val directory = Files.createTempDirectory("prism-agy-cleanup-fixture-")
+        val state = Files.createDirectory(directory.resolve("profiles"),
+            PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------")))
+        val channel = createChannel("agy-cleanup-fixture", "ok")
+        val legacy = createOAuthAccount(channel, "cleanup-fixture@example.invalid", provider = OAuthProvider.ANTIGRAVITY)
+        val profile = AntigravityAgyAccount(UUID.randomUUID().toString(), "orphan with source", legacy.id, authorizedAt = 1)
+        val metadata = Files.writeString(state.resolve("accounts.json"), Json.encodeToString(listOf(profile)))
+        Files.setPosixFilePermissions(metadata, PosixFilePermissions.fromString("rw-------"))
+        val home = Files.createDirectory(state.resolve(profile.id))
+        Files.writeString(home.resolve("credential.fixture"), "synthetic credential")
+        app.close()
+        app = GatewayApplication(config().copy(antigravityAgy = AntigravityAgyConfig(directory.resolve("unused.py"), state)))
+        try {
+            testApplication {
+                application { app.install(this) }
+                val (cookie, csrf) = client.loginAdmin()
+                suspend fun cleanup() = client.delete("/admin/api/antigravity/agy/accounts/" + profile.id) {
+                    header(HttpHeaders.Cookie, cookie)
+                    header("X-CSRF-Token", csrf)
+                }
+                assertEquals(HttpStatusCode.Conflict, cleanup().status)
+                assertTrue(Files.exists(home))
+                app.oauthAccountRepository.delete(legacy.id)
+                app.modelCredentialRouteRepository.list().forEach { route ->
+                    app.modelCredentialRouteRepository.save(route.modelId, route.revision, emptyList())
+                }
+                for (credentialId in listOf(profile.id, legacy.id)) {
+                    for (type in CredentialRouteType.entries) {
+                        val route = app.modelCredentialRouteRepository.find("cleanup-fixture-model")
+                        val saved = app.modelCredentialRouteRepository.save("cleanup-fixture-model", route?.revision ?: 0,
+                            listOf(CredentialRouteIdentity(channel.id, type, credentialId)))
+                        assertEquals(HttpStatusCode.Conflict, cleanup().status)
+                        assertTrue(Files.exists(home))
+                        app.modelCredentialRouteRepository.save(saved.modelId, saved.revision, emptyList())
+                    }
+                }
+                assertEquals(HttpStatusCode.NoContent, cleanup().status)
+                assertFalse(Files.exists(home))
+                assertEquals(HttpStatusCode.NotFound, cleanup().status)
+            }
+        } finally {
+            app.close()
+            directory.toFile().deleteRecursively()
         }
     }
 

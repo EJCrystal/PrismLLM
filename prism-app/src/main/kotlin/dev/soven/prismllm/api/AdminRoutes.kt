@@ -143,6 +143,7 @@ import org.slf4j.LoggerFactory
 fun Route.adminRoutes(app: GatewayApplication) {
     val channelUpdateMutex = Mutex()
     route("/admin/api") {
+        antigravityAgyAdminRoutes(app)
         modelCredentialRoutes(app)
         notificationRoutes(app)
         post("/login") {
@@ -1244,7 +1245,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                     OAuthProviderResponse(
                         id = provider.value,
                         label = OAUTH_PROVIDER_LABELS[provider] ?: provider.value,
-                        configured = provider in configured,
+                        configured = if (provider == OAuthProvider.ANTIGRAVITY) app.antigravityAgyLogin != null else provider in configured,
                         managedChannel = endpoint.servable,
                         channelId = providerChannels[provider]?.id,
                         baseUrl = endpoint.baseUrl,
@@ -1695,6 +1696,9 @@ fun Route.adminRoutes(app: GatewayApplication) {
             val request = call.receive<OAuthLoginStartRequest>()
             val provider = OAuthProvider.fromValue(request.provider.trim().lowercase())
                 ?: throw badRequest("invalid_oauth_provider", "provider 仅支持 chatgpt 或 antigravity")
+            if (provider == OAuthProvider.ANTIGRAVITY) {
+                throw badRequest("antigravity_agy_required", "Antigravity 必须通过官方 agy 登录，不再提供网关自建 OAuth 授权")
+            }
             if (app.oauthTokenProviders.find(provider) == null) {
                 throw badRequest("oauth_provider_not_configured", "OAuth 提供方 ${provider.value} 未在网关内启用")
             }
