@@ -459,6 +459,69 @@ describe('modelPrice: 渠道模型选择布局', () => {
     assert.equal(options[1].authorized, true)
   })
 
+  it('订阅计费候选只保留启用账号授权范围，映射和旧发现缓存不能重新引入隐藏模型', () => {
+    const channel = {
+      id: 'subscription',
+      kind: 'provider',
+      models: ['allowed', 'disabled-only', 'unauthorized'],
+      enabledModels: ['allowed'],
+      modelMappings: [
+        { upstreamModel: 'allowed', canonicalModelId: 'public-allowed' },
+        { upstreamModel: 'disabled-only', canonicalModelId: 'public-disabled' },
+        { upstreamModel: 'unauthorized', canonicalModelId: 'public-unauthorized' },
+        { upstreamModel: 'dormant-manual', canonicalModelId: 'public-dormant' },
+      ],
+    }
+    const original = structuredClone(channel)
+    const discovered = ['allowed', 'disabled-only', 'unauthorized', 'discovery-only']
+      .map(id => ({ id, authorized: true }))
+    const options = channelModelOptionsForChannel(channel, discovered)
+    assert.deepEqual(options.map(model => model.id), ['allowed'])
+    assert.equal(options[0].canonicalModelId, 'public-allowed')
+    assert.deepEqual(channel, original, '完整目录和手工映射不能被裁剪或删除')
+  })
+
+  it('启用账号范围为空或缺失时，不回退到订阅完整目录或发现缓存', () => {
+    for (const enabledModels of [[], undefined]) {
+      const channel = {
+        id: 'subscription', kind: 'provider', models: ['hidden'], enabledModels,
+        modelMappings: [{ upstreamModel: 'hidden' }],
+      }
+      assert.deepEqual(channelModelOptionsForChannel(channel, [{ id: 'hidden', authorized: true }]), [])
+      assert.deepEqual(unpricedChannelModels(channel, []), [])
+      assert.deepEqual(defaultPriceModelOptions([channel]), [])
+    }
+  })
+
+  it('未定价统计和默认价候选与订阅计费列表使用同一个启用授权范围', () => {
+    const channel = {
+      id: 'subscription', kind: 'provider', name: '订阅',
+      models: ['allowed', 'disabled-only', 'unauthorized'], enabledModels: ['allowed'],
+      modelMappings: [
+        { upstreamModel: 'allowed', canonicalModelId: 'public-allowed' },
+        { upstreamModel: 'disabled-only', canonicalModelId: 'public-disabled' },
+        { upstreamModel: 'dormant-manual', canonicalModelId: 'public-dormant' },
+      ],
+    }
+    assert.deepEqual(unpricedChannelModels(channel, []), ['allowed'])
+    assert.deepEqual(channelPriceSummaries([channel], []).get(channel.id), { unpriced: ['allowed'], count: 1 })
+    assert.deepEqual(defaultPriceModelOptions([channel]).map(option => option.id), ['public-allowed'])
+    assert.deepEqual(unpricedChannelModels(channel, [], [{ modelId: 'public-allowed' }]), [])
+    const historicalPrice = { id: 'old-price', channelId: channel.id, upstreamModel: 'disabled-only' }
+    assert.deepEqual(pricesForChannel([historicalPrice], channel.id), [historicalPrice], '历史单价仍可管理')
+  })
+
+  it('自定义 API 不应用订阅启用范围，并保留已授权发现模型', () => {
+    const channel = { id: 'custom', kind: 'custom', models: ['configured'], enabledModels: [] }
+    const options = channelModelOptionsForChannel(channel, [
+      { id: 'discovered', authorized: true },
+      { id: 'unauthorized', authorized: false },
+    ])
+    assert.deepEqual(options.map(model => model.id), ['configured', 'discovered'])
+    assert.deepEqual(unpricedChannelModels(channel, []), ['configured'])
+    assert.deepEqual(defaultPriceModelOptions([channel]).map(option => option.id), ['configured'])
+  })
+
   it('主动输入的模型不会被异步加载结果覆盖', () => {
     const models = [{ id: 'model-a' }]
     assert.equal(shouldSelectInitialModel(models, '', false), true)
