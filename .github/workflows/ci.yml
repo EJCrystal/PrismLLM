@@ -126,6 +126,8 @@ jobs:
               - '.github/workflows/**'
               - '.github/scripts/**'
               - '.coderabbit.yaml'
+              - 'docker-compose.yml'
+              - 'docker-compose.build.yml'
 
   workflow:
     name: Validate workflow

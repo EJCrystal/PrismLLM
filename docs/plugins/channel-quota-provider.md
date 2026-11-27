@@ -24,7 +24,7 @@ cp extensions/quota-providers/target/prism-llm-quota-providers-0.1.0-SNAPSHOT.ja
 
 插件目录由 QUOTA_PLUGIN_DIR 指定，默认是网关工作目录下的 plugins。Compose 将宿主机 ./plugins 只读挂载到 /app/plugins。若改目录，要同步修改容器环境变量和卷挂载目标。
 
-插件只在启动时加载。已有当前版本网关镜像时，复制 JAR 后执行 `docker compose restart gateway`；需要更新网关版本时按[镜像部署与更新](../container-deployment.md)拉取镜像。本地从源码构建则执行 `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build gateway`。本地运行 JAR 时重新启动网关进程即可。删除插件 JAR 并重启可卸载；渠道设置保留，查询时会提示插件未加载。
+插件只在启动时加载。已有使用当前版本镜像的 gateway 容器时，复制 JAR 后执行 `docker compose restart gateway`；仅已拉取镜像、尚未创建容器时执行 `docker compose up -d --no-build gateway` 创建并启动容器。需要更新网关版本时按[镜像部署与更新](../container-deployment.md)拉取镜像。本地从源码构建则执行 `docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build gateway`。本地运行 JAR 时重新启动网关进程即可。删除插件 JAR 并重启可卸载；渠道设置保留，查询时会提示插件未加载。
 
 官方插件不会默认打包进核心 JAR 或 Docker 镜像。仓库 CI 分别测试核心和官方插件。目录按文件名排序发现，同 ID 只保留首个合法实现；非法 ID、不支持的 SPI 版本、重复 ID、损坏的服务声明会记录启动日志，健康插件仍可加载。
 

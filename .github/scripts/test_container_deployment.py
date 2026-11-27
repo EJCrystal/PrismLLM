@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -21,8 +22,10 @@ class PublicationTests(unittest.TestCase):
         cls.workflow = (ROOT / ".github/workflows/publish-image.yml").read_text()
         step = yaml_block(cls.workflow, "      - name: Verify source and successful CI")
         cls.script = textwrap.dedent(yaml_block(step, "        run: |"))
+        promotion = yaml_block(cls.workflow, "      - name: Promote current source to main")
+        cls.promotion_script = textwrap.dedent(yaml_block(promotion, "        run: |"))
 
-    def run_gate(self, main_sha=SOURCE_SHA, successful_runs="1", api_failure="0"):
+    def run_gate(self, main_sha=SOURCE_SHA, successful_runs="1", api_failure="0", script=None):
         with tempfile.TemporaryDirectory() as directory:
             temporary = Path(directory)
             executable = temporary / "gh"
@@ -39,6 +42,9 @@ class PublicationTests(unittest.TestCase):
                 esac
                 """))
             executable.chmod(0o700)
+            docker = temporary / "docker"
+            docker.write_text('#!/bin/sh\nprintf "%s\\n" "docker $*" >> "$TEST_GH_LOG"\n')
+            docker.chmod(0o700)
             output = temporary / "output"
             output.touch()
             log = temporary / "gh.log"
@@ -48,13 +54,15 @@ class PublicationTests(unittest.TestCase):
                 "SOURCE_SHA": SOURCE_SHA,
                 "GITHUB_REPOSITORY": "EJCrystal/PrismLLM",
                 "GITHUB_OUTPUT": str(output),
+                "IMAGE": "ghcr.io/ejcrystal/prismllm",
+                "DIGEST": f"sha256:{'b' * 64}",
                 "TEST_GH_LOG": str(log),
                 "TEST_MAIN_SHA": main_sha,
                 "TEST_SUCCESSFUL_RUNS": successful_runs,
                 "TEST_GH_FAILURE": api_failure,
             }
             result = subprocess.run(
-                ["bash", "-euo", "pipefail", "-c", self.script],
+                ["bash", "-euo", "pipefail", "-c", script or self.script],
                 env=environment,
                 capture_output=True,
                 text=True,
@@ -110,10 +118,53 @@ class PublicationTests(unittest.TestCase):
             step = yaml_block(self.workflow, f"      - name: {name}")
             self.assertIn("if: steps.source.outputs.publish == 'true'", step)
         build = yaml_block(self.workflow, "      - name: Build and push image")
+        self.assertIn("id: build", build)
         self.assertIn("context: .", build)
         self.assertIn("push: true", build)
         self.assertIn("${{ steps.source.outputs.image }}:sha-${{ env.SOURCE_SHA }}", build)
-        self.assertIn("${{ steps.source.outputs.image }}:main", build)
+        self.assertNotIn("${{ steps.source.outputs.image }}:main", build)
+
+    def test_main_tag_is_promoted_by_digest_after_rechecking_source(self):
+        promotion = yaml_block(self.workflow, "      - name: Promote current source to main")
+        self.assertIn("if: steps.source.outputs.publish == 'true'", promotion)
+        self.assertIn("IMAGE: ${{ steps.source.outputs.image }}", promotion)
+        self.assertIn("DIGEST: ${{ steps.build.outputs.digest }}", promotion)
+        self.assertLess(
+            self.workflow.index("      - name: Build and push image"),
+            self.workflow.index("      - name: Promote current source to main"),
+        )
+        result, _, log = self.run_gate(script=self.promotion_script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(
+            f"docker buildx imagetools create --tag ghcr.io/ejcrystal/prismllm:main "
+            f"ghcr.io/ejcrystal/prismllm@sha256:{'b' * 64}",
+            log,
+        )
+        self.assertLess(log.index("git/ref/heads/main"), log.index("imagetools create"))
+
+    def test_main_moving_during_build_keeps_only_sha_image(self):
+        result, output, _ = self.run_gate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("publish=true", output)
+        result, _, log = self.run_gate(main_sha="b" * 40, script=self.promotion_script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("main changed during the build", result.stdout)
+        self.assertNotIn("imagetools create", log)
+
+    def test_failed_source_recheck_does_not_promote_main_tag(self):
+        result, _, log = self.run_gate(api_failure="1", script=self.promotion_script)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertNotIn("imagetools create", log)
+
+    def test_compose_changes_trigger_deployment_validation(self):
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        paths = yaml_block(workflow, "            ci:")
+        for filename in ("docker-compose.yml", "docker-compose.build.yml"):
+            with self.subTest(filename=filename):
+                self.assertIn(f"- '{filename}'", paths)
+        job = yaml_block(workflow, "  workflow:")
+        self.assertIn("if: needs.changes.outputs.ci == 'true'", job)
+        self.assertIn("python3 .github/scripts/test_container_deployment.py", job)
 
 
 class ComposeTests(unittest.TestCase):
@@ -193,6 +244,26 @@ class ComposeTests(unittest.TestCase):
         self.assertEqual(gateway["build"]["context"], str(self.directory))
         self.assertEqual(gateway["pull_policy"], "never")
         self.assertEqual(config["volumes"]["pgdata"]["name"], "prism-llm_pgdata")
+
+
+class DeploymentDocumentationTests(unittest.TestCase):
+    def test_documented_readiness_uses_container_port_or_default(self):
+        documentation = (ROOT / "docs/container-deployment.md").read_text()
+        line = next(line for line in documentation.splitlines() if line.startswith("docker compose exec -T gateway "))
+        command = shlex.split(line)
+        self.assertEqual(command[:7], ["docker", "compose", "exec", "-T", "gateway", "sh", "-c"])
+        with tempfile.TemporaryDirectory() as directory:
+            curl = Path(directory) / "curl"
+            curl.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
+            curl.chmod(0o700)
+            for port in (None, "", "9090"):
+                with self.subTest(port=port):
+                    environment = {**os.environ, "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}"}
+                    environment.pop("PORT", None)
+                    if port is not None:
+                        environment["PORT"] = port
+                    result = subprocess.run(command[5:], env=environment, check=True, capture_output=True, text=True)
+                    self.assertIn(f"http://localhost:{port or '8080'}/health/ready", result.stdout.splitlines())
 
 
 if __name__ == "__main__":

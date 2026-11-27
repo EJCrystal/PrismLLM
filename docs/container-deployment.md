@@ -8,7 +8,7 @@ GitHub Actions 负责构建 Prism 的前端与后端，将完整运行镜像发�
 - GitHub Actions 中可手动运行 `Publish GHCR image`，分支必须选择 `main`。手动发布也要求当前提交已有成功的 `main` push CI，不会绕过测试。过期提交会被跳过。
 - 使用内置 `GITHUB_TOKEN` 登录 GHCR，写权限仅授予发布作业；无需配置长期推送令牌。组织策略或已有同名 package 必须允许本仓库 Actions 写入。
 - 镜像名称自动使用小写仓库路径，本仓库为 `ghcr.io/ejcrystal/prismllm`；当前发布平台为 `linux/amd64`。
-- 同时发布 `main` 与 `sha-<完整 40 位提交 SHA>` 标签。服务器默认使用 `main`，生产部署建议固定提交标签或镜像 digest，避免更新时版本不明确。
+- 先发布 `sha-<完整 40 位提交 SHA>` 标签，构建完成后重新核对当前 `main`，仍与构建提交一致时才将该镜像 digest 标记为 `main`；构建期间分支已前移则只保留 SHA 标签。这会缩小检查与更新标签之间的窗口，但不锁定 Git 分支。服务器默认使用 `main`，生产部署建议固定提交标签或镜像 digest，避免更新时版本不明确。
 
 发布文件合入默认分支、对应 CI 和首次镜像构建完成前，镜像可能尚不存在。Actions 的发布结果只能说明镜像可拉取，不表示服务器已经更新。
 
@@ -41,6 +41,17 @@ docker compose up -d --no-build
 
 在原部署目录操作，保留现有 Compose override、端口、反向代理、出站代理和其它运行时配置；不要将本地开发用的 `docker-compose.build.yml` 加入服务器部署命令。若已有部署脚本执行源码构建，应改成下方拉取与重建 gateway 的步骤，保留原有备份和就绪检查。
 
+**首次从源码构建迁移时，先编辑原部署的 Compose 配置。** 仅将 `gateway` 的 `build` 改为 `image`，其余已有字段保持原样，不要用示例文件覆盖整份生产配置或 `.env`：
+
+~~~diff
+ services:
+   gateway:
+-    build: .
++    image: ${PRISM_IMAGE:-ghcr.io/ejcrystal/prismllm:main}
+~~~
+
+若原 `build` 是多行配置，删除整个 `build` 块。检查所有实际启用的 override，确保它们不会重新加入 `gateway.build` 或覆盖成非预期的 `gateway.image`；保留原有其它生产覆盖。使用原部署相同的 `-f`、`--env-file` 等参数运行 `docker compose config --images`，确认配置包含目标 GHCR 镜像。后续拉取、启动及就绪检查也沿用这些参数。仅设置 `PRISM_IMAGE` 或执行 `pull` 不会自动修改旧的 `build: .` 配置。
+
 更新前按[配置指南](configuration.md#生产部署与恢复边界)备份数据库及与之匹配的 `GATEWAY_MASTER_KEY`。需要固定版本时，仅修改现有 `.env` 中的 `PRISM_IMAGE`；例如 `ghcr.io/ejcrystal/prismllm:sha-<完整提交 SHA>`（替换占位符），也支持 `ghcr.io/ejcrystal/prismllm@sha256:<digest>`。
 
 确认现有 PostgreSQL 正常运行后执行：
@@ -51,10 +62,10 @@ docker compose up -d --no-build --no-deps gateway
 docker compose logs --tail=100 gateway
 ~~~
 
-待启动完成后检查就绪状态；返回成功后再恢复流量：
+待启动完成后检查就绪状态；命令在容器内读取实际监听端口 `PORT`，未设置时使用 `8080`，返回成功后再恢复流量：
 
 ~~~bash
-docker compose exec -T gateway curl --fail --silent --show-error http://localhost:8080/health/ready
+docker compose exec -T gateway sh -c 'curl --fail --silent --show-error "http://localhost:${PORT:-8080}/health/ready"'
 ~~~
 
 这些命令仅替换 gateway 容器，不重建 PostgreSQL 服务，不删除卷。默认配置保留：
