@@ -93,4 +93,78 @@ describe('agy 管理台按需准备', () => {
     assert.equal(timers.size, 0)
     assert.equal(calls.filter(call => call.method !== 'GET' && call.method !== 'PUT').length, 0)
   })
+
+  for (const scenario of [
+    { name: '停止期间重新开启返回 409', initial: { status: 'STOPPING' }, failure: () => response({ message: '运行环境正在停止' }, 409), terminal: { status: 'DISABLED' }, status: /已关闭/ },
+    { name: '准备期间保存遇到网络错误', initial: { enabled: true, status: 'INSTALLING' }, failure: () => { throw new TypeError('网络连接中断') }, terminal: { enabled: true, status: 'READY' }, status: /运行环境已就绪/ },
+  ]) {
+    it(scenario.name + '后继续轮询，不重复提交保存', async () => {
+      settings = fixture(scenario.initial)
+      const fetch = globalThis.fetch
+      globalThis.fetch = async (url, options = {}) => {
+        if (options.method === 'PUT') {
+          calls.push({ method: 'PUT', body: JSON.parse(options.body) })
+          return scenario.failure()
+        }
+        return fetch(url, options)
+      }
+      await mount()
+      const toggle = document.querySelector('input[type="checkbox"]')
+      toggle.checked = true; toggle.dispatchEvent(new Event('change', { bubbles: true }))
+      button('保存设置').click(); await settle()
+      assert.ok(document.querySelector('[role="alert"]'))
+      assert.equal(timers.size, 1)
+      settings = fixture(scenario.terminal)
+      const callback = timers.values().next().value; timers.clear(); callback(); await settle()
+      assert.match(document.body.textContent, scenario.status)
+      assert.equal(document.querySelector('input[type="text"]').disabled, false)
+      assert.equal(timers.size, 0)
+      assert.equal(calls.filter(call => call.method === 'PUT').length, 1)
+    })
+  }
+
+  it('准备期间轮询失败后继续读取直到终态', async () => {
+    settings = fixture({ enabled: true, status: 'INSTALLING' })
+    await mount()
+    const fetch = globalThis.fetch
+    let failed = false
+    globalThis.fetch = async (url, options = {}) => {
+      if (!failed) { failed = true; throw new TypeError('网络连接中断') }
+      return fetch(url, options)
+    }
+    const first = timers.values().next().value; timers.clear(); first(); await settle()
+    assert.match(document.querySelector('[role="alert"]').textContent, /无法连接网关/)
+    assert.equal(timers.size, 1)
+    settings = fixture({ enabled: true, status: 'READY' })
+    const second = timers.values().next().value; timers.clear(); second(); await settle()
+    assert.match(document.body.textContent, /运行环境已就绪/)
+    assert.equal(timers.size, 0)
+  })
+
+  it('保存成功后忽略旧轮询的迟到错误', async () => {
+    settings = fixture({ enabled: true, status: 'INSTALLING' })
+    await mount()
+    let rejectRead
+    const pending = new Promise((resolve, reject) => { rejectRead = reject })
+    globalThis.fetch = async (url, options = {}) => options.method === 'PUT'
+      ? response(fixture({ enabled: true, status: 'READY' }))
+      : pending
+    const callback = timers.values().next().value; timers.clear(); callback(); await settle()
+    button('保存设置').click(); await settle()
+    assert.match(document.body.textContent, /运行环境已就绪/)
+    rejectRead(new TypeError('过期的网络错误')); await settle()
+    assert.equal(document.querySelector('[role="alert"]'), null)
+    assert.equal(timers.size, 0)
+  })
+
+  it('关闭弹窗后迟到的保存失败不会恢复轮询', async () => {
+    settings = fixture({ status: 'STOPPING' })
+    await mount()
+    let rejectSave
+    globalThis.fetch = () => new Promise((resolve, reject) => { rejectSave = reject })
+    button('保存设置').click(); await settle()
+    app.unmount(); app = null
+    rejectSave(new TypeError('网络连接中断')); await settle()
+    assert.equal(timers.size, 0)
+  })
 })

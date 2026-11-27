@@ -24,7 +24,7 @@ function message(cause: unknown): string {
 
 function poll() {
   clearTimeout(timer)
-  if (!closed && preparing.value) timer = setTimeout(() => { void load(false) }, 2000)
+  if (!closed && !saving.value && preparing.value) timer = setTimeout(() => { void load(false) }, 2000)
 }
 
 async function load(initial = true) {
@@ -41,11 +41,13 @@ async function load(initial = true) {
       proxy.value = settings.proxy
     }
     if (changed) emit('saved')
-    poll()
   } catch (cause) {
-    error.value = message(cause)
+    if (!closed && version === requestVersion) error.value = message(cause)
   } finally {
-    loading.value = false
+    if (version === requestVersion) {
+      loading.value = false
+      poll()
+    }
   }
 }
 
@@ -59,11 +61,11 @@ async function save() {
     current.value = await api.updateAntigravityAgySettings({ enabled: enabled.value, proxy: proxy.value.trim() })
     notify(enabled.value ? '设置已保存，服务端将检查并按需安装运行环境' : '关闭设置已保存，不会删除账号凭据')
     emit('saved')
-    poll()
   } catch (cause) {
     error.value = message(cause)
   } finally {
     saving.value = false
+    poll()
   }
 }
 
