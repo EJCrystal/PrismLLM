@@ -589,12 +589,14 @@ function openAgyReauth(account: AntigravityAgyAccount) {
   importForm.name = account.name
 }
 
-function onAgyAuthenticated() {
+async function onAgyAuthenticated() {
+  const migrated = agyReauthTarget.value != null
   agyAccountsRevision.value++
-  notify(reauthTarget.value
+  closeImport()
+  if (!props.createOnly) await load()
+  notify(migrated
     ? '官方 agy 登录成功；旧 OAuth token 已清除，原账号路由身份和顺序已保留'
     : '官方 agy 登录成功并登记；新账号需在模型凭据路由中手动加入')
-  closeImport()
   emit('changed')
 }
 

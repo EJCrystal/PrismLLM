@@ -1170,6 +1170,10 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       api.startAntigravityAgyLogin = async payload => { calls.push(['start', payload]); return login }
       api.submitAntigravityAgyCode = async (id, code) => {
         calls.push(['code', id, code])
+        if (migrate) Object.assign(account(mock.fixture, IDS.groupedHealthy), {
+          authMethod: 'agy', accountPlan: 'Google AI Pro', modelCatalog: ['gemini-4-argon'],
+          modelCatalogSyncedAt: FIXTURE_NOW,
+        })
         return { ...login, state: 'AUTHENTICATED', authorizeUrl: null, account: { id: 'fixture-cli-account', name: 'CLI Pro', subscriptionTier: 'PRO', routingEnabled: false } }
       }
       await mount(createOAuthAccountsFixture(), { createOnly: !migrate, providerId: 'antigravity' })
@@ -1183,11 +1187,19 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       await settle()
       assert.equal(calls[0][1].sourceAccountId ?? null, migrate ? IDS.groupedHealthy : null)
       assert.ok(dialog().querySelector('a[href^="https://accounts.google.com/"]'))
+      const accountReadsBeforeCompletion = mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length
       await input(field('官方页面验证码'), '4/fixture-code')
       buttonNamed(dialog(), '提交给官方 CLI').click()
       await settle()
       assert.deepEqual(calls[1], ['code', 'fixture-agy-login', '4/fixture-code'])
       assert.equal(dialog(), null)
+      if (migrate) {
+        assert.equal(mock.requests.filter(request => request.path === '/admin/api/oauth-accounts').length, accountReadsBeforeCompletion + 1)
+        const migratedRow = row(IDS.groupedHealthy)
+        assert.match(text(migratedRow), /官方 agy ACP/)
+        assert.match(text(migratedRow.querySelector('.oauth-account-models')), /gemini-4-argon/)
+        assert.doesNotMatch(text(migratedRow.querySelector('.oauth-account-models')), /claude-sonnet-4-5/)
+      }
       assert.equal(writes().length, 0, 'CLI login must not overwrite legacy credentials, settings or routing')
       assert.match(text(host.querySelector('.toast')), /官方 agy 登录成功/)
     })

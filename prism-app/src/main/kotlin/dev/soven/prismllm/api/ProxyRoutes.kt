@@ -1551,8 +1551,8 @@ private suspend fun proxyAgyJson(
     }
     val chatResponse = request.response(text.toString(), finishReason)
     val response = ProtocolConversion.convertResponse(
-        GatewayProtocol.CHAT_COMPLETIONS,
         protocol,
+        GatewayProtocol.CHAT_COMPLETIONS,
         chatResponse,
         alias,
         carry = app.reasoningCarryCache.scoped(candidate.channel.id),
@@ -1582,8 +1582,8 @@ private suspend fun proxyAgyStream(
         ?: throw GatewayError(HttpStatusCode.Conflict, "antigravity_agy_account_missing", "agy 路由账号不存在")
     val request = agyChatRequest(requestJson, protocol, candidate, stream = true, app)
     val converter = ProtocolConversion.streamConverter(
-        GatewayProtocol.CHAT_COMPLETIONS,
         protocol,
+        GatewayProtocol.CHAT_COMPLETIONS,
         alias,
         carry = app.reasoningCarryCache.scoped(candidate.channel.id),
     )

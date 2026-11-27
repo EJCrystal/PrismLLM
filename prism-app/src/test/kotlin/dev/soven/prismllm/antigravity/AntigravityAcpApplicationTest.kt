@@ -251,6 +251,37 @@ class AntigravityAcpApplicationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun ordinaryAgyResponsesRequestsReturnTheResponsesProtocol(stream: Boolean) = runBlocking {
+        withGateway(agyScenario = "agy-success", assertRoutesUnchanged = false) {
+            val profileRoot = configureAgyRoute()
+            val routeAfterMigration = app.modelCredentialRouteRepository.find(MODEL)
+            val response = post(path = "/v1/responses", body = responsesRequestBody(stream))
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = response.bodyAsText()
+            assertFalse(body.contains("hidden-thought") || body.contains("private-fixture"))
+            if (stream) {
+                assertTrue(response.headers[HttpHeaders.ContentType].orEmpty().startsWith("text/event-stream"))
+                assertTrue(body.contains("response.output_text.delta"), body)
+                assertTrue(body.contains("第一段") && body.contains("第二段🌿"), body)
+                assertTrue(body.contains("response.completed"), body)
+            } else {
+                val result = Json.parseToJsonElement(body).jsonObject
+                assertEquals(JsonPrimitive("response"), result["object"])
+                assertEquals(JsonPrimitive(MODEL), result["model"])
+                assertFalse(result.containsKey("choices"), body)
+                val outputText = result.getValue("output").jsonArray.flatMap { it.jsonObject.getValue("content").jsonArray }
+                    .single().jsonObject.getValue("text").let { (it as JsonPrimitive).content }
+                assertEquals(listOf("第一段", "第二段🌿").joinToString(10.toChar().toString()), outputText)
+            }
+            assertEquals("1", Files.readString(profileRoot.resolve("startups")))
+            assertEquals(routeAfterMigration, app.modelCredentialRouteRepository.find(MODEL))
+            assertTrue(ordinaryRequests.isEmpty(), "A successful AGY Responses request must not call the next configured candidate")
+            awaitReleased()
+        }
+    }
+
     @Test
     fun ordinaryAgyQuotaExhaustionStopsWithoutFailingOverToTheNextCandidate() = runBlocking {
         withGateway(agyScenario = "agy-quota", assertRoutesUnchanged = false) {
@@ -498,6 +529,9 @@ class AntigravityAcpApplicationTest {
 
     private fun requestBody(stream: Boolean = false) =
         """{"model":"$MODEL","messages":[{"role":"user","content":"hello"}],"stream":$stream}"""
+
+    private fun responsesRequestBody(stream: Boolean = false) =
+        """{"model":"$MODEL","input":"hello","stream":$stream}"""
 
     private fun Socket.sendRequest(port: Int, secret: String, body: String, path: String = ACP_PATH) {
         val bytes = body.toByteArray(Charsets.UTF_8)
