@@ -17,6 +17,20 @@ class GatewayConfigTest {
     )
 
     @Test
+    fun legacyAgyEnvironmentCannotOverrideManagedRuntimeDefaults() {
+        val legacy = mapOf(
+            "ANTIGRAVITY_AGY_SCRIPT" to "/legacy/antigravity_agy_admin.py",
+            "ANTIGRAVITY_AGY_STATE_DIR" to "/legacy/profiles",
+            "ANTIGRAVITY_AGY_PYTHON" to "invalid-relative-python",
+            "ANTIGRAVITY_AGY_PROXY" to "http://legacy.invalid:7897",
+        )
+        for (enabled in listOf("true", "false", "invalid")) {
+            val config = GatewayConfig.fromEnv(requiredEnv + legacy + ("ANTIGRAVITY_AGY_ENABLED" to enabled))
+            assertEquals(AntigravityAgyConfig.defaults(), config.antigravityAgy)
+        }
+    }
+
+    @Test
     fun channelProxyAllowlistIsIndependentFromOAuthAndValidated() {
         val config = GatewayConfig.fromEnv(requiredEnv + mapOf(
             "CHANNEL_PROXY_ALLOWED_HOSTS" to " Proxy.Example,host.docker.internal,*.onesproxy.vip ",

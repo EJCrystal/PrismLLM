@@ -7,11 +7,13 @@ import platform
 import pty
 import re
 import select
+import shutil
 import signal
 import subprocess
 import sys
 import struct
 import termios
+import tempfile
 import time
 from urllib.parse import parse_qsl, urlsplit
 
@@ -115,11 +117,34 @@ def interactive_login(command, **arguments):
             os.close(terminal)
 
 
+def install_account_release(root, proxy):
+    cache = root.parent / ".runtime"
+    if root.name == ".runtime" or not cache.exists():
+        pilot.install_release(root, proxy)
+        return
+    pilot.require_private_path(cache, directory=True)
+    with pilot.pilot_lock(cache):
+        release = pilot.pinned_release()
+        pilot.verify_installed_release(cache, release)
+        with tempfile.TemporaryDirectory(prefix="cached-release-", dir=root) as directory:
+            for relative, executable in (("bin/agy", True), ("release.json", False)):
+                target = root / relative
+                if pilot.existing_private_file(target, executable=executable):
+                    continue
+                staged = Path(directory) / target.name
+                with (cache / relative).open("rb") as source, staged.open("xb") as output:
+                    os.fchmod(output.fileno(), 0o700 if executable else 0o600)
+                    shutil.copyfileobj(source, output)
+                os.link(staged, target)
+        pilot.verify_installed_release(root, release)
+
+
 @pilot.interrupt_on_sigterm()
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", required=True, type=Path)
     parser.add_argument("--proxy", required=True)
+    parser.add_argument("--prepare", action="store_true")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or not args.state.is_absolute():
         raise pilot.PilotError("UNSUPPORTED_LOGIN_ENVIRONMENT")
@@ -131,8 +156,11 @@ def main():
         pilot.prepare_files(root)
         pilot.invalidate_verification(root)
         emit("preparing")
-        pilot.install_release(root, args.proxy)
+        install_account_release(root, args.proxy)
         pilot.check_sandbox(root, args.proxy)
+        if args.prepare:
+            emit("ready")
+            return 0
         pilot.run_agent(root, args.proxy, True, ["acp", "--login"], runner=interactive_login)
 
 

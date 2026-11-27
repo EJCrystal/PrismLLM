@@ -33,11 +33,14 @@ services:
     # Put trusted quota-provider and IQ-judge JARs in ./plugins. The directory is read-only in the container.
     volumes:
       - ./plugins:/app/plugins:ro
+      - agydata:/app/data/antigravity-agy
     depends_on:
       postgres:
         condition: service_healthy
 
 volumes:
+  agydata:
+    name: prism-llm_agydata
   pgdata:
     name: prism-llm_pgdata
 

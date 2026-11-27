@@ -33,12 +33,16 @@ internal class AntigravityAgyGateway(
 ) : AutoCloseable {
     private val admissions = ConcurrentHashMap<String, Mutex>()
 
+    @Volatile
+    private var closed = false
+
     suspend fun prompt(
         account: OAuthAccountRecord,
         modelId: String,
         text: String,
         onText: suspend (String) -> Unit,
     ): String {
+        if (closed) throw GatewayError(HttpStatusCode.ServiceUnavailable, "antigravity_agy_disabled", "官方 agy 已关闭，不接受新的生成请求", "upstream_error")
         val profileId = account.agyProfileId?.takeIf { runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false) }
             ?: throw GatewayError(
                 HttpStatusCode.Conflict,
@@ -112,6 +116,7 @@ internal class AntigravityAgyGateway(
     }
 
     override fun close() {
+        closed = true
         admissions.clear()
     }
 }

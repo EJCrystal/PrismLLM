@@ -384,7 +384,8 @@ class AntigravityAcpApplicationTest {
                 modelId = MODEL, clientKeyIds = setOf(key.id), timeoutMs = 15_000)
             val agy = agyScenario?.let(::writeAgyGatewayAgentLauncher)
             val app = GatewayApplication(configuration(databaseUrl, postgres.username, postgres.password,
-                acp.takeIf { enabled }, agy), httpClientOverride = httpClient)
+                acp.takeIf { enabled }, agy), httpClientOverride = httpClient,
+                antigravityAgyPreparation = { _, _, _ -> check(agy != null) })
             val channel = app.channelRepository.create(name = "ordinary-fixture",
                 baseUrl = "http://ordinary-upstream.invalid/v1",
                 keys = listOf(NewChannelKey("fixture", app.credentialCipher.encrypt("synthetic-upstream-secret"),
@@ -399,6 +400,12 @@ class AntigravityAcpApplicationTest {
             try {
                 server.start(false)
                 port = server.engine.resolvedConnectors().single().port
+                if (agy != null) {
+                    app.antigravityAgyRuntime.update(true, "http://127.0.0.1:7897")
+                    withTimeout(3_000) {
+                        while (app.antigravityAgyRuntime.snapshot().status != "READY") delay(5)
+                    }
+                }
                 HttpClient(CIO).use { client ->
                     ApplicationFixture(app, keys, key.id, generated.raw, denied.raw, port, client, ordinaryRequests, agy).verify()
                     assertEquals(sentinel, keys.find(sentinel.id))
@@ -547,7 +554,7 @@ class AntigravityAcpApplicationTest {
         maxAttempts = 1, drainTimeoutMs = 1_000, staticDir = fixture.resolve("absent-web"), cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false), upstreamHeaderRefreshEnabled = false,
         quotaPluginDir = fixture.resolve("absent-quota-plugins"), iqJudgePluginDir = fixture.resolve("absent-iq-plugins"),
-        manxueEnabled = false, antigravityAcp = acp, antigravityAgy = agy,
+        manxueEnabled = false, antigravityAcp = acp, antigravityAgy = agy ?: AntigravityAgyConfig.defaults(),
     )
 
     private fun requestBody(stream: Boolean = false) =

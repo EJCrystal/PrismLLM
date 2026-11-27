@@ -1,4 +1,5 @@
 import json
+import hashlib
 from pathlib import Path
 import signal
 import subprocess
@@ -20,6 +21,37 @@ def login_url(**changes):
 
 
 class AgyAdminAuthorizationTest(unittest.TestCase):
+    def test_prepare_never_starts_login_or_generation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / ".runtime"
+            with patch.object(sys, "argv", ["admin", "--state", str(state), "--proxy", "http://127.0.0.1:7897", "--prepare"]), \
+                    patch.object(pilot, "install_release") as install, patch.object(pilot, "check_sandbox") as sandbox, \
+                    patch.object(pilot, "run_agent", side_effect=AssertionError("No login or generation")), \
+                    patch.object(admin, "emit") as emit:
+                self.assertEqual(0, admin.main())
+            install.assert_called_once_with(state, "http://127.0.0.1:7897")
+            sandbox.assert_called_once_with(state, "http://127.0.0.1:7897")
+            self.assertEqual("ready", emit.call_args.args[0])
+
+    def test_new_account_reuses_only_verified_cli_not_cached_home(self):
+        with tempfile.TemporaryDirectory() as directory:
+            cache = Path(directory) / ".runtime"
+            account = Path(directory) / "account"
+            for root in (cache, account):
+                pilot.prepare_files(root)
+            binary = b"verified-cli-fixture"
+            (cache / "bin/agy").write_bytes(binary)
+            (cache / "bin/agy").chmod(0o700)
+            pilot.private_json(cache / "release.json", {"release": pilot.pinned_release(), "binarySha512": hashlib.sha512(binary).hexdigest()})
+            (cache / "home/private-credential").write_text("not-an-account-credential")
+            with patch.object(pilot, "install_release", side_effect=AssertionError("No repeated download")):
+                admin.install_account_release(account, "http://127.0.0.1:7897")
+            self.assertEqual(binary, (account / "bin/agy").read_bytes())
+            self.assertFalse((account / "home/private-credential").exists())
+            (cache / "bin/agy").write_bytes(b"tampered")
+            with self.assertRaises(pilot.PilotError):
+                admin.install_account_release(account, "http://127.0.0.1:7897")
+
     def test_accepts_only_official_cli_google_code_flow(self):
         value = login_url()
         self.assertEqual(value, admin.authorization_url(value))

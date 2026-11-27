@@ -1440,6 +1440,17 @@ export interface AntigravityAgyAccounts {
   accounts: AntigravityAgyAccount[]
 }
 
+export type AntigravityAgyEnvironmentStatus = 'DISABLED' | 'CHECKING' | 'INSTALLING' | 'PREPARING' | 'STOPPING' | 'READY' | 'FAILED'
+
+export interface AntigravityAgySettings {
+  enabled: boolean
+  proxy: string
+  status: AntigravityAgyEnvironmentStatus
+  missingDependencies: string[]
+  error: string | null
+  updatedAt: number
+}
+
 export interface AntigravityAgyLogin {
   loginId: string
   state: 'PREPARING' | 'AWAITING_CODE' | 'VERIFYING' | 'REGISTERING' | 'AUTHENTICATED' | 'FAILED' | 'CANCELLED' | 'EXPIRED'

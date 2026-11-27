@@ -23,3 +23,14 @@ export function countUpstreamOverrides(overrides: UpstreamRequestOverrides): num
     protocols.reduce((total, protocol) => total + countProtocolOverrides(protocol), 0)
   )
 }
+export function agyEnvironmentStatus(status: string): string {
+  return ({
+    DISABLED: '已关闭',
+    CHECKING: '正在检查服务运行环境',
+    INSTALLING: '正在下载安装缺失依赖',
+    PREPARING: '正在下载校验 agy 并检查沙盒',
+    STOPPING: '等待当前准备步骤结束后关闭',
+    READY: '运行环境已就绪',
+    FAILED: '准备失败',
+  } as Record<string, string>)[status] || '状态未知'
+}

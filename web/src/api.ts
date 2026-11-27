@@ -2,6 +2,7 @@ import { ApiError } from './types/api'
 import type {
   AntigravityAgyAccounts,
   AntigravityAgyLogin,
+  AntigravityAgySettings,
   RequestLogPageOptions,
   RequestLogFilterOptions,
   AdminAuditLog,
@@ -254,6 +255,9 @@ export const api = {
   startOAuthLogin: (payload: OAuthLoginStartRequest) =>
     request<OAuthLoginStart>('/oauth-login/start', { method: 'POST', body: JSON.stringify(payload) }),
   listAntigravityAgyAccounts: () => request<AntigravityAgyAccounts>('/antigravity/agy/accounts'),
+  getAntigravityAgySettings: () => request<AntigravityAgySettings>('/antigravity-agy-settings'),
+  updateAntigravityAgySettings: (payload: { enabled: boolean; proxy: string }) =>
+    request<AntigravityAgySettings>('/antigravity-agy-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAntigravityAgyAccount: (profileId: string) =>
     request<void>(`/antigravity/agy/accounts/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
   startAntigravityAgyLogin: (payload: { name?: string; sourceAccountId?: string | null; accountId?: string | null }) =>

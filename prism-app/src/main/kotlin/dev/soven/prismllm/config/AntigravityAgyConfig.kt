@@ -18,6 +18,8 @@ data class AntigravityAgyConfig(
         python.toString(), script.toString(), "--state", state.toString(), "--proxy", proxy,
     )
 
+    fun preparationCommand(): List<String> = loginCommand(stateDir.resolve(".runtime")) + "--prepare"
+
     fun inspectCommand(state: Path): List<String> = listOf(
         python.toString(), script.resolveSibling("antigravity_acp_pilot.py").toString(),
         "--state", state.toString(), "--proxy", proxy, "agent", "--online", "--", "acp",
@@ -29,21 +31,9 @@ data class AntigravityAgyConfig(
     )
 
     companion object {
-        fun fromEnv(env: Map<String, String>): AntigravityAgyConfig? {
-            when (env["ANTIGRAVITY_AGY_ENABLED"]) {
-                null, "false" -> return null
-                "true" -> Unit
-                else -> error("ANTIGRAVITY_AGY_ENABLED must be true or false")
-            }
-            fun required(name: String) = requireNotNull(env["ANTIGRAVITY_AGY_$name"]) {
-                "ANTIGRAVITY_AGY_$name is required"
-            }
-            return AntigravityAgyConfig(
-                script = Path.of(required("SCRIPT")),
-                stateDir = Path.of(required("STATE_DIR")),
-                python = Path.of(env["ANTIGRAVITY_AGY_PYTHON"] ?: "/usr/bin/python3"),
-                proxy = env["ANTIGRAVITY_AGY_PROXY"] ?: "http://127.0.0.1:7897",
-            )
-        }
+        fun defaults(): AntigravityAgyConfig = AntigravityAgyConfig(
+            script = Path.of("scripts/antigravity_agy_admin.py").toAbsolutePath().normalize(),
+            stateDir = Path.of("data/antigravity-agy").toAbsolutePath().normalize(),
+        )
     }
 }

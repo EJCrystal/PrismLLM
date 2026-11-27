@@ -77,9 +77,15 @@ docker compose exec -T gateway sh -c 'curl --fail --silent --show-error "http://
 | Docker 网络 | `prism-llm_default` |
 | 应用配置与加密密钥 | 原部署目录的 `.env`，尤其是原 `GATEWAY_MASTER_KEY` |
 | 外部插件 | 原 `./plugins` 目录，只读挂载到 `/app/plugins` |
+| 官方 agy 档案（按需开启） | prism-llm_agydata，挂载到 /app/data/antigravity-agy；需单独备份 CLI 私有账号目录 |
 | 停机预算 | `stop_grace_period: 60s`，已有自定义值继续保留 |
 
 **不要执行 `docker compose down -v`、删除 `prism-llm_pgdata`、重新生成主密钥或用示例配置覆盖原 `.env`。** 私有仓库下载失败时先排查 GHCR 登录和服务器网络，不回退到现场构建，也不清理现有数据来重试。
+
+Antigravity 的开关在管理台“系统配置 → Antigravity 运行环境”，无需 agy 环境变量。
+Python 和 Bubblewrap 不预装进镜像；开启后才检查服务环境，列出缺失项并通过系统软件源按需安装。
+需要当前服务环境具备安装权限、可写文件系统和可用的本机 HTTP 代理；内核禁用沙盒时明确报错，不自动提权或关闭隔离。
+重建容器不保留其可写层中安装的系统软件包，下次启动会根据已保存开关重新检查；账号凭据和已校验 CLI 保留在独立命名卷中。
 
 保留数据卷不等于没有数据库升级：新版本启动仍会执行 Flyway 迁移。回退旧镜像前必须检查数据库兼容性；必要时在维护窗口恢复匹配的数据库备份与主密钥，不能假定修改镜像标签就能撤销表结构迁移。
 
