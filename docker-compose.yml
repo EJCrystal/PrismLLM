@@ -19,7 +19,7 @@ services:
       retries: 10
 
   gateway:
-    build: .
+    image: ${PRISM_IMAGE:-ghcr.io/ejcrystal/prismllm:main}
     restart: unless-stopped
     # Increase this budget with DRAIN_TIMEOUT_MS; allow extra time for server and queue cleanup.
     stop_grace_period: 60s

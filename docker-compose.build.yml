@@ -1,0 +1,5 @@
+services:
+  gateway:
+    image: prism-llm:local
+    build: .
+    pull_policy: never
