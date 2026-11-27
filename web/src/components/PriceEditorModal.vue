@@ -161,7 +161,8 @@ watch(
     modelsError.value = ''
     if (!channelId) return
     const channel = props.channels.find((item) => item.id === channelId)
-    if (channel && (channel.models || []).length === 0) {
+    // 订阅计费复用服务端启用授权范围，不依赖单个账号的上游目录发现。
+    if (channel?.kind === 'provider' || (channel && (channel.models || []).length === 0)) {
       modelsLoading.value = false
       return
     }
