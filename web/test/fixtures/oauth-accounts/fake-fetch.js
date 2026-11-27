@@ -30,6 +30,7 @@ export function createOAuthFixtureFetch({ fixture = createOAuthAccountsFixture()
     if (method === 'GET') {
       const lists = {
         '/admin/api/oauth-accounts': fixture.accounts,
+        '/admin/api/antigravity/agy/accounts': { configured: false, accounts: [] },
         '/admin/api/oauth-providers': fixture.providers,
         '/admin/api/channels': fixture.channels,
         '/admin/api/model-prices': [],

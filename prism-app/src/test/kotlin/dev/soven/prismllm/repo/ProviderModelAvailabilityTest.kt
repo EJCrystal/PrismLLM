@@ -8,9 +8,11 @@ import dev.soven.prismllm.channel.persistence.ChannelModels
 import dev.soven.prismllm.channel.persistence.Channels
 import dev.soven.prismllm.channel.persistence.NewChannelKey
 import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
+import dev.soven.prismllm.oauth.persistence.AgyProfileRegistration
 import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.oauth.persistence.OAuthAccountRepository
 import dev.soven.prismllm.oauth.persistence.OAuthAccounts
+import dev.soven.prismllm.protocol.ProtocolConversion
 import dev.soven.prismllm.routing.domain.candidate.RoutingAccessScope
 import dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity
 import dev.soven.prismllm.routing.readmodel.CredentialRouteType
@@ -43,6 +45,7 @@ import org.junit.jupiter.api.TestInstance
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.UUID
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -90,6 +93,7 @@ class ProviderModelAvailabilityTest {
         keys: List<NewChannelKey> = emptyList(),
         protocols: List<GatewayProtocol> = listOf(GatewayProtocol.RESPONSES),
         kind: ChannelKind = ChannelKind.PROVIDER,
+        provider: OAuthProvider = OAuthProvider.CHATGPT,
     ) = channels.create(
         name = name,
         baseUrl = "https://example.invalid/v1",
@@ -99,13 +103,17 @@ class ProviderModelAvailabilityTest {
         enabled = true,
         modelMappings = mappings,
         kind = kind,
-        provider = OAuthProvider.CHATGPT.takeIf { kind == ChannelKind.PROVIDER },
+        provider = provider.takeIf { kind == ChannelKind.PROVIDER },
     )
 
-    private suspend fun account(channelId: String, models: List<String> = emptyList()) = accounts.create(
+    private suspend fun account(
+        channelId: String,
+        models: List<String> = emptyList(),
+        provider: OAuthProvider = OAuthProvider.CHATGPT,
+    ) = accounts.create(
         NewOAuthAccount(
             name = "unsynchronized",
-            provider = OAuthProvider.CHATGPT,
+            provider = provider,
             refreshToken = cipher.encrypt("test-refresh-token"),
             channelIds = listOf(channelId),
             models = models,
@@ -116,6 +124,45 @@ class ProviderModelAvailabilityTest {
             val current = routes.find(modelId)
             val identity = CredentialRouteIdentity(channelId, CredentialRouteType.OAUTH, account.id)
             routes.save(modelId, current?.revision ?: 0, (current?.entries.orEmpty() + identity).distinct())
+        }
+    }
+
+    @Test
+    fun `agy profile is routable through ordinary protocols converted to chat and keeps its route identity`() = runBlocking {
+        val channel = channel(
+            mappings = listOf(ChannelModelRecord("agy-upstream", "agy-public", "manual")),
+            name = "antigravity-provider",
+            protocols = listOf(GatewayProtocol.GEMINI),
+            provider = OAuthProvider.ANTIGRAVITY,
+        )
+        val legacy = account(channel.id, models = listOf("agy-upstream"), provider = OAuthProvider.ANTIGRAVITY)
+        val savedRoute = routes.find("agy-public")!!
+        val migrated = accounts.registerAgyProfile(
+            AgyProfileRegistration(
+                profileId = UUID.randomUUID().toString(),
+                sourceAccountId = legacy.id,
+                name = "migrated-agy",
+                subscriptionTier = "PRO",
+                currentModelId = "agy-upstream",
+            ),
+        )
+
+        assertTrue(migrated.isAgy)
+        assertNull(migrated.refreshTokenCiphertext)
+        assertEquals(savedRoute, routes.find("agy-public"))
+        val chatCompatible = GatewayProtocol.entries.filter {
+            ProtocolConversion.supports(it, GatewayProtocol.CHAT_COMPLETIONS)
+        }
+        assertTrue(chatCompatible.isNotEmpty())
+        chatCompatible.forEach { protocol ->
+            assertEquals(
+                listOf(migrated.id),
+                catalog.resolve("agy-public", protocol).candidates.map { it.credential.id },
+                "agy ACP should serve $protocol through the ordinary routed model",
+            )
+        }
+        GatewayProtocol.entries.filterNot { it in chatCompatible }.forEach { protocol ->
+            assertTrue(catalog.resolve("agy-public", protocol).candidates.isEmpty(), "$protocol is not convertible to ACP chat")
         }
     }
 

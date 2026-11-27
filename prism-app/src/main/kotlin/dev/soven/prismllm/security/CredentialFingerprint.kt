@@ -7,5 +7,9 @@ import dev.soven.prismllm.shared.crypto.credentialFingerprint
 fun ChannelKeyRecord.credentialFingerprint(): String =
     credentialFingerprint(credentialCiphertext, credentialNonce, credentialKeyVersion)
 
-fun OAuthAccountRecord.credentialFingerprint(): String =
-    credentialFingerprint(refreshTokenCiphertext, refreshTokenNonce, refreshTokenKeyVersion)
+fun OAuthAccountRecord.credentialFingerprint(): String? {
+    val ciphertext = refreshTokenCiphertext ?: return null
+    val nonce = refreshTokenNonce ?: return null
+    val keyVersion = refreshTokenKeyVersion ?: return null
+    return credentialFingerprint(ciphertext, nonce, keyVersion)
+}

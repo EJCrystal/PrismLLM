@@ -198,11 +198,13 @@ class UpstreamModelCatalog(
         channel: ChannelRecord,
         credential: UpstreamCredential,
         snapshot: RoutingConfigurationSnapshot,
-    ): List<GatewayProtocol> = if (credential.isOAuth) {
-        val providerProtocols = snapshot.oauthProtocols[credential.id].orEmpty().toSet()
-        channel.protocols.filter { it in providerProtocols }
-    } else {
-        channel.protocols
+    ): List<GatewayProtocol> = when {
+        credential.nativeProtocols != null -> credential.nativeProtocols!!
+        credential.isOAuth -> {
+            val providerProtocols = snapshot.oauthProtocols[credential.id].orEmpty().toSet()
+            channel.protocols.filter { it in providerProtocols }
+        }
+        else -> channel.protocols
     }
 
     private fun supportsProtocol(requested: GatewayProtocol, available: List<GatewayProtocol>): Boolean =

@@ -100,7 +100,9 @@ defineExpose({ hasDirty })
   >
     <template #title-extra>
       <span class="badge info small">官方订阅</span>
-      <span v-if="!item.configured" class="badge warning small">未配置 OAuth</span>
+      <span v-if="item.providerId === 'antigravity'" class="badge info small">官方 agy 登录</span>
+      <span v-if="item.providerId === 'antigravity' && !item.configured" class="badge warning small">尚未部署 agy 登录服务</span>
+      <span v-else-if="!item.configured" class="badge warning small">未配置 OAuth</span>
       <button
         v-if="item.channel"
         type="button"

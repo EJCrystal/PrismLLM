@@ -58,6 +58,7 @@ internal class AcpPilotException(val kind: Kind, val rpcCode: Int? = null) : Run
         PROTOCOL_ERROR("Invalid or unsupported ACP message"),
         AGENT_ERROR("The ACP agent returned an error"),
         SERVICE_DISABLED("Google disabled this account's service for a terms-of-service violation"),
+        SUBSCRIPTION_REQUIRED("The Antigravity account is not verified as a Google AI Pro subscription"),
         QUOTA_EXHAUSTED("The ACP agent reported exhausted quota or a rate limit"),
         MODEL_UNAVAILABLE("The selected model is not available in the ACP session"),
         MODEL_MISMATCH("The ACP session is not using the configured model; model switching is disabled"),
@@ -88,11 +89,14 @@ internal class AntigravityAcpPilot(
     suspend fun prompt(
         text: String,
         modelId: String,
+        requiredTier: String? = null,
         onCancelled: (Boolean) -> Unit = {},
         onText: suspend (String) -> Unit,
     ): AcpStopReason {
         require(text.isNotBlank() && text.length <= MAX_PROMPT_CHARS) { "Invalid ACP pilot prompt length" }
-        return withConnection { connection -> runTurn(connection, text, modelId, onCancelled, onText) }
+        return withConnection { connection ->
+            runTurn(connection, text, modelId, requiredTier, onCancelled, onText)
+        }
     }
 
     private suspend fun <Result : Any> withConnection(block: suspend (AcpStdio) -> Result): Result {
@@ -171,11 +175,15 @@ internal class AntigravityAcpPilot(
         connection: AcpStdio,
         text: String,
         modelId: String,
+        requiredTier: String?,
         onCancelled: (Boolean) -> Unit,
         onText: suspend (String) -> Unit,
     ): AcpStopReason {
         val session = createSession(connection)
         val sessionId = session.id
+        if (requiredTier != null && session.catalog.officialSubscriptionTier != requiredTier) {
+            throw AcpPilotException(AcpPilotException.Kind.SUBSCRIPTION_REQUIRED)
+        }
         if (modelId !in session.catalog.modelIds) throw AcpPilotException(AcpPilotException.Kind.MODEL_UNAVAILABLE)
         if (session.catalog.currentModelId != modelId) {
             throw AcpPilotException(AcpPilotException.Kind.MODEL_MISMATCH)

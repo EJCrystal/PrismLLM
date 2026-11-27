@@ -458,7 +458,7 @@ def install_release(root, proxy):
         verify_installed_release(root, release)
 
 
-def run_agent(root, proxy, online, arguments):
+def run_agent(root, proxy, online, arguments, runner=None):
     with tempfile.TemporaryDirectory(prefix="agent-", dir=root) as name:
         runtime = Path(name)
         (runtime / "workspace").mkdir(mode=0o700)
@@ -467,8 +467,9 @@ def run_agent(root, proxy, online, arguments):
             command = ["/opt/agy", arguments[0], "--disable-telemetry", "--include-default-customizations=false",
                        "--cli_log_file", "/dev/null", "--log-file", "/dev/null", *arguments[1:]]
             try:
-                return run_owned_process(sandbox_command(root, runtime, online, command, login=login),
-                                         env={}, stop_signal=signal.SIGKILL).returncode
+                return (runner or run_owned_process)(
+                    sandbox_command(root, runtime, online, command, login=login),
+                    env={}, stop_signal=signal.SIGKILL).returncode
             finally:
                 if login:
                     private_json(root / "home/.gemini/antigravity-cli/settings.json", POLICY)

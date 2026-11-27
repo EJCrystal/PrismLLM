@@ -3,7 +3,10 @@ package dev.soven.prismllm.antigravity
 import dev.soven.prismllm.api.GatewayApplication
 import dev.soven.prismllm.channel.domain.ChannelModelRecord
 import dev.soven.prismllm.channel.persistence.NewChannelKey
+import dev.soven.prismllm.oauth.persistence.AgyProfileRegistration
+import dev.soven.prismllm.oauth.persistence.NewOAuthAccount
 import dev.soven.prismllm.config.AntigravityAcpConfig
+import dev.soven.prismllm.config.AntigravityAgyConfig
 import dev.soven.prismllm.config.GatewayConfig
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
@@ -11,6 +14,7 @@ import dev.soven.prismllm.quota.persistence.ClientKeyRepository
 import dev.soven.prismllm.requestlog.domain.RetentionPolicy
 import dev.soven.prismllm.routing.readmodel.CredentialRouteIdentity
 import dev.soven.prismllm.routing.readmodel.CredentialRouteType
+import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.shared.crypto.ClientKeyHasher
 import dev.soven.prismllm.shared.domain.GatewayProtocol
 import dev.soven.prismllm.testsupport.db.SharedPostgres
@@ -34,8 +38,10 @@ import io.ktor.http.headersOf
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.netty.Netty
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonArray
@@ -212,9 +218,86 @@ class AntigravityAcpApplicationTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun ordinaryDataPlaneRoutesMigratedAgyProfileForNonstreamAndSse(stream: Boolean) = runBlocking {
+        withGateway(agyScenario = "agy-success", assertRoutesUnchanged = false) {
+            val profileRoot = configureAgyRoute()
+            val routeAfterMigration = app.modelCredentialRouteRepository.find(MODEL)
+
+            val response = post(path = "/v1/chat/completions", body = requestBody(stream))
+            assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
+            val body = response.bodyAsText()
+            assertFalse(body.contains("hidden-thought") || body.contains("private-fixture"))
+            if (stream) {
+                val frames = body.lineSequence().filter { it.startsWith("data: ") }.map { it.removePrefix("data: ") }.toList()
+                assertEquals("[DONE]", frames.last())
+                val chunks = frames.dropLast(1).map { Json.parseToJsonElement(it).jsonObject }
+                val text = chunks.joinToString("") {
+                    (it.getValue("choices").jsonArray.single().jsonObject.getValue("delta").jsonObject["content"] as? JsonPrimitive)
+                        ?.content.orEmpty()
+                }
+                assertEquals(listOf("第一段", "第二段🌿").joinToString(10.toChar().toString()), text)
+            } else {
+                val result = Json.parseToJsonElement(body).jsonObject
+                assertEquals(JsonPrimitive(MODEL), result["model"])
+                assertEquals(JsonPrimitive(listOf("第一段", "第二段🌿").joinToString(10.toChar().toString())),
+                    result.getValue("choices").jsonArray.single().jsonObject.getValue("message").jsonObject["content"])
+            }
+            assertEquals("1", Files.readString(profileRoot.resolve("startups")))
+            assertEquals(routeAfterMigration, app.modelCredentialRouteRepository.find(MODEL))
+            assertTrue(ordinaryRequests.isEmpty(), "A successful AGY request must not call the next configured candidate")
+            awaitReleased()
+        }
+    }
+
+    @Test
+    fun ordinaryAgyQuotaExhaustionStopsWithoutFailingOverToTheNextCandidate() = runBlocking {
+        withGateway(agyScenario = "agy-quota", assertRoutesUnchanged = false) {
+            val profileRoot = configureAgyRoute()
+            val routeAfterMigration = app.modelCredentialRouteRepository.find(MODEL)
+            val response = post(path = "/v1/chat/completions")
+
+            assertEquals(HttpStatusCode.TooManyRequests, response.status, response.bodyAsText())
+            assertTrue(response.bodyAsText().contains("antigravity_acp_quota_exhausted"))
+            assertEquals("1", Files.readString(profileRoot.resolve("startups")))
+            assertTrue(ordinaryRequests.isEmpty(), "Quota exhaustion must not fall through to a paid/static candidate")
+            assertEquals(routeAfterMigration, app.modelCredentialRouteRepository.find(MODEL))
+            awaitReleased()
+        }
+    }
+
+    @Test
+    fun ordinaryAgyStreamCancellationIsAcknowledgedAndTheMigratedLoginCanBeReused() = runBlocking {
+        withGateway(agyScenario = "agy-thinking", assertRoutesUnchanged = false) {
+            val profileRoot = configureAgyRoute()
+            val routeAfterMigration = app.modelCredentialRouteRepository.find(MODEL)
+            Socket("127.0.0.1", port).use { socket ->
+                socket.sendRequest(port, secret, requestBody(stream = true), path = "/v1/chat/completions")
+                awaitFile(profileRoot.resolve("prompt-started"))
+                socket.awaitResponseContains("waiting for client cancellation")
+                socket.setSoLinger(true, 0)
+                socket.close()
+            }
+            awaitFile(profileRoot.resolve("cancel-acknowledged"))
+            awaitReleased()
+
+            val reused = post(path = "/v1/chat/completions")
+            assertEquals(HttpStatusCode.OK, reused.status, reused.bodyAsText())
+            assertTrue(reused.bodyAsText().contains("reused"))
+            assertEquals("2", Files.readString(profileRoot.resolve("startups")))
+            assertTrue(Files.readAllLines(profileRoot.resolve("methods")).contains("session/cancel"))
+            assertTrue(ordinaryRequests.isEmpty())
+            assertEquals(routeAfterMigration, app.modelCredentialRouteRepository.find(MODEL))
+            awaitReleased()
+        }
+    }
+
     private suspend fun withGateway(
         scenario: String = "success",
         enabled: Boolean = true,
+        agyScenario: String? = null,
+        assertRoutesUnchanged: Boolean = true,
         verify: suspend ApplicationFixture.() -> Unit,
     ) {
         val postgres = SharedPostgres.container
@@ -245,8 +328,9 @@ class AntigravityAcpApplicationTest {
             })
             val acp = AntigravityAcpConfig(script = writeAgentLauncher(scenario), stateDir = fixture,
                 modelId = MODEL, clientKeyIds = setOf(key.id), timeoutMs = 15_000)
+            val agy = agyScenario?.let(::writeAgyGatewayAgentLauncher)
             val app = GatewayApplication(configuration(databaseUrl, postgres.username, postgres.password,
-                acp.takeIf { enabled }), httpClientOverride = httpClient)
+                acp.takeIf { enabled }, agy), httpClientOverride = httpClient)
             val channel = app.channelRepository.create(name = "ordinary-fixture",
                 baseUrl = "http://ordinary-upstream.invalid/v1",
                 keys = listOf(NewChannelKey("fixture", app.credentialCipher.encrypt("synthetic-upstream-secret"),
@@ -262,9 +346,9 @@ class AntigravityAcpApplicationTest {
                 server.start(false)
                 port = server.engine.resolvedConnectors().single().port
                 HttpClient(CIO).use { client ->
-                    ApplicationFixture(app, keys, key.id, generated.raw, denied.raw, port, client, ordinaryRequests).verify()
+                    ApplicationFixture(app, keys, key.id, generated.raw, denied.raw, port, client, ordinaryRequests, agy).verify()
                     assertEquals(sentinel, keys.find(sentinel.id))
-                    assertEquals(routesBefore, app.modelCredentialRouteRepository.list())
+                    if (assertRoutesUnchanged) assertEquals(routesBefore, app.modelCredentialRouteRepository.list())
                     assertTrue(unexpected.isEmpty(), unexpected.toString())
                     if (Files.exists(fixture.resolve("methods"))) {
                         assertTrue(Files.readAllLines(fixture.resolve("methods")).all {
@@ -296,6 +380,7 @@ class AntigravityAcpApplicationTest {
         val port: Int,
         val client: HttpClient,
         val ordinaryRequests: ConcurrentLinkedQueue<String>,
+        val agy: AntigravityAgyConfig?,
     ) {
         val base = "http://127.0.0.1:$port"
 
@@ -312,6 +397,40 @@ class AntigravityAcpApplicationTest {
             assertEquals(HttpStatusCode.OK, response.status, response.bodyAsText())
             assertTrue(response.bodyAsText().contains("ordinary-route"))
             assertEquals(1, ordinaryRequests.size)
+        }
+
+        suspend fun configureAgyRoute(): Path {
+            val agyConfig = requireNotNull(agy)
+            val profileId = "00000000-0000-0000-0000-000000000292"
+            val profileRoot = agyConfig.stateDir.resolve(profileId)
+            Files.createDirectories(profileRoot)
+            val providerChannelId = requireNotNull(app.providerChannelProvisioner.ensure(OAuthProvider.ANTIGRAVITY))
+            val legacy = app.oauthAccountRepository.create(NewOAuthAccount(
+                name = "synthetic-legacy-antigravity",
+                provider = OAuthProvider.ANTIGRAVITY,
+                accountEmail = "legacy-fixture@example.invalid",
+                accountPlan = "PRO",
+                refreshToken = app.credentialCipher.encrypt("synthetic-legacy-refresh-token"),
+                channelIds = listOf(providerChannelId),
+                models = listOf(MODEL),
+            ))
+            val route = requireNotNull(app.modelCredentialRouteRepository.find(MODEL))
+            val migrated = app.oauthAccountRepository.registerAgyProfile(AgyProfileRegistration(
+                profileId = profileId,
+                sourceAccountId = legacy.id,
+                name = "synthetic-migrated-agy",
+                subscriptionTier = "PRO",
+                currentModelId = MODEL,
+            ))
+            app.providerChannelProvisioner.syncModelUnion(OAuthProvider.ANTIGRAVITY)
+            app.modelCredentialRouteRepository.save(
+                MODEL,
+                route.revision,
+                listOf(CredentialRouteIdentity(providerChannelId, CredentialRouteType.OAUTH, migrated.id)) + route.entries,
+            )
+            assertEquals(legacy.id, migrated.id)
+            assertEquals(null, migrated.refreshTokenCiphertext)
+            return profileRoot
         }
 
         suspend fun awaitReleased() = withTimeout(5_000) {
@@ -335,7 +454,38 @@ class AntigravityAcpApplicationTest {
         """.trimIndent())
     }
 
-    private fun configuration(url: String, username: String, password: String, acp: AntigravityAcpConfig?) = GatewayConfig(
+    private fun writeAgyGatewayAgentLauncher(scenario: String): AntigravityAgyConfig {
+        val stateDir = fixture.resolve("agy-profiles")
+        Files.createDirectories(stateDir)
+        val classpath = (System.getProperty("surefire.test.class.path") ?: System.getProperty("java.class.path"))
+            .split(File.pathSeparatorChar).joinToString(File.pathSeparator) { Path.of(it).toAbsolutePath().toString() }
+        val java = Path.of(System.getProperty("java.home"), "bin", "java").toString()
+        val prefix = listOf(java, "-Dstdout.encoding=UTF-8", "-cp", classpath, FakeAcpGatewayAgent::class.java.name)
+        val encodedJava = JsonPrimitive(java).toString()
+        val encodedPrefix = prefix.joinToString(",", "[", "]") { JsonPrimitive(it).toString() }
+        val encodedScenario = JsonPrimitive(scenario).toString()
+        val pilotScript = fixture.resolve("antigravity_acp_pilot.py")
+        Files.writeString(pilotScript, """
+            import os, sys
+            assert sys.argv[1] == "--state"
+            state = sys.argv[2]
+            assert sys.argv[3:] == ["--proxy", "http://127.0.0.1:7897", "gateway-agent", "--model", "$MODEL"]
+            with open(os.path.join(state, "command-validated"), "w") as receipt:
+                receipt.write("yes")
+            os.execv($encodedJava, $encodedPrefix + [state, $encodedScenario])
+        """.trimIndent())
+        val adminScript = fixture.resolve("antigravity_agy_admin.py")
+        Files.writeString(adminScript, "# isolated test fixture\n")
+        return AntigravityAgyConfig(script = adminScript, stateDir = stateDir, python = Path.of("/usr/bin/python3"))
+    }
+
+    private fun configuration(
+        url: String,
+        username: String,
+        password: String,
+        acp: AntigravityAcpConfig?,
+        agy: AntigravityAgyConfig? = null,
+    ) = GatewayConfig(
         port = 0, databaseUrl = url, databaseUser = username, databasePassword = password,
         masterKey = SecureRandom().generateSeed(32), adminUsername = "admin", adminPassword = "isolated-test-password",
         corsOrigins = listOf(ORIGIN), requestBodyLimitBytes = 262_144, connectTimeoutMs = 1_000,
@@ -343,22 +493,41 @@ class AntigravityAcpApplicationTest {
         maxAttempts = 1, drainTimeoutMs = 1_000, staticDir = fixture.resolve("absent-web"), cookieSecure = false,
         retention = RetentionPolicy(cleanupEnabled = false), upstreamHeaderRefreshEnabled = false,
         quotaPluginDir = fixture.resolve("absent-quota-plugins"), iqJudgePluginDir = fixture.resolve("absent-iq-plugins"),
-        manxueEnabled = false, antigravityAcp = acp,
+        manxueEnabled = false, antigravityAcp = acp, antigravityAgy = agy,
     )
 
     private fun requestBody(stream: Boolean = false) =
         """{"model":"$MODEL","messages":[{"role":"user","content":"hello"}],"stream":$stream}"""
 
-    private fun Socket.sendRequest(port: Int, secret: String, body: String) {
+    private fun Socket.sendRequest(port: Int, secret: String, body: String, path: String = ACP_PATH) {
         val bytes = body.toByteArray(Charsets.UTF_8)
-        getOutputStream().write(("POST $ACP_PATH HTTP/1.1\r\nHost: 127.0.0.1:$port\r\n" +
+        getOutputStream().write(("POST $path HTTP/1.1\r\nHost: 127.0.0.1:$port\r\n" +
             "Authorization: Bearer $secret\r\nContent-Type: application/json\r\n" +
             "Content-Length: ${bytes.size}\r\n\r\n").toByteArray() + bytes)
         getOutputStream().flush()
     }
 
+    private suspend fun Socket.awaitResponseContains(marker: String) = withContext(Dispatchers.IO) {
+        soTimeout = 10_000
+        val received = StringBuilder()
+        val buffer = ByteArray(2_048)
+        while (!received.contains(marker)) {
+            val count = getInputStream().read(buffer)
+            check(count > 0) { "connection closed before the expected stream content arrived" }
+            received.append(String(buffer, 0, count, Charsets.UTF_8))
+        }
+    }
+
     private suspend fun awaitFile(name: String) = withTimeout(10_000) {
-        while (!Files.exists(fixture.resolve(name))) delay(10)
+        awaitPath(fixture.resolve(name))
+    }
+
+    private suspend fun awaitFile(path: Path) = withTimeout(10_000) {
+        awaitPath(path)
+    }
+
+    private suspend fun awaitPath(path: Path) {
+        while (!Files.exists(path)) delay(10)
     }
 
     private companion object {

@@ -470,6 +470,13 @@ object FakeAcpGatewayAgent {
                     add(buildJsonObject { put("modelId", "different-model") })
                 })
             })
+            if (scenario.startsWith("agy-")) {
+                put("_meta", buildJsonObject {
+                    put("antigravity", buildJsonObject {
+                        put("tier", buildJsonObject { put("name", "Google AI Pro") })
+                    })
+                })
+            }
         })
         val prompt = read() ?: return
         check(prompt["method"] == JsonPrimitive("session/prompt"))
@@ -506,6 +513,27 @@ object FakeAcpGatewayAgent {
             return
         }
         when (scenario) {
+            "agy-success" -> {
+                chunk("第一段\n")
+                chunk("第二段🌿")
+                stop(id, "end_turn")
+            }
+            "agy-quota" -> println(buildJsonObject {
+                put("jsonrpc", "2.0"); put("id", id)
+                put("error", buildJsonObject { put("code", -32000); put("message", "RESOURCE_EXHAUSTED private-fixture") })
+            })
+            "agy-thinking" -> if (startup == 1) {
+                chunk("waiting for client cancellation")
+                Thread.sleep(200)
+                chunk("disconnect probe")
+                val cancel = checkNotNull(read())
+                check(cancel["method"] == JsonPrimitive("session/cancel"))
+                Files.writeString(root.resolve("cancel-acknowledged"), "yes")
+                stop(id, "cancelled")
+            } else {
+                chunk("reused")
+                stop(id, "end_turn")
+            }
             "quota", "disabled" -> {
                 val message = if (scenario == "quota") "RESOURCE_EXHAUSTED private-fixture" else
                     "This service has been disabled in this account for violation of Terms of Service private-fixture"

@@ -257,6 +257,7 @@ data class ChannelOAuthAccountResponse(
     val id: String,
     val name: String,
     val enabled: Boolean,
+    val authMethod: String = "oauth",
     val models: List<String> = emptyList(),
 )
 
@@ -264,6 +265,7 @@ fun UpstreamCredential.toOAuthAccountResponse() = ChannelOAuthAccountResponse(
     id = id,
     name = name,
     enabled = enabled,
+    authMethod = (this as? OAuthAccountRecord)?.authMethod?.value ?: "oauth",
     models = models,
 )
 
@@ -1795,6 +1797,7 @@ data class OAuthAccountResponse(
     val id: String,
     val name: String,
     val provider: String,
+    val authMethod: String = "oauth",
     val accountEmail: String? = null,
     val accountPlan: String? = null,
     val authState: String,
@@ -1909,6 +1912,7 @@ fun OAuthAccountRecord.toResponse(
     id = id,
     name = name,
     provider = provider.value,
+    authMethod = authMethod.value,
     accountEmail = accountEmail,
     accountPlan = accountPlan,
     authState = authState.value,

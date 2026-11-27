@@ -4,6 +4,7 @@ import dev.soven.prismllm.oauth.domain.OAuthAccountModelCatalogEntry
 import dev.soven.prismllm.oauth.domain.OAuthAccountPolicy
 import dev.soven.prismllm.oauth.domain.OAuthAccountRecord
 import dev.soven.prismllm.oauth.domain.OAuthAuthState
+import dev.soven.prismllm.oauth.domain.OAuthAccountAuthMethod
 import dev.soven.prismllm.shared.domain.OAuthProvider
 import dev.soven.prismllm.oauth.domain.OAuthQuotaGroup
 import dev.soven.prismllm.oauth.domain.OAuthQuotaSnapshot
@@ -25,6 +26,7 @@ import org.jetbrains.exposed.v1.core.or
 import org.jetbrains.exposed.v1.jdbc.Database
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.TransactionManager
@@ -76,6 +78,16 @@ data class OAuthAccountCredentialUpdate(
     val expectedCredentialFingerprint: String? = null,
 )
 
+data class AgyProfileRegistration(
+    val profileId: String,
+    val sourceAccountId: String?,
+    val name: String,
+    val subscriptionTier: String?,
+    val currentModelId: String?,
+)
+
+class AgyProfileRegistrationConflictException : RuntimeException("agy profile is already linked to a different account")
+
 /**
  * 独立订阅账号的持久化。账号凭据只读写密文，不解密、不记录任何 token。
  *
@@ -85,13 +97,21 @@ data class OAuthAccountCredentialUpdate(
 open class OAuthAccountRepository(
     private val database: Database,
     private val providerChannels: ProviderChannelLookup,
+    private val includeAgyColumns: Boolean = true,
 ) {
     /** 额度分组只用于展示，字段演进时忽略未知键，避免旧读数读不出来。 */
     private val quotaJson = Json { ignoreUnknownKeys = true }
+    private val accountReadColumns = if (includeAgyColumns) {
+        OAuthAccounts.columns
+    } else {
+        OAuthAccounts.columns.filterNot { it == OAuthAccounts.authMethod || it == OAuthAccounts.agyProfileId }
+    }
+
+    private fun selectAccounts() = OAuthAccounts.select(accountReadColumns)
 
     /** 数据面快速路径：只读账号本体，不加载模型与渠道关联。 */
     suspend fun find(id: String): OAuthAccountRecord? = suspendTransaction(database) {
-        OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }.singleOrNull()
+        selectAccounts().where { OAuthAccounts.id eq id }.singleOrNull()
             ?.let { toRecord(it, emptyList(), emptySet()) }
     }
 
@@ -102,7 +122,7 @@ open class OAuthAccountRepository(
 
     fun findDetailedInTransaction(id: String, lock: Boolean = false): OAuthAccountRecord? {
         requireTransaction()
-        val query = OAuthAccounts.selectAll().where { OAuthAccounts.id eq id }
+        val query = selectAccounts().where { OAuthAccounts.id eq id }
         if (lock) query.forUpdate()
         return loadRelations(query.toList()).singleOrNull()
     }
@@ -111,7 +131,7 @@ open class OAuthAccountRepository(
     fun listProviderInTransaction(provider: OAuthProvider): List<OAuthAccountRecord> {
         requireTransaction()
         return loadRelations(
-            OAuthAccounts.selectAll().where { OAuthAccounts.provider eq provider.value }
+            selectAccounts().where { OAuthAccounts.provider eq provider.value }
                 .orderBy(OAuthAccounts.createdAt to SortOrder.ASC, OAuthAccounts.id to SortOrder.ASC).toList(),
         )
     }
@@ -123,7 +143,7 @@ open class OAuthAccountRepository(
 
     /** 管理面账号看板：按最近变更倒序返回全部订阅账号。 */
     suspend fun listAll(limit: Int = 5_000): List<OAuthAccountRecord> = suspendTransaction(database) {
-        val rows = OAuthAccounts.selectAll()
+        val rows = selectAccounts()
             .orderBy(OAuthAccounts.updatedAt to SortOrder.DESC)
             .limit(limit.coerceIn(1, 20_000))
             .toList()
@@ -139,7 +159,7 @@ open class OAuthAccountRepository(
         limit: Int = 5_000,
     ): List<OAuthAccountRecord> = suspendTransaction(database) {
         if (providers.isEmpty()) return@suspendTransaction emptyList()
-        val rows = OAuthAccounts.selectAll()
+        val rows = selectAccounts()
             .where {
                 (OAuthAccounts.providerChannelPending eq true) and
                     (OAuthAccounts.provider inList providers.map { it.value })
@@ -175,7 +195,7 @@ open class OAuthAccountRepository(
             .toList()
         if (links.isEmpty()) return emptyMap()
         val accountIds = links.map { it[OAuthAccountChannels.accountId] }.distinct()
-        val rows = OAuthAccounts.selectAll().where { OAuthAccounts.id inList accountIds }.toList()
+        val rows = selectAccounts().where { OAuthAccounts.id inList accountIds }.toList()
         val accounts = loadRelations(rows).associateBy { it.id }
         return links.groupBy { it[OAuthAccountChannels.channelId] }.mapValues { (_, channelLinks) ->
             channelLinks.mapNotNull { accounts[it[OAuthAccountChannels.accountId]] }
@@ -185,9 +205,10 @@ open class OAuthAccountRepository(
     /** 后台扫描：只返回仍可自动刷新、且已进入提前刷新窗口的账号。 */
     suspend fun listDueForRefresh(dueBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
-            OAuthAccounts.selectAll()
+            selectAccounts()
                 .where {
                     (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
+                        (OAuthAccounts.authMethod eq OAuthAccountAuthMethod.OAUTH.value) and
                         (OAuthAccounts.enabled eq true) and
                         (
                             OAuthAccounts.accessTokenExpiresAt.isNull() or
@@ -210,9 +231,10 @@ open class OAuthAccountRepository(
      */
     suspend fun listDueForQuota(attemptedBefore: Long, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
-            OAuthAccounts.selectAll()
+            selectAccounts()
                 .where {
                     (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value) and
+                        (OAuthAccounts.authMethod eq OAuthAccountAuthMethod.OAUTH.value) and
                         (OAuthAccounts.enabled eq true) and
                         (OAuthAccounts.provider inList listOf(
                             OAuthProvider.CHATGPT.value,
@@ -234,9 +256,10 @@ open class OAuthAccountRepository(
      */
     suspend fun listUsableForProvider(provider: OAuthProvider, limit: Int = 100): List<OAuthAccountRecord> =
         suspendTransaction(database) {
-            OAuthAccounts.selectAll()
+            selectAccounts()
                 .where {
                     (OAuthAccounts.provider eq provider.value) and
+                        (OAuthAccounts.authMethod eq OAuthAccountAuthMethod.OAUTH.value) and
                         (OAuthAccounts.enabled eq true) and
                         (OAuthAccounts.authState eq OAuthAuthState.ACTIVE.value)
                 }
@@ -258,6 +281,8 @@ open class OAuthAccountRepository(
             it[OAuthAccounts.id] = id
             it[name] = input.name.take(100)
             it[provider] = input.provider.value
+            it[authMethod] = OAuthAccountAuthMethod.OAUTH.value
+            it[agyProfileId] = null
             it[accountEmail] = input.accountEmail
             it[accountPlan] = input.accountPlan
             it[refreshTokenCiphertext] = input.refreshToken.ciphertext
@@ -289,6 +314,126 @@ open class OAuthAccountRepository(
         requireNotNull(findDetailedInTransaction(id))
     }
 
+    suspend fun registerAgyProfile(
+        registration: AgyProfileRegistration,
+        now: Long = System.currentTimeMillis(),
+    ): OAuthAccountRecord = suspendTransaction(database) {
+        require(UUID.fromString(registration.profileId).toString() == registration.profileId)
+        require(registration.subscriptionTier == "PRO") { "仅确认的 Google AI Pro 档位可接入 Antigravity 路由" }
+        require(registration.name.isNotBlank() && registration.name.length <= 100)
+        registration.currentModelId?.let { require(it.length in 1..200) }
+        val accountId = registration.sourceAccountId ?: registration.profileId
+        val linkedProfile = selectAccounts()
+            .where { OAuthAccounts.agyProfileId eq registration.profileId }
+            .singleOrNull()
+        if (linkedProfile != null && linkedProfile[OAuthAccounts.id] != accountId) {
+            throw AgyProfileRegistrationConflictException()
+        }
+        val row = selectAccounts()
+            .where { OAuthAccounts.id eq accountId }
+            .forUpdate()
+            .singleOrNull()
+        val catalog = registration.currentModelId?.let {
+            listOf(OAuthAccountModelCatalogEntry(upstreamModel = it))
+        }.orEmpty()
+        if (row == null) {
+            require(registration.sourceAccountId == null) { "待迁移的旧 Antigravity 账号不存在" }
+            OAuthAccounts.insert {
+                it[OAuthAccounts.id] = accountId
+                it[OAuthAccounts.name] = registration.name
+                it[OAuthAccounts.provider] = OAuthProvider.ANTIGRAVITY.value
+                it[OAuthAccounts.authMethod] = OAuthAccountAuthMethod.AGY.value
+                it[OAuthAccounts.agyProfileId] = registration.profileId
+                it[OAuthAccounts.accountPlan] = registration.subscriptionTier
+                it[OAuthAccounts.refreshTokenCiphertext] = null
+                it[OAuthAccounts.refreshTokenNonce] = null
+                it[OAuthAccounts.refreshTokenKeyVersion] = null
+                it[OAuthAccounts.accessTokenCiphertext] = null
+                it[OAuthAccounts.accessTokenNonce] = null
+                it[OAuthAccounts.accessTokenKeyVersion] = null
+                it[OAuthAccounts.accessTokenExpiresAt] = null
+                it[OAuthAccounts.tokenType] = "Bearer"
+                it[OAuthAccounts.scope] = null
+                it[OAuthAccounts.authState] = OAuthAuthState.ACTIVE.value
+                it[OAuthAccounts.enabled] = true
+                it[OAuthAccounts.priority] = 1
+                it[OAuthAccounts.providerChannelPending] = true
+                it[OAuthAccounts.refreshFailureCount] = 0
+                it[OAuthAccounts.lastRefreshError] = null
+                it[OAuthAccounts.lastRefreshedAt] = null
+                it[OAuthAccounts.proxyUrl] = null
+                it[OAuthAccounts.windowLimit] = null
+                it[OAuthAccounts.windowSeconds] = 10_800
+                it[OAuthAccounts.maxConcurrentRequests] = 1
+                it[OAuthAccounts.modelCatalog] = Json.encodeToString(catalog)
+                it[OAuthAccounts.modelCatalogSyncedAt] = now
+                it[OAuthAccounts.quotaPrimaryUsedPercent] = null
+                it[OAuthAccounts.quotaPrimaryWindowSeconds] = null
+                it[OAuthAccounts.quotaPrimaryResetsAt] = null
+                it[OAuthAccounts.quotaSecondaryUsedPercent] = null
+                it[OAuthAccounts.quotaSecondaryWindowSeconds] = null
+                it[OAuthAccounts.quotaSecondaryResetsAt] = null
+                it[OAuthAccounts.quotaAllowed] = null
+                it[OAuthAccounts.quotaCreditsBalance] = null
+                it[OAuthAccounts.quotaCreditsUnlimited] = false
+                it[OAuthAccounts.quotaResetCredits] = null
+                it[OAuthAccounts.quotaGroups] = null
+                it[OAuthAccounts.quotaCheckedAt] = null
+                it[OAuthAccounts.quotaAttemptedAt] = null
+                it[OAuthAccounts.quotaError] = null
+                it[OAuthAccounts.createdAt] = now
+                it[OAuthAccounts.updatedAt] = now
+                it[OAuthAccounts.authorizedAt] = now
+            }
+        } else {
+            val currentProvider = OAuthProvider.fromValue(row[OAuthAccounts.provider])
+            val currentMethod = OAuthAccountAuthMethod.fromValue(row[OAuthAccounts.authMethod])
+            require(currentProvider == OAuthProvider.ANTIGRAVITY)
+            if (currentMethod == OAuthAccountAuthMethod.AGY && row[OAuthAccounts.agyProfileId] != registration.profileId) {
+                throw AgyProfileRegistrationConflictException()
+            }
+            OAuthAccounts.update({ OAuthAccounts.id eq accountId }) {
+                it[OAuthAccounts.name] = registration.name
+                it[OAuthAccounts.authMethod] = OAuthAccountAuthMethod.AGY.value
+                it[OAuthAccounts.agyProfileId] = registration.profileId
+                it[OAuthAccounts.accountPlan] = registration.subscriptionTier
+                it[OAuthAccounts.refreshTokenCiphertext] = null
+                it[OAuthAccounts.refreshTokenNonce] = null
+                it[OAuthAccounts.refreshTokenKeyVersion] = null
+                it[OAuthAccounts.accessTokenCiphertext] = null
+                it[OAuthAccounts.accessTokenNonce] = null
+                it[OAuthAccounts.accessTokenKeyVersion] = null
+                it[OAuthAccounts.accessTokenExpiresAt] = null
+                it[OAuthAccounts.tokenType] = "Bearer"
+                it[OAuthAccounts.scope] = null
+                it[OAuthAccounts.authState] = OAuthAuthState.ACTIVE.value
+                it[OAuthAccounts.refreshFailureCount] = 0
+                it[OAuthAccounts.lastRefreshError] = null
+                it[OAuthAccounts.lastRefreshedAt] = null
+                it[OAuthAccounts.proxyUrl] = null
+                it[OAuthAccounts.modelCatalog] = Json.encodeToString(catalog)
+                it[OAuthAccounts.modelCatalogSyncedAt] = now
+                it[OAuthAccounts.quotaPrimaryUsedPercent] = null
+                it[OAuthAccounts.quotaPrimaryWindowSeconds] = null
+                it[OAuthAccounts.quotaPrimaryResetsAt] = null
+                it[OAuthAccounts.quotaSecondaryUsedPercent] = null
+                it[OAuthAccounts.quotaSecondaryWindowSeconds] = null
+                it[OAuthAccounts.quotaSecondaryResetsAt] = null
+                it[OAuthAccounts.quotaAllowed] = null
+                it[OAuthAccounts.quotaCreditsBalance] = null
+                it[OAuthAccounts.quotaCreditsUnlimited] = false
+                it[OAuthAccounts.quotaResetCredits] = null
+                it[OAuthAccounts.quotaGroups] = null
+                it[OAuthAccounts.quotaCheckedAt] = null
+                it[OAuthAccounts.quotaAttemptedAt] = null
+                it[OAuthAccounts.quotaError] = null
+                it[OAuthAccounts.authorizedAt] = now
+                it[OAuthAccounts.updatedAt] = now
+            }
+        }
+        requireNotNull(findDetailedInTransaction(accountId))
+    }
+
     /**
      * 重新授权或导入账号凭据。只有传入 refreshToken 才会替换长期凭据；
      * access token 未提供时清空旧缓存，避免把旧账号的 token 用到新凭据上。
@@ -301,18 +446,26 @@ open class OAuthAccountRepository(
         require((input.accessToken == null) == (input.accessTokenExpiresAt == null)) {
             "access token and expiry must be provided together"
         }
-        val row = OAuthAccounts.selectAll()
+        val row = selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
         val currentProvider = OAuthProvider.fromValue(row[OAuthAccounts.provider])
             ?: throw IllegalStateException("未知的 OAuth provider: ${row[OAuthAccounts.provider]}")
         require(currentProvider == input.provider) { "不能修改订阅账号的提供方" }
+        val currentMethod = OAuthAccountAuthMethod.fromValue(row[OAuthAccounts.authMethod])
+            ?: throw IllegalStateException("未知的订阅账号授权方式")
+        require(currentMethod == OAuthAccountAuthMethod.OAUTH || input.refreshToken != null) {
+            "agy 档案不能使用 OAuth 凭据更新入口"
+        }
         if (input.expectedCredentialFingerprint != null) {
+            val ciphertext = row[OAuthAccounts.refreshTokenCiphertext] ?: throw CredentialChangedException()
+            val nonce = row[OAuthAccounts.refreshTokenNonce] ?: throw CredentialChangedException()
+            val keyVersion = row[OAuthAccounts.refreshTokenKeyVersion] ?: throw CredentialChangedException()
             val current = credentialFingerprint(
-                row[OAuthAccounts.refreshTokenCiphertext],
-                row[OAuthAccounts.refreshTokenNonce],
-                row[OAuthAccounts.refreshTokenKeyVersion],
+                ciphertext,
+                nonce,
+                keyVersion,
             )
             if (current != input.expectedCredentialFingerprint) throw CredentialChangedException()
         }
@@ -324,6 +477,8 @@ open class OAuthAccountRepository(
                 it[refreshTokenCiphertext] = refresh.ciphertext
                 it[refreshTokenNonce] = refresh.nonce
                 it[refreshTokenKeyVersion] = refresh.keyVersion
+                it[authMethod] = OAuthAccountAuthMethod.OAUTH.value
+                it[agyProfileId] = null
                 // 换成新的 refresh token 才算一次新的授权；只更新 access token 不改变授权时间。
                 it[authorizedAt] = now
             }
@@ -531,14 +686,18 @@ open class OAuthAccountRepository(
 
     /** 读取一次刷新所需的全部输入。 */
     suspend fun loadRefreshContext(accountId: String): OAuthRefreshContext? = suspendTransaction(database) {
-        val row = OAuthAccounts.selectAll()
+        val row = selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .singleOrNull() ?: return@suspendTransaction null
+        if (row[OAuthAccounts.authMethod] != OAuthAccountAuthMethod.OAUTH.value) return@suspendTransaction null
+        val refreshCiphertext = row[OAuthAccounts.refreshTokenCiphertext] ?: return@suspendTransaction null
+        val refreshNonce = row[OAuthAccounts.refreshTokenNonce] ?: return@suspendTransaction null
+        val refreshKeyVersion = row[OAuthAccounts.refreshTokenKeyVersion] ?: return@suspendTransaction null
         OAuthRefreshContext(
             account = toRecord(row, emptyList(), emptySet()),
-            refreshTokenCiphertext = row[OAuthAccounts.refreshTokenCiphertext],
-            refreshTokenNonce = row[OAuthAccounts.refreshTokenNonce],
-            refreshTokenKeyVersion = row[OAuthAccounts.refreshTokenKeyVersion],
+            refreshTokenCiphertext = refreshCiphertext,
+            refreshTokenNonce = refreshNonce,
+            refreshTokenKeyVersion = refreshKeyVersion,
         )
     }
 
@@ -556,10 +715,11 @@ open class OAuthAccountRepository(
         expectedRefreshCiphertext: String? = null,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
-        val row = OAuthAccounts.selectAll()
+        val row = selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
+        if (row[OAuthAccounts.authMethod] != OAuthAccountAuthMethod.OAUTH.value) return@suspendTransaction null
         if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
             return@suspendTransaction null
         }
@@ -582,7 +742,7 @@ open class OAuthAccountRepository(
             }
         }
         if (updated == 0) return@suspendTransaction null
-        OAuthAccounts.selectAll()
+        selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .single()
             .let { toRecord(it, emptyList(), emptySet()) }
@@ -599,10 +759,11 @@ open class OAuthAccountRepository(
         expectedRefreshCiphertext: String? = null,
         now: Long = System.currentTimeMillis(),
     ): OAuthAccountRecord? = suspendTransaction(database) {
-        val row = OAuthAccounts.selectAll()
+        val row = selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .forUpdate()
             .singleOrNull() ?: return@suspendTransaction null
+        if (row[OAuthAccounts.authMethod] != OAuthAccountAuthMethod.OAUTH.value) return@suspendTransaction null
         if (expectedRefreshCiphertext != null && row[OAuthAccounts.refreshTokenCiphertext] != expectedRefreshCiphertext) {
             return@suspendTransaction null
         }
@@ -613,7 +774,7 @@ open class OAuthAccountRepository(
             if (terminal) it[authState] = OAuthAuthState.REAUTH_REQUIRED.value
             it[OAuthAccounts.updatedAt] = now
         }
-        OAuthAccounts.selectAll()
+        selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .single()
             .let { toRecord(it, emptyList(), emptySet()) }
@@ -646,7 +807,7 @@ open class OAuthAccountRepository(
     ): Boolean = persistUpstreamContext(accountId, project, tier, checkedAt)
 
     open suspend fun loadUpstreamContext(accountId: String): UpstreamContext? = suspendTransaction(database) {
-        OAuthAccounts.selectAll()
+        selectAccounts()
             .where { OAuthAccounts.id eq accountId }
             .singleOrNull()
             ?.let { row ->
@@ -805,6 +966,13 @@ open class OAuthAccountRepository(
         refreshTokenCiphertext = row[OAuthAccounts.refreshTokenCiphertext],
         refreshTokenNonce = row[OAuthAccounts.refreshTokenNonce],
         refreshTokenKeyVersion = row[OAuthAccounts.refreshTokenKeyVersion],
+        authMethod = if (includeAgyColumns) {
+            OAuthAccountAuthMethod.fromValue(row[OAuthAccounts.authMethod])
+                ?: throw IllegalStateException("未知的订阅账号授权方式")
+        } else {
+            OAuthAccountAuthMethod.OAUTH
+        },
+        agyProfileId = if (includeAgyColumns) row[OAuthAccounts.agyProfileId] else null,
         accessTokenCiphertext = row[OAuthAccounts.accessTokenCiphertext],
         accessTokenNonce = row[OAuthAccounts.accessTokenNonce],
         accessTokenKeyVersion = row[OAuthAccounts.accessTokenKeyVersion],
@@ -819,6 +987,7 @@ open class OAuthAccountRepository(
         modelCatalog = toModelCatalog(row),
         modelCatalogSyncedAt = row[OAuthAccounts.modelCatalogSyncedAt],
         channelIds = channelIds,
+        providerChannelPending = row[OAuthAccounts.providerChannelPending],
         refreshFailureCount = row[OAuthAccounts.refreshFailureCount],
         lastRefreshError = row[OAuthAccounts.lastRefreshError],
         lastRefreshedAt = row[OAuthAccounts.lastRefreshedAt],

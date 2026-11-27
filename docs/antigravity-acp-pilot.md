@@ -1,5 +1,8 @@
 # Antigravity 订阅：官方 CLI 接入试点
 
+管理台新增和旧账号重新登录入口见 [官方 agy 管理台授权](antigravity-agy-admin.md)。该入口不导入旧 token，
+不会因为登录成功而自动切换路由；本文中的手工命令仍用于独立试点和部署验收。
+
 目标是继续使用自己的 Antigravity 订阅，不切换到 Google AI Studio 的 Gemini API。两者的授权和配额独立；不需要为试点提供 Gemini API 密钥，也不把旧网关的 OAuth 凭据导入 CLI。
 
 ## 接入边界

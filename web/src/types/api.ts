@@ -257,6 +257,7 @@ export interface ChannelOAuthAccount {
   id: string
   name: string
   enabled: boolean
+  authMethod: 'oauth' | 'agy'
   models: string[]
 }
 
@@ -1362,6 +1363,7 @@ export interface OAuthAccount {
   id: string
   name: string
   provider: string
+  authMethod: 'oauth' | 'agy'
   accountEmail: string | null
   accountPlan: string | null
   authState: OAuthAuthState
@@ -1407,6 +1409,34 @@ export interface OAuthLoginStart {
 
 export interface OAuthLoginCompleteRequest {
   callbackUrl: string
+}
+
+export interface AntigravityAgyAccount {
+  id: string
+  name: string
+  sourceAccountId: string | null
+  subscriptionTier: string | null
+  currentModelId: string | null
+  authorizedAt: number
+  routingEnabled: boolean
+  registered?: boolean
+  accountId?: string | null
+  enabled?: boolean
+  routeModels?: string[]
+}
+
+export interface AntigravityAgyAccounts {
+  configured: boolean
+  accounts: AntigravityAgyAccount[]
+}
+
+export interface AntigravityAgyLogin {
+  loginId: string
+  state: 'PREPARING' | 'AWAITING_CODE' | 'VERIFYING' | 'AUTHENTICATED' | 'FAILED' | 'CANCELLED' | 'EXPIRED'
+  expiresAt: number
+  authorizeUrl?: string | null
+  account?: AntigravityAgyAccount | null
+  error?: string | null
 }
 
 export type OAuthModelMappingMode = 'auto' | 'manual' | 'upstream'
