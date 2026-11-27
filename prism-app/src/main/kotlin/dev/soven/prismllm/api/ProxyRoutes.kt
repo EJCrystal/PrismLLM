@@ -1151,12 +1151,16 @@ internal suspend fun authenticate(
     call: ApplicationCall,
     app: GatewayApplication,
     protocol: GatewayProtocol? = null,
-): ClientKeyRecord = authenticateClientKey(call, app.clientKeyRepository::findByHash, protocol)
+): ClientKeyRecord = authenticateClientKey(
+    call, app.clientKeyRepository::findByHash, protocol,
+    requestAccessLogMetadata(call, app.config.trustedProxyNetworks).clientIp,
+)
 
 internal suspend fun authenticateClientKey(
     call: ApplicationCall,
     findByHash: suspend (String) -> ClientKeyRecord?,
     protocol: GatewayProtocol? = null,
+    clientIp: String? = call.request.local.remoteAddress,
 ): ClientKeyRecord {
     val authorization = call.request.headers[HttpHeaders.Authorization]
     val raw = if (authorization != null) {
@@ -1175,6 +1179,10 @@ internal suspend fun authenticateClientKey(
     val expiresAt = record.expiresAt
     if (expiresAt != null && expiresAt <= System.currentTimeMillis()) {
         throw unauthorized("调用方密钥已过期")
+    }
+    if (!record.ipPolicy.allows(clientIp)) {
+        call.response.header("X-Prism-Error-Code", "ip_access_denied")
+        throw GatewayError(HttpStatusCode.Forbidden, "ip_access_denied", "当前 IP 不允许使用此调用方密钥", "permission_error")
     }
     return record
 }

@@ -118,6 +118,7 @@ class TestClassificationTest {
             "ChannelKeyPoolIntegrationTest" to setOf("shard-1", "channel"),
             "ChannelQuotaIntegrationTest" to setOf("shard-1", "channel"),
             "ClientKeyAccessPolicyIntegrationTest" to setOf("shard-1", "channel"),
+            "ClientKeyIpPolicyIntegrationTest" to setOf("shard-1"),
             "ClientKeyRoutingAccessIntegrationTest" to setOf("shard-1", "channel", "protocol"),
             "CodeAssistIntegrationTest" to setOf("shard-3", "protocol"),
             "ExtraBodyIntegrationTest" to setOf("shard-1", "channel", "protocol"),

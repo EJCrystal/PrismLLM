@@ -82,6 +82,7 @@ import dev.soven.prismllm.channel.domain.key.toKeyDisablePolicy
 import dev.soven.prismllm.channel.domain.key.KeyAutoDisablePolicy
 import dev.soven.prismllm.quota.domain.ClientKeyQuotaLimits
 import dev.soven.prismllm.quota.domain.ClientKeyAccessPolicy
+import dev.soven.prismllm.quota.domain.ClientKeyIpPolicy
 import dev.soven.prismllm.quota.domain.parseDailyCostLimit
 import dev.soven.prismllm.requestlog.domain.ChannelCooldownSummary
 import dev.soven.prismllm.requestlog.domain.healthWindows
@@ -1940,6 +1941,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 expiresAt = request.expiresAt,
                 quotas = quotas,
                 accessPolicy = accessPolicy,
+                ipPolicy = request.ipPolicy?.toPolicy() ?: ClientKeyIpPolicy(),
             )
             call.response.headers.append("Cache-Control", "no-store")
             call.respond(
@@ -1970,6 +1972,7 @@ fun Route.adminRoutes(app: GatewayApplication) {
                 expiresAt = request.expiresAt,
                 quotas = quotas,
                 accessPolicy = accessPolicy,
+                ipPolicy = request.ipPolicy?.toPolicy(),
             ) ?: run {
                 val current = app.clientKeyRepository.find(id)
                     ?: throw notFound("client_key_not_found", "调用方密钥不存在")

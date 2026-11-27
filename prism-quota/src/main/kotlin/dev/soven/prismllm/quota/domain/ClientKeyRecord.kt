@@ -18,4 +18,5 @@ data class ClientKeyRecord(
     val rotatedAt: Long? = null,
     val revokedAt: Long? = null,
     val accessPolicy: ClientKeyAccessPolicy = ClientKeyAccessPolicy(),
+    val ipPolicy: ClientKeyIpPolicy = ClientKeyIpPolicy(),
 )

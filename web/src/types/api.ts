@@ -518,6 +518,11 @@ export interface ClientKeyAccessPolicy {
   models: ClientKeyIdScope
 }
 
+export interface ClientKeyIpPolicy {
+  allowlist: string[]
+  denylist: string[]
+}
+
 export interface ClientKey {
   id: string
   name: string
@@ -533,6 +538,7 @@ export interface ClientKey {
   rotatedAt: number | null
   revokedAt: number | null
   accessPolicy: ClientKeyAccessPolicy
+  ipPolicy: ClientKeyIpPolicy
 }
 
 export interface ClientKeyRequest {
@@ -545,6 +551,7 @@ export interface ClientKeyRequest {
   requestsPerMinute?: number | null
   /** 更新省略或传 null 时保留已有范围；完整对象原子替换三个维度。 */
   accessPolicy?: ClientKeyAccessPolicy | null
+  ipPolicy?: ClientKeyIpPolicy | null
 }
 
 export interface ClientKeyCreated extends Omit<ClientKey, 'quotaUsage'> {
