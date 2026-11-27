@@ -79,8 +79,8 @@ internal class AntigravityAgyRuntime(
         } catch (failure: IllegalArgumentException) {
             throw badRequest("invalid_agy_proxy", "agy 代理必须是 http://127.0.0.1:端口，不接受账号密码、路径或非回环主机")
         }
-        if (preparing && proxy != current.proxy) {
-            throw GatewayError(HttpStatusCode.Conflict, "agy_preparation_busy", "运行环境正在准备，请等待完成后再修改代理", "invalid_request_error")
+        if (preparing && (proxy != current.proxy || enabled && !current.enabled)) {
+            throw GatewayError(HttpStatusCode.Conflict, "agy_preparation_busy", "运行环境正在准备或停止，请等待完成后再修改代理或重新开启", "invalid_request_error")
         }
         withContext(NonCancellable) {
             val saved = repository.save(AntigravityAgySettingsRecord(enabled, proxy))
@@ -119,23 +119,27 @@ internal class AntigravityAgyRuntime(
                         current = current.copy(status = if (current.enabled) status else "STOPPING", missingDependencies = missing)
                     }
                 }, { current.enabled })
-                synchronized(monitor) {
-                    preparing = false
-                    if (current.enabled) {
-                        services = newServices(config)
-                        current = current.copy(status = "READY", error = null)
-                    } else {
-                        current = current.copy(status = "DISABLED", missingDependencies = emptyList())
+                changes.withLock {
+                    synchronized(monitor) {
+                        preparing = false
+                        if (current.enabled) {
+                            services = newServices(config)
+                            current = current.copy(status = "READY", error = null)
+                        } else {
+                            current = current.copy(status = "DISABLED", missingDependencies = emptyList())
+                        }
                     }
                 }
             } catch (failure: CancellationException) {
                 preparing = false
                 throw failure
             } catch (failure: Exception) {
-                synchronized(monitor) {
-                    preparing = false
-                    current = current.copy(status = if (current.enabled) "FAILED" else "DISABLED",
-                        error = if (current.enabled) (failure as? AgyPreparationException)?.message ?: "运行环境准备失败，请检查服务端安装权限、代理和磁盘空间后重试" else null)
+                changes.withLock {
+                    synchronized(monitor) {
+                        preparing = false
+                        current = current.copy(status = if (current.enabled) "FAILED" else "DISABLED",
+                            error = if (current.enabled) (failure as? AgyPreparationException)?.message ?: "运行环境准备失败，请检查服务端安装权限、代理和磁盘空间后重试" else null)
+                    }
                 }
             }
         }.also { it.start() }

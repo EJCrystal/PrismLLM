@@ -8,10 +8,13 @@ import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.ValueSource
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -104,6 +107,92 @@ class AntigravityAgyRuntimeTest {
             started.await()
             assertEquals("STOPPING", runtime.update(false, "http://127.0.0.1:7897").status)
             finish.complete(Unit)
+            waitFor(runtime, "DISABLED")
+            assertNull(runtime.login)
+        }
+    }
+
+    @Test
+    fun reenableWaitsForStoppedPreparationAndRunsAllChecksAgain() = runBlocking {
+        val firstStarted = CompletableDeferred<Unit>()
+        val stopObserved = CompletableDeferred<Unit>()
+        val firstFinish = CompletableDeferred<Unit>()
+        val secondStarted = CompletableDeferred<Unit>()
+        val secondFinish = CompletableDeferred<Unit>()
+        var attempts = 0
+        AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository(), {}, prepare = { _, report, enabled ->
+            report("INSTALLING", listOf("Bubblewrap"))
+            if (++attempts == 1) {
+                firstStarted.complete(Unit)
+                while (enabled()) delay(5)
+                stopObserved.complete(Unit)
+                firstFinish.await()
+            } else {
+                secondStarted.complete(Unit)
+                secondFinish.await()
+            }
+        }).use { runtime ->
+            runtime.start()
+            runtime.update(true, "http://127.0.0.1:7897")
+            firstStarted.await()
+            runtime.update(false, "http://127.0.0.1:7897")
+            stopObserved.await()
+            assertFailsWith<GatewayError> { runtime.update(true, "http://127.0.0.1:7897") }
+            assertEquals("STOPPING", runtime.snapshot().status)
+            assertNull(runtime.login)
+            assertNull(runtime.gateway)
+            firstFinish.complete(Unit)
+            waitFor(runtime, "DISABLED")
+            runtime.update(true, "http://127.0.0.1:7897")
+            secondStarted.await()
+            assertEquals(2, attempts)
+            assertEquals("INSTALLING", runtime.snapshot().status)
+            assertNull(runtime.login)
+            assertNull(runtime.gateway)
+            secondFinish.complete(Unit)
+            waitFor(runtime, "READY")
+            assertNotNull(runtime.login)
+            assertEquals("READY", runtime.snapshot().status)
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun preparationCannotPublishCompletionDuringDisableSettingsSave(fails: Boolean) = runBlocking {
+        val started = CompletableDeferred<Unit>()
+        val finish = CompletableDeferred<Unit>()
+        val returned = CompletableDeferred<Unit>()
+        val saving = CompletableDeferred<Unit>()
+        val saved = CompletableDeferred<Unit>()
+        val repository = repository()
+        coEvery { repository.save(match { !it.enabled }) } coAnswers {
+            saving.complete(Unit)
+            saved.await()
+            firstArg<AntigravityAgySettingsRecord>()
+        }
+        AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository, {}, prepare = { _, report, _ ->
+            report("INSTALLING", listOf("Bubblewrap"))
+            started.complete(Unit)
+            finish.await()
+            returned.complete(Unit)
+            if (fails) throw AgyPreparationException("fixture preparation failure")
+        }).use { runtime ->
+            runtime.start()
+            runtime.update(true, "http://127.0.0.1:7897")
+            started.await()
+            val disable = launch { runtime.update(false, "http://127.0.0.1:7897") }
+            saving.await()
+            try {
+                finish.complete(Unit)
+                returned.await()
+                delay(50)
+                assertEquals("INSTALLING", runtime.snapshot().status)
+                assertNull(runtime.login)
+                assertNull(runtime.gateway)
+            } finally {
+                saved.complete(Unit)
+                disable.join()
+            }
             waitFor(runtime, "DISABLED")
             assertNull(runtime.login)
         }
