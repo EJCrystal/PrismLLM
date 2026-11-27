@@ -241,7 +241,10 @@ function setMappingDraft(model: string, draft: OAuthMappingDraft) {
 function changeMappingMode(model: string, mode: OAuthModelMappingMode) {
   const baseline = baselineMappingByModel.value.get(model)
   const draft = mappingDraftFor(model)
-  setMappingDraft(model, { mode, canonicalModelId: draft.canonicalModelId || baseline?.automaticCanonicalModelId || model })
+  const canonicalModelId = mode === 'auto'
+    ? baseline?.automaticCanonicalModelId ?? model
+    : draft.canonicalModelId || baseline?.automaticCanonicalModelId || model
+  setMappingDraft(model, { mode, canonicalModelId })
 }
 
 function changeManualMapping(model: string, canonicalModelId: string) {
@@ -1391,7 +1394,7 @@ onBeforeUnmount(() => {
                     :model-value="mappingInputValue(model)"
                     :upstream-model="model"
                     :options="mappingCandidates"
-                    :disabled="settingsOperationBusy"
+                    :disabled="settingsOperationBusy || !baselineMappingByModel.has(model)"
                     inline
                     picker-text="候选"
                     @update:model-value="changeManualMapping(model, $event)"
