@@ -51,7 +51,7 @@ async function cleanup(): Promise<void> {
 </script>
 
 <template>
-  <Modal title="请求日志保留" @close="$emit('close')">
+  <Modal title="请求日志保留" eyebrow="全局业务设置" @close="$emit('close')">
     <form id="retention-settings-form" class="form-grid" @submit.prevent="save">
       <label class="switch-row">
         <input v-model="enabled" type="checkbox" :disabled="saving" />

@@ -65,7 +65,7 @@ onMounted(load)
 </script>
 
 <template>
-  <Modal title="密钥自动禁用" @close="$emit('close')">
+  <Modal title="密钥自动禁用" eyebrow="全局业务设置" wide mobile-fullscreen @close="$emit('close')">
     <p v-if="loading" class="muted" role="status">正在读取自动禁用规则…</p>
     <div v-else-if="loadError" class="callout danger" role="alert">
       <p>{{ loadError }}</p>

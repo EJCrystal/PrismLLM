@@ -71,7 +71,7 @@ onMounted(load)
 </script>
 
 <template>
-  <Modal title="渠道出口代理白名单">
+  <Modal title="渠道出口代理白名单" eyebrow="全局业务设置" @close="$emit('close')">
     <p class="muted small">
       渠道出口代理连接非回环主机前需要先放行。保存后立即生效，不需要重启网关；本机回环地址始终允许。
     </p>

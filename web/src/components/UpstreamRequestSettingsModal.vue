@@ -71,7 +71,7 @@ onMounted(load)
 </script>
 
 <template>
-  <Modal title="全局上游请求配置" @close="$emit('close')">
+  <Modal title="全局上游请求配置" eyebrow="全局业务设置" @close="$emit('close')">
     <p class="muted small">应用于上游请求、模型列表、连通性测试和协议探测，保存后立即生效。渠道可单独覆盖。</p>
     <p v-if="loading" class="muted">加载中…</p>
     <div v-else-if="error" role="alert">

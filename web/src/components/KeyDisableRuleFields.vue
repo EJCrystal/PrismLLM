@@ -26,6 +26,7 @@ function removeRule(index: number) {
 <template>
   <div v-for="(rule, index) in rules" :key="rule.id" class="key-auto-disable-rule">
     <div class="key-auto-disable-rule-head">
+      <span class="key-auto-disable-rule-index" aria-hidden="true">#{{ index + 1 }}</span>
       <label class="field grow">
         <span>规则名称</span>
         <input v-model="rule.name" maxlength="40" :disabled="saving || !enabled" />
@@ -116,15 +117,32 @@ function removeRule(index: number) {
   display: grid;
   gap: 12px;
   min-width: 0;
-  padding: 14px;
+  padding: 15px 16px;
   border: 1px solid var(--glass-line);
-  border-radius: 10px;
+  border-radius: 12px;
+  background: var(--glass-field);
 }
 
 .key-auto-disable-rule-head {
   display: flex;
   align-items: end;
   gap: 10px;
+}
+
+.key-auto-disable-rule-index {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 36px;
+  padding: 0 7px;
+  border: 1px solid var(--glass-line);
+  border-radius: 8px;
+  background: var(--glass-field-strong);
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
 .key-auto-disable-rule-head .grow { flex: 1; }
@@ -164,11 +182,20 @@ function removeRule(index: number) {
 }
 
 @media (max-width: 520px) {
+  .key-auto-disable-rule { padding: 12px; }
   .key-auto-disable-grid { grid-template-columns: 1fr; }
-  .key-auto-disable-rule-head { align-items: stretch; flex-direction: column; }
+  .key-auto-disable-rule-head { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 8px; }
+  .key-auto-disable-rule-index { grid-column: 1; grid-row: 1; justify-self: start; height: 26px; }
+  .key-auto-disable-rule-head .button { grid-column: 2; grid-row: 1; justify-self: end; min-height: 34px; }
+  .key-auto-disable-rule-head .grow { grid-column: 1 / -1; grid-row: 2; }
+  .key-auto-disable-rule input:not([type="checkbox"]),
+  .key-auto-disable-rule select,
+  .key-auto-disable-rule textarea { min-height: 40px; font-size: 16px; }
 }
 /* 降低透明度时，文本框等半透明控件回退到实色与常规边线。 */
 @media (prefers-reduced-transparency: reduce) {
+  .key-auto-disable-rule,
+  .key-auto-disable-rule-index,
   .key-auto-disable-rule textarea {
     background: var(--panel);
     border-color: var(--line);

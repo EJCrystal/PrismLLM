@@ -1733,10 +1733,12 @@ onMounted(() => {
                     <button
                       v-if="item.providerId && item.channel"
                       type="button"
-                      class="button ghost mini"
+                      class="icon-button"
+                      title="共享模型映射"
+                      :aria-label="item.displayName + ' 共享模型映射'"
                       @click="openOAuthDrawer(item.providerId, { tab: 'mappings' })"
                     >
-                      模型映射
+                      <Icon name="list" :size="16" />
                     </button>
                     <ActionMenu
                       v-if="subscriptionActionItems(item).length"
@@ -2569,14 +2571,13 @@ onMounted(() => {
 .channel-status-stack > .channel-occupancy,
 .channel-status-stack > .channel-cooldown,
 .channel-status-stack > .channel-health-probe { margin-top: 0; }
-.channel-name-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; margin-bottom: 2px; }
+.channel-name-head { display: flex; flex-wrap: nowrap; align-items: center; gap: 5px 6px; min-width: 0; margin-bottom: 3px; }
 .channel-name-head .primary-cell { flex: 0 1 auto; min-width: 0; }
-.provider-kind-badge { flex: 0 0 auto; font-size: 11px; padding: 1px 6px; }
+.provider-kind-badge { flex: 0 0 auto; font-size: 10.5px; padding: 1px 5px; }
 .provider-account-alerts { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; }
 .provider-alert-callout { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px 14px; }
 .provider-alert-callout p { margin: 2px 0 0; }
-.channel-name-head .primary-cell { flex: 1 1 auto; min-width: 0; }
-.channel-name-head .channel-status-toggle { flex: 0 0 auto; gap: 4px; }
+.channel-name-head .channel-status-toggle { flex: 0 0 auto; gap: 4px; margin-left: auto; }
 .channel-name-head .channel-status-track { width: 28px; height: 16px; }
 .channel-name-head .channel-status-track > span { left: 2px; width: 10px; height: 10px; }
 .channel-name-head .is-enabled .channel-status-track > span { transform: translateX(12px); }
@@ -2736,8 +2737,10 @@ onMounted(() => {
   .channel-mobile-updated { margin-left: auto; color: var(--muted); font-size: 11px; }
   .channel-mobile-actions { display: flex; align-items: center; gap: 4px; }
   .channel-mobile-actions .button,
-  .channel-mobile-actions .icon-button { min-height: 40px; }
-  .channel-mobile-actions .icon-button { width: 40px; height: 40px; }
+  .channel-mobile-actions .icon-button,
+  .channel-mobile-actions :deep(.icon-button) { min-height: 40px; }
+  .channel-mobile-actions .icon-button,
+  .channel-mobile-actions :deep(.icon-button) { width: 40px; height: 40px; }
   .channel-mobile-details-toggle { margin-left: auto; }
   .channel-mobile-details { display: grid; gap: 10px; padding-top: 10px; border-top: 1px solid var(--glass-line); }
   .channel-mobile-detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px 12px; }
