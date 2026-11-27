@@ -79,8 +79,27 @@ const form = reactive<ClientKeyForm>({
   ipDenylist: '',
 })
 
-const enabledCount = computed(() => keys.value.filter((item) => item.enabled).length)
+const enabledCount = computed(() => keys.value.filter((item) => item.enabled && item.revokedAt == null).length)
 const revokedCount = computed(() => keys.value.filter((item) => item.revokedAt != null).length)
+const keyQuery = ref('')
+const keyStatusFilter = ref<'all' | 'enabled' | 'disabled' | 'revoked'>('all')
+const keyStatusOptions: Array<{ id: 'all' | 'enabled' | 'disabled' | 'revoked'; label: string }> = [
+  { id: 'all', label: '全部状态' },
+  { id: 'enabled', label: '启用中' },
+  { id: 'disabled', label: '已停用' },
+  { id: 'revoked', label: '已撤销' },
+]
+const hasKeyFilters = computed(() => keyQuery.value.trim().length > 0 || keyStatusFilter.value !== 'all')
+const filteredKeys = computed(() => {
+  const search = keyQuery.value.trim().toLowerCase()
+  return keys.value.filter((item) => {
+    if (keyStatusFilter.value === 'enabled' && (item.revokedAt != null || !item.enabled)) return false
+    if (keyStatusFilter.value === 'disabled' && (item.revokedAt != null || item.enabled)) return false
+    if (keyStatusFilter.value === 'revoked' && item.revokedAt == null) return false
+    if (!search) return true
+    return `${item.name} ${item.keyPrefix} ${item.id}`.toLowerCase().includes(search)
+  })
+})
 // 密钥白名单与渠道范围冲突时禁止保存；后端同样校验，这里把失败前移到表单内。
 const accessConflicts = computed(() => conflictingClientKeyAccessKeys(form.accessPolicy))
 // 白/黑名单模式下没有任何目标时禁止保存，避免“空白名单拒绝全部”的线上误封锁。
@@ -231,32 +250,42 @@ onMounted(() => {
 
 <template>
   <section class="page-stack page-compact">
-    <div class="page-overview">
-      <div class="section-head page-actions">
+    <div class="channel-page-head">
+      <dl class="list-summary" aria-label="调用方密钥概况">
+        <div><dt>密钥总数</dt><dd>{{ keys.length }}</dd></div>
+        <div><dt>启用中</dt><dd class="text-success">{{ enabledCount }}</dd></div>
+        <div v-if="revokedCount"><dt>已撤销</dt><dd class="text-danger">{{ revokedCount }}</dd></div>
+      </dl>
+      <div class="section-head-actions channel-page-actions">
         <button type="button" class="button primary" @click="openCreate">
           <Icon name="plus" :size="17" />
           新建密钥
         </button>
       </div>
-
-      <div class="stat-row two">
-        <div class="stat-card">
-          <span>密钥总数</span>
-          <strong>{{ keys.length }}</strong>
-          <small>已签发的调用方凭据</small>
-        </div>
-        <div class="stat-card">
-          <span>启用中</span>
-          <strong class="text-success">{{ enabledCount }}</strong>
-          <small>可用于访问 /v1；另有 {{ revokedCount }} 个已撤销</small>
-        </div>
-      </div>
-
     </div>
 
     <ErrorState v-if="error" :message="error" :busy="loading" @retry="load" />
 
     <div class="panel table-panel">
+      <div v-if="!loading && keys.length" class="channel-list-toolbar client-keys-toolbar">
+        <label class="search-box channel-name-search">
+          <Icon name="search" :size="15" />
+          <input v-model="keyQuery" type="search" aria-label="按名称、前缀或 ID 筛选密钥" placeholder="按名称、前缀或 ID 筛选" autocomplete="off" />
+        </label>
+        <div class="client-keys-toolbar-right">
+          <div class="client-keys-status-filter" role="group" aria-label="按密钥状态筛选">
+            <button
+              v-for="option in keyStatusOptions"
+              :key="option.id"
+              type="button"
+              :class="{ active: keyStatusFilter === option.id }"
+              :aria-pressed="keyStatusFilter === option.id"
+              @click="keyStatusFilter = option.id"
+            >{{ option.label }}</button>
+          </div>
+          <button v-if="hasKeyFilters" type="button" class="filter-reset" @click="keyQuery = ''; keyStatusFilter = 'all'">清除筛选</button>
+        </div>
+      </div>
       <TablePlaceholder
         v-if="loading || keys.length === 0"
         :loading="loading"
@@ -282,20 +311,21 @@ onMounted(() => {
             </tr>
           </thead>
           <tbody>
-            <tr v-for="key in keys" :key="key.id">
+            <tr v-if="!filteredKeys.length">
+              <td colspan="7" class="channel-filter-empty muted">当前筛选条件下没有调用方密钥</td>
+            </tr>
+            <tr v-for="key in filteredKeys" :key="key.id">
               <td>
                 <div class="primary-cell" :title="key.name">{{ key.name }}</div>
                 <div class="channel-id-cell">
                   <span class="mono muted small" :title="key.id">{{ key.id }}</span>
-                  <CopyButton :text="key.id" title="复制密钥 ID" variant="list" :size="12" />
+                  <CopyButton :text="key.id" title="复制密钥 ID" :size="12" />
                 </div>
                 <div class="client-key-access-summary muted small">
                   <template v-for="(part, idx) in clientKeyAccessSummary(key.accessPolicy).split(' · ')" :key="idx">
                     <span class="access-summary-item">{{ part }}</span>
                   </template>
-                </div>
-                <div v-if="clientKeyIpPolicySummary(key.ipPolicy)" class="client-key-access-summary muted small">
-                  {{ clientKeyIpPolicySummary(key.ipPolicy) }}
+                  <span v-if="clientKeyIpPolicySummary(key.ipPolicy)" class="access-summary-item is-ip">{{ clientKeyIpPolicySummary(key.ipPolicy) }}</span>
                 </div>
               </td>
               <td><code class="key-prefix" :title="key.keyPrefix">{{ key.keyPrefix }}…</code></td>

@@ -104,7 +104,7 @@ onMounted(load)
 </script>
 
 <template>
-  <Modal title="系统提示词" wide mobile-fullscreen @close="close">
+  <Modal title="系统提示词" eyebrow="全局业务设置" wide mobile-fullscreen @close="close">
     <p v-if="loading" class="muted">加载中…</p>
     <div v-else-if="loadError" role="alert">
       <p class="text-danger">加载失败：{{ loadError }}</p>

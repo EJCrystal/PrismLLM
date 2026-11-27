@@ -618,7 +618,7 @@ onBeforeUnmount(() => {
               </td>
               <td v-if="logColumnVisible('request')" class="log-col-request">
                 <div class="request-id-cell">
-                  <code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 12) }}…</code>
+                  <code class="request-id" :title="log.requestId">{{ log.requestId.slice(0, 10) }}…</code>
                   <CopyButton :text="log.requestId" title="复制请求 ID" variant="list" :size="13" />
                 </div>
               </td>
@@ -680,7 +680,7 @@ onBeforeUnmount(() => {
               <td v-if="logColumnVisible('status')" class="log-col-status">
                 <div class="stacked-cell">
                   <div class="status-head">
-                    <span class="badge" :class="requestLogTone(log) === 'danger' ? 'danger' : statusClass(log.statusCode)">{{ log.statusCode }}</span>
+                    <span class="badge" :class="requestLogTone(log) === 'danger' ? 'danger' : requestLogTone(log) === 'warning' ? 'warning' : statusClass(log.statusCode)">{{ log.statusCode }}</span>
                     <span v-if="requestLogStatusLabel(log)" class="log-outcome-label" :class="requestLogTone(log) === 'danger' ? 'text-danger' : 'text-warning'">{{ requestLogStatusLabel(log) }}</span>
                   </div>
                   <code v-if="log.errorCode || log.upstreamErrorCode" class="error-code" :title="log.errorMessage || log.errorCode || log.upstreamErrorCode || ''">{{ log.errorCode || log.upstreamErrorCode }}</code>
@@ -762,7 +762,7 @@ onBeforeUnmount(() => {
             <div>
               <div class="detail-title-line">
                 <h2 id="request-detail-title">请求详情</h2>
-                <span class="badge" :class="requestLogTone(selected) === 'danger' ? 'danger' : statusClass(selected.statusCode)">{{ selected.statusCode }}</span>
+                <span class="badge" :class="requestLogTone(selected) === 'danger' ? 'danger' : requestLogTone(selected) === 'warning' ? 'warning' : statusClass(selected.statusCode)">{{ selected.statusCode }}</span>
                 <span v-if="requestLogStatusLabel(selected)" class="small" :class="requestLogTone(selected) === 'danger' ? 'text-danger' : 'text-warning'">{{ requestLogStatusLabel(selected) }}</span>
               </div>
               <p class="muted small">{{ formatTime(selected.createdAt) }}</p>

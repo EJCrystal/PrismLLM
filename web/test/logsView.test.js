@@ -221,6 +221,17 @@ describe('request log hierarchy', () => {
     assert.equal(document.querySelectorAll('.logs-summary dd')[1].textContent, '3')
   })
 
+  it('gives HTTP 200 cancelled requests a consistent warning badge in the table and detail header', async () => {
+    const cancelled = fixture({ id: 5, requestId: 'cancelled', statusCode: 200, errorCode: 'client_cancelled' })
+    const document = await render([cancelled], cancelled)
+    const rowBadge = document.querySelector('.logs-table tbody tr .status-head .badge')
+    const detailBadge = document.querySelector('[role="dialog"] .detail-title-line .badge')
+    assert.ok(rowBadge.classList.contains('warning'))
+    assert.ok(detailBadge.classList.contains('warning'))
+    assert.equal(rowBadge.classList.contains('success'), false)
+    assert.equal(detailBadge.classList.contains('success'), false)
+  })
+
   it('keeps each summary field once and removes duplicated pricing summaries', async () => {
     const selected = fixture()
     const document = await render([selected], selected)

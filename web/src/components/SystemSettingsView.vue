@@ -58,6 +58,7 @@ interface SettingRow {
   valueTitle: string
   meta: string
   alert: string
+  tone?: 'success' | 'muted' | 'info'
   onAction: () => void
   onRetry: () => void
 }
@@ -214,6 +215,7 @@ const settingRows = computed<SettingRow[]>(() => {
       valueTitle: modelTest.data?.defaultPrompt ?? '',
       meta: modelTest.data ? updatedLabel(modelTest.data.updatedAt) : '',
       alert: '',
+      tone: modelTest.data ? 'info' : undefined,
       onAction: () => { showModelTest.value = true },
       onRetry: loadModelTest,
     },
@@ -230,6 +232,7 @@ const settingRows = computed<SettingRow[]>(() => {
       valueTitle: '',
       meta: systemPrompt.data ? updatedLabel(systemPrompt.data.updatedAt) : '',
       alert: '',
+      tone: systemPrompt.data ? (systemPrompt.data.enabled ? 'success' : 'muted') : undefined,
       onAction: () => { showSystemPrompt.value = true },
       onRetry: loadSystemPrompt,
     },
@@ -248,6 +251,7 @@ const settingRows = computed<SettingRow[]>(() => {
       alert: upstream.data?.headerCatalog.lastError
         ? `最近刷新失败：${upstream.data.headerCatalog.lastError}`
         : '',
+      tone: upstream.data ? (countUpstreamOverrides(upstream.data.overrides) > 0 || upstream.data.profiles.length > 0 ? 'info' : 'muted') : undefined,
       onAction: () => { showUpstream.value = true },
       onRetry: loadUpstream,
     },
@@ -273,6 +277,7 @@ const settingRows = computed<SettingRow[]>(() => {
           ].join(' · ')
         : '',
       alert: '',
+      tone: webSearch.data ? (webSearch.data.enabled ? 'success' : 'muted') : undefined,
       onAction: () => { showWebSearch.value = true },
       onRetry: loadWebSearch,
     },
@@ -291,6 +296,7 @@ const settingRows = computed<SettingRow[]>(() => {
         ? updatedLabel(channelEgress.data.updatedAt)
         : (channelEgress.data?.deploymentHosts.length ? '仅使用环境变量默认值' : '尚未放行非回环主机'),
       alert: '',
+      tone: channelEgress.data ? (channelEgress.data.effectiveHosts.length > 0 ? 'success' : 'muted') : undefined,
       onAction: () => { showChannelEgress.value = true },
       onRetry: loadChannelEgress,
     },
@@ -307,6 +313,7 @@ const settingRows = computed<SettingRow[]>(() => {
       valueTitle: '',
       meta: autoDisable.data ? updatedLabel(autoDisable.data.updatedAt) : '',
       alert: '',
+      tone: autoDisable.data ? (autoDisable.data.enabled ? 'success' : 'muted') : undefined,
       onAction: () => { showAutoDisable.value = true },
       onRetry: loadAutoDisable,
     },
@@ -323,6 +330,7 @@ const settingRows = computed<SettingRow[]>(() => {
       valueTitle: '',
       meta: notification.data ? updatedLabel(notification.data.updatedAt) : '',
       alert: '',
+      tone: notification.data ? (notification.data.enabled ? 'success' : 'muted') : undefined,
       onAction: () => { showNotification.value = true },
       onRetry: loadNotification,
     },
@@ -339,6 +347,7 @@ const settingRows = computed<SettingRow[]>(() => {
       valueTitle: '',
       meta: retention.data ? '每日额度账本不受影响' : '',
       alert: '',
+      tone: retention.data ? (retention.data.cleanupEnabled ? 'success' : 'muted') : undefined,
       onAction: () => { showRetention.value = true },
       onRetry: loadRetention,
     },
@@ -355,11 +364,8 @@ onMounted(() => { void loadAll() })
 
 <template>
   <section class="page-stack system-config-page">
-    <div class="section-head">
-      <div>
-        <h2>全局业务设置</h2>
-        <p>按模块划分全局策略，点击右侧即可编辑并即时生效。</p>
-      </div>
+    <div class="section-head system-config-head">
+      <p class="system-config-lead">按模块管理全局运行策略，编辑后即时生效。</p>
       <button
         type="button" class="button ghost" :disabled="refreshing"
         title="重新读取全局设置"
@@ -383,7 +389,10 @@ onMounted(() => { void loadAll() })
           <span v-if="row.error" class="text-danger" role="alert">{{ row.error }}</span>
           <span v-else-if="row.loading" class="system-config-setting-muted">加载中…</span>
           <template v-else>
-            <strong :title="row.valueTitle || undefined">{{ row.value }}</strong>
+            <div class="system-config-state-main">
+              <span v-if="row.tone" class="system-config-dot" :class="'is-' + row.tone" aria-hidden="true"></span>
+              <strong :title="row.valueTitle || undefined">{{ row.value }}</strong>
+            </div>
             <small v-if="row.meta">{{ row.meta }}</small>
             <small v-if="row.alert" class="text-danger">{{ row.alert }}</small>
           </template>
@@ -431,6 +440,16 @@ onMounted(() => { void loadAll() })
 </template>
 
 <style scoped>
+.system-config-head {
+  align-items: center;
+}
+
+.system-config-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .system-config-settings {
   overflow: hidden;
 }
@@ -440,8 +459,13 @@ onMounted(() => { void loadAll() })
   grid-template-columns: auto minmax(0, 1fr) minmax(0, 1.1fr) 132px;
   align-items: center;
   gap: 8px 18px;
-  min-height: 78px;
-  padding: 15px 20px;
+  min-height: 74px;
+  padding: 14px 20px;
+  transition: background .14s ease;
+}
+
+.system-config-setting:hover {
+  background: color-mix(in srgb, var(--brand) 3.5%, transparent);
 }
 
 .system-config-setting + .system-config-setting {
@@ -484,8 +508,41 @@ onMounted(() => { void loadAll() })
   gap: 3px;
 }
 
+.system-config-state-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.system-config-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.system-config-dot.is-success {
+  background: var(--success-fill);
+  box-shadow: 0 0 0 3px var(--success-soft);
+}
+
+.system-config-dot.is-info {
+  background: var(--brand);
+  box-shadow: 0 0 0 3px var(--info-soft);
+}
+
+.system-config-dot.is-muted {
+  background: var(--muted);
+  opacity: .55;
+}
+
+.system-config-state-main strong,
 .system-config-setting-state strong {
   display: block;
+  min-width: 0;
+  flex: 1 1 auto;
   overflow: hidden;
   font-size: 13px;
   font-weight: 600;
@@ -555,6 +612,19 @@ onMounted(() => { void loadAll() })
 }
 
 @media (max-width: 640px) {
+  .system-config-head {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .system-config-head .button {
+    width: auto;
+    flex: 0 0 auto;
+    min-height: 36px;
+  }
+
   .system-config-setting {
     grid-template-columns: auto minmax(0, 1fr) auto;
     grid-template-areas:
@@ -566,6 +636,14 @@ onMounted(() => { void loadAll() })
 
   .system-config-setting-state {
     padding-left: 0;
+  }
+
+  .system-config-state-main {
+    align-items: flex-start;
+  }
+
+  .system-config-dot {
+    margin-top: 6px;
   }
 
   .system-config-setting-action .button {

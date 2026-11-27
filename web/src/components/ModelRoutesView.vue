@@ -65,6 +65,17 @@ function cloneEntries(items: ModelRouteCredential[]): ModelRouteCredential[] {
 function errorMessage(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause)
 }
+const ROUTE_PROTOCOL_LABELS: Record<string, string> = {
+  chat_completions: 'Chat',
+  responses: 'Responses',
+  messages: 'Messages',
+  gemini: 'Gemini',
+}
+function formatRouteProtocols(protocols: string[]): string {
+  return protocols.length
+    ? protocols.map(item => ROUTE_PROTOCOL_LABELS[item] || item).join(' / ')
+    : '未配置'
+}
 function credentialLabel(entry: ModelRouteCredential): string {
   return `${entry.channelName || entry.channelId} / ${entry.credentialName || entry.credentialId}`
 }
@@ -663,7 +674,7 @@ onBeforeUnmount(() => {
         </ul>
         <div class="route-pagination">
           <span class="muted small">共 {{ total }} 个<span v-if="total"> · {{ offset + 1 }}–{{ offset + models.length }}</span></span>
-          <div><button type="button" class="button ghost mini" aria-label="上一页模型" :disabled="offset === 0" @click="changePage(-1)">上一页</button><button type="button" class="button ghost mini" aria-label="下一页模型" :disabled="offset + models.length >= total" @click="changePage(1)">下一页</button></div>
+          <div v-if="total > models.length || offset > 0"><button type="button" class="button ghost mini" aria-label="上一页模型" :disabled="offset === 0" @click="changePage(-1)">上一页</button><button type="button" class="button ghost mini" aria-label="下一页模型" :disabled="offset + models.length >= total" @click="changePage(1)">下一页</button></div>
         </div>
       </template>
     </aside>
@@ -734,28 +745,31 @@ onBeforeUnmount(() => {
             </div>
             <ol v-else class="route-entry-list" aria-label="已选凭据顺序" :aria-describedby="perspectiveActive ? undefined : 'route-order-help'">
               <li v-for="{ entry, index } in filteredViewEntries" :key="entryKey(entry)" class="route-entry" :class="{ 'is-unavailable': !entry.selectable, 'is-scope-denied': !!credentialScopeReason(entry), 'is-dragging': draggedEntryKey === entryKey(entry), 'is-drag-over': dragOverEntryKey === entryKey(entry) && draggedEntryKey !== entryKey(entry), 'is-just-moved': recentlyMovedKey === entryKey(entry) }" :data-route-entry="entryKey(entry)" :draggable="!editorBusy && !perspectiveActive && editingPositionKey !== entryKey(entry)" @dragstart="dragStart($event, entry)" @dragover="dragOver($event, entry)" @drop="dropEntry($event, entry)" @dragend="clearDrag">
-                <input
-                  v-if="editingPositionKey === entryKey(entry)"
-                  v-model="editingPositionValue"
-                  type="number"
-                  inputmode="numeric"
-                  class="route-position-input"
-                  data-action="position-input"
-                  :min="1"
-                  :max="entries.length"
-                  :aria-label="'修改 ' + credentialLabel(entry) + ' 的位次'"
-                  @keydown.enter.prevent="commitPositionEdit(entry, true)"
-                  @keydown.escape.prevent="cancelPositionEdit(entry)"
-                  @blur="editingPositionKey === entryKey(entry) && commitPositionEdit(entry, false)"
-                />
-                <span
-                  v-else
-                  class="route-position"
-                  :class="{ 'is-editable': !perspectiveActive && !editorBusy && entries.length > 1 }"
-                  :title="!perspectiveActive && entries.length > 1 ? '双击输入目标位次（按回车确认，其余顺延）' : undefined"
-                  aria-hidden="true"
-                  @dblclick.stop="startPositionEdit(entry, index)"
-                >{{ index + 1 }}</span>
+                <div class="route-position-rail">
+                  <span v-if="!perspectiveActive && !editorBusy" class="route-drag-grip" aria-hidden="true"><Icon name="grip" :size="14" /></span>
+                  <input
+                    v-if="editingPositionKey === entryKey(entry)"
+                    v-model="editingPositionValue"
+                    type="number"
+                    inputmode="numeric"
+                    class="route-position-input"
+                    data-action="position-input"
+                    :min="1"
+                    :max="entries.length"
+                    :aria-label="'修改 ' + credentialLabel(entry) + ' 的位次'"
+                    @keydown.enter.prevent="commitPositionEdit(entry, true)"
+                    @keydown.escape.prevent="cancelPositionEdit(entry)"
+                    @blur="editingPositionKey === entryKey(entry) && commitPositionEdit(entry, false)"
+                  />
+                  <span
+                    v-else
+                    class="route-position"
+                    :class="{ 'is-editable': !perspectiveActive && !editorBusy && entries.length > 1 }"
+                    :title="!perspectiveActive && entries.length > 1 ? '双击输入目标位次（按回车确认，其余顺延）' : undefined"
+                    aria-hidden="true"
+                    @dblclick.stop="startPositionEdit(entry, index)"
+                  >{{ index + 1 }}</span>
+                </div>
                 <div class="route-credential-copy">
                   <div class="route-entry-head">
                     <div class="route-credential-title">
@@ -774,7 +788,7 @@ onBeforeUnmount(() => {
                   </div>
                   <div class="route-credential-meta">
                     <span class="route-upstream small" :title="entry.upstreamModels.join('、') || undefined">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</span>
-                    <span class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</span>
+                    <span class="muted small" :title="entry.protocols.join(' / ') || undefined">协议：{{ formatRouteProtocols(entry.protocols) }}</span>
                   </div>
                   <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
                   <p v-if="perspectiveActive && credentialScopeReason(entry)" class="route-scope-reason small">调用方范围：{{ credentialScopeReason(entry) }}</p>
@@ -795,20 +809,20 @@ onBeforeUnmount(() => {
             <p v-if="!availableCredentials.length" class="muted small" role="status">{{ credentialQuery.trim() || onlySelectableAvailable ? '没有匹配的凭据。' : remainingCount ? '没有匹配的凭据。' : '没有更多凭据。可在渠道或订阅账号中配置并授权此模型。' }}</p>
             <ul v-else class="route-available-list" aria-label="可添加凭据">
               <li v-for="entry in availableCredentials" :key="entryKey(entry)" class="route-available" :data-available-credential="entryKey(entry)">
-                <div class="route-credential-copy">
+                <div class="route-available-head">
                   <div class="route-credential-title">
                     <strong>{{ entry.credentialName || entry.credentialId }}</strong>
                     <span class="route-channel-tag muted small">{{ entry.channelName || entry.channelId }}</span>
                     <span class="badge neutral">{{ entry.credentialType === 'oauth' ? '订阅账号' : '静态密钥' }}</span>
                     <span v-if="!entry.selectable" class="badge warning">不可用</span>
                   </div>
-                  <div class="route-credential-meta">
-                    <span class="route-upstream small" :title="entry.upstreamModels.join('、') || undefined">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</span>
-                    <span class="muted small">协议：{{ entry.protocols.join(' / ') || '未配置' }}</span>
-                  </div>
-                  <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
+                  <button type="button" class="button subtle mini route-available-add" :aria-label="'添加 ' + credentialLabel(entry)" :title="entry.selectable ? '添加到顺序末尾' : unavailableReason(entry)" :disabled="editorBusy || !entry.selectable" @click="addEntry(entry)"><Icon name="plus" :size="14" />添加</button>
                 </div>
-                <button type="button" class="button subtle mini" :aria-label="'添加 ' + credentialLabel(entry)" :title="entry.selectable ? '添加到顺序末尾' : unavailableReason(entry)" :disabled="editorBusy || !entry.selectable" @click="addEntry(entry)"><Icon name="plus" :size="15" />添加</button>
+                <div class="route-credential-meta">
+                  <span class="route-upstream small" :title="entry.upstreamModels.join('、') || undefined">上游模型：{{ entry.upstreamModels.join('、') || '无授权模型' }}</span>
+                  <span class="muted small" :title="entry.protocols.join(' / ') || undefined">协议：{{ formatRouteProtocols(entry.protocols) }}</span>
+                </div>
+                <p v-if="!entry.selectable" class="route-reason small">{{ unavailableReason(entry) }}</p>
               </li>
             </ul>
           </div>
@@ -827,62 +841,66 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-.model-routes-view { display: grid; grid-template-columns: minmax(230px, 300px) minmax(0, 1fr); align-items: start; gap: 18px; min-width: 0; }
-.route-models, .route-editor { min-width: 0; padding: 18px; }
-.route-models { position: sticky; top: 18px; }
-.route-perspective { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 14px; }
+.model-routes-view { display: grid; grid-template-columns: minmax(220px, 256px) minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); align-items: stretch; gap: 12px 14px; height: 100%; min-height: 0; min-width: 0; }
+.route-models, .route-editor { min-width: 0; min-height: 0; }
+.route-models { position: static; display: flex; flex-direction: column; height: 100%; padding: 14px; overflow: hidden; }
+.route-editor { display: flex; flex-direction: column; height: 100%; padding: 14px 16px; overflow: hidden; }
+.route-perspective { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; padding: 8px 12px; }
 .route-perspective-select { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
-.route-perspective-select select { min-width: 180px; max-width: min(320px, 60vw); min-height: 34px; padding: 6px 32px 6px 10px; border: 1px solid var(--glass-line); border-radius: 9px; background-color: var(--glass-field); color: var(--ink); font: inherit; }
+.route-perspective-select select { min-width: 180px; max-width: min(320px, 60vw); min-height: 30px; padding: 4px 28px 4px 9px; border: 1px solid var(--glass-line); border-radius: 9px; background-color: var(--glass-field); color: var(--ink); font: inherit; }
 .route-perspective-summary { margin-left: auto; overflow-wrap: anywhere; }
-.route-perspective-note { margin-bottom: 18px; }
-.route-perspective-note p { margin: 5px 0 0; line-height: 1.7; }
+.route-perspective-note { margin-bottom: 12px; flex: 0 0 auto; }
+.route-perspective-note p { margin: 4px 0 0; line-height: 1.6; }
 .route-model.is-scope-denied { opacity: .7; }
 .route-entry.is-scope-denied { border-left: 3px solid var(--warning); padding-left: 10px; }
 .route-scope-reason { color: var(--danger); }
-.route-panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; margin-bottom: 16px; }
+.route-panel-head { display: flex; flex: 0 0 auto; align-items: flex-start; justify-content: space-between; gap: 12px; min-width: 0; margin-bottom: 10px; }
 .route-panel-head > div { min-width: 0; }
-.route-panel-head h2 { margin: 0 0 5px; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
-.route-panel-head p, .route-credential-copy p { margin: 3px 0 0; line-height: 1.6; overflow-wrap: anywhere; }
-.route-model-search, .route-credential-search { width: 100%; min-width: 0; }
+.route-panel-head h2 { margin: 0 0 2px; font-size: 16px; line-height: 1.4; overflow-wrap: anywhere; }
+.route-panel-head p, .route-credential-copy p { margin: 2px 0 0; line-height: 1.5; overflow-wrap: anywhere; }
+.route-model-search, .route-credential-search { flex: 0 0 auto; width: 100%; min-width: 0; }
 .route-model-search input, .route-credential-search input { width: 0; min-width: 0; flex: 1; }
 .route-model-list, .route-entry-list, .route-available-list { list-style: none; padding: 0; }
-.route-model-list { display: grid; gap: 4px; max-height: min(52vh, 560px); margin: 12px -6px; overflow: auto; }
-.route-model { display: grid; gap: 7px; width: 100%; padding: 10px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
+.route-model-list { display: grid; flex: 1 1 auto; align-content: start; gap: 4px; min-height: 0; max-height: none; margin: 10px -4px; padding: 0 4px; overflow-y: auto; }
+.route-model { display: grid; gap: 6px; width: 100%; padding: 9px 10px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--ink); font: inherit; text-align: left; cursor: pointer; }
 .route-model strong { overflow-wrap: anywhere; font-size: 12px; font-weight: 650; }
 .route-model:hover, .route-model.is-selected { background: var(--glass-field); border-color: var(--glass-line); }
 .route-model.is-selected { border-color: color-mix(in srgb, var(--brand) 36%, var(--glass-line)); box-shadow: inset 3px 0 0 var(--brand); padding-left: 11px; }
 .route-model-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 8px; font-size: 11px; color: var(--muted); }
 .route-model-meta .badge, .route-credential-title .badge { margin: 0; font-size: 10px; }
-.route-pagination { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--glass-line); padding-top: 12px; }
+.route-pagination { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; border-top: 1px solid var(--glass-line); padding-top: 10px; }
 .route-pagination > div, .route-inline-actions, .route-entry-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .route-empty { padding: 24px 6px; font-size: 13px; line-height: 1.8; }
 .route-empty-order { display: grid; justify-items: center; gap: 8px; margin: 14px 0; padding: 24px 14px; border: 1px dashed var(--line-strong); border-radius: 10px; color: var(--muted); text-align: center; }
 .route-empty-order strong { color: var(--ink); }
 .route-empty-order p { max-width: 44ch; margin: 0; }
 .route-filter-empty { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 12px; border: 1px dashed var(--line-strong); border-radius: 10px; }
-.route-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 24px; }
+.route-section-head { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 12px; min-height: 24px; }
 .route-section-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; }
 .route-section-count { font-weight: 600; }
 .route-section-head h3 { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 0; font-size: 14px; }
-.route-selected-pane > p, .route-workspace > .route-selected-pane > p { margin: 0; line-height: 1.5; }
-.route-workspace { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(260px, 0.95fr); align-items: start; gap: 18px; min-width: 0; }
+.route-selected-pane > p, .route-workspace > .route-selected-pane > p { flex: 0 0 auto; margin: 0; line-height: 1.5; }
+.route-workspace { display: grid; flex: 1 1 auto; min-height: 0; grid-template-columns: minmax(0, 1.25fr) minmax(300px, 1fr); align-items: stretch; gap: 14px; min-width: 0; }
 .route-workspace.is-readonly { grid-template-columns: minmax(0, 1fr); }
-.route-mobile-tabs { display: none; gap: 6px; padding: 4px; margin-bottom: 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); }
+.route-mobile-tabs { display: none; flex: 0 0 auto; gap: 6px; padding: 4px; margin-bottom: 10px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); }
 .route-mobile-tab { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 36px; padding: 6px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 .route-mobile-tab .badge { margin: 0; font-size: 11px; }
 .route-mobile-tab.is-active { background: var(--panel); color: var(--ink); box-shadow: 0 1px 4px rgba(0, 0, 0, .08); }
-.route-selected-pane { display: grid; gap: 10px; min-width: 0; }
-.route-entry-list { display: grid; gap: 6px; max-height: clamp(280px, 56vh, 640px); overflow-y: auto; padding-right: 4px; margin: 0; }
-.route-entry { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: start; gap: 10px; padding: 10px 12px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); cursor: grab; transition: border-color .2s ease, box-shadow .2s ease; }
+.route-selected-pane { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.route-entry-list { display: grid; flex: 1 1 auto; align-content: start; gap: 6px; min-height: 0; max-height: none; overflow-y: auto; padding-right: 4px; margin: 0; }
+.route-entry { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: 9px; padding: 9px 11px; border: 1px solid var(--glass-line); border-radius: 10px; background: var(--glass-field); cursor: grab; transition: border-color .2s ease, box-shadow .2s ease; }
 .route-entry-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
 .route-entry:active { cursor: grabbing; }
 .route-entry.is-dragging { opacity: .58; }
 .route-entry.is-drag-over, .route-entry.is-just-moved { border-color: var(--brand); box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 22%, transparent); }
 .route-entry.is-unavailable:not(.is-scope-denied) { border-left: 3px solid var(--warning); padding-left: 10px; }
-.route-position { display: grid; place-items: center; width: 28px; height: 26px; border: 1px solid var(--glass-line); border-radius: 999px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; user-select: none; touch-action: manipulation; }
+.route-position-rail { display: inline-flex; align-items: center; gap: 3px; min-height: 26px; }
+.route-drag-grip { display: inline-flex; align-items: center; color: var(--muted); opacity: .42; transition: opacity .15s ease; }
+.route-entry:hover .route-drag-grip { opacity: .88; }
+.route-position { display: grid; place-items: center; width: 26px; height: 24px; border: 1px solid var(--glass-line); border-radius: 999px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; user-select: none; touch-action: manipulation; }
 .route-position.is-editable { cursor: pointer; }
 .route-position.is-editable:hover { border-color: var(--brand); color: var(--brand); background: color-mix(in srgb, var(--brand) 8%, transparent); }
-.route-position-input { width: 38px; height: 26px; padding: 0 4px; border: 1px solid var(--brand); border-radius: 8px; background: var(--surface-solid, var(--panel)); color: var(--ink); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent); }
+.route-position-input { width: 36px; height: 24px; padding: 0 4px; border: 1px solid var(--brand); border-radius: 8px; background: var(--surface-solid, var(--panel)); color: var(--ink); font: inherit; font-size: 12px; font-variant-numeric: tabular-nums; text-align: center; outline: none; box-shadow: 0 0 0 2px color-mix(in srgb, var(--brand) 20%, transparent); }
 .route-position-input::-webkit-inner-spin-button, .route-position-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .route-credential-copy { min-width: 0; display: grid; gap: 5px; }
 .route-credential-title { display: flex; flex: 1 1 auto; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; min-height: 24px; }
@@ -894,15 +912,16 @@ onBeforeUnmount(() => {
 .route-reason { color: var(--warning); }
 .route-entry-actions { flex: 0 0 auto; flex-wrap: nowrap; gap: 3px; }
 .route-entry-actions .icon-button { width: 26px; height: 26px; touch-action: manipulation; }
-.route-add-section { display: grid; gap: 10px; min-width: 0; padding-left: 18px; border-left: 1px solid var(--glass-line); }
+.route-add-section { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; padding-left: 14px; border-left: 1px solid var(--glass-line); }
 .route-available-filter { display: inline-flex; align-items: center; gap: 5px; color: var(--muted); cursor: pointer; user-select: none; }
 .route-available-filter input { margin: 0; accent-color: var(--brand); }
-.route-available-list { display: grid; gap: 6px; max-height: clamp(240px, 50vh, 580px); overflow-y: auto; padding-right: 4px; margin: 0; }
-.route-available { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 10px; border: 1px solid var(--glass-line); border-radius: 9px; background: var(--glass-field); }
-.route-available > .button { flex: 0 0 auto; }
-.route-save-bar { position: sticky; bottom: 0; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 16px -18px -18px; padding: 14px 18px; border-top: 1px solid var(--glass-line); border-radius: 0 0 14px 14px; background: var(--popover-surface, var(--panel)); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
+.route-available-list { display: grid; flex: 1 1 auto; align-content: start; gap: 6px; min-height: 0; max-height: none; overflow-y: auto; padding-right: 4px; margin: 0; }
+.route-available { display: grid; gap: 5px; padding: 9px 11px; border: 1px solid var(--glass-line); border-radius: 9px; background: var(--glass-field); }
+.route-available-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; min-width: 0; }
+.route-available-add { flex: 0 0 auto; min-height: 26px; padding: 3px 9px; }
+.route-save-bar { position: static; flex: 0 0 auto; z-index: 4; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin: 10px -16px -14px; padding: 10px 16px; border-top: 1px solid var(--glass-line); border-radius: 0 0 14px 14px; background: var(--popover-surface, var(--panel)); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); }
 .route-save-bar > span { color: var(--muted); }
-.route-conflict { margin-bottom: 18px; }
+.route-conflict { flex: 0 0 auto; margin-bottom: 12px; }
 .route-conflict p { line-height: 1.7; }
 .route-conflict-order { padding-left: 22px; overflow-wrap: anywhere; line-height: 1.8; }
 .route-model:focus-visible, .route-entry-actions button:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
@@ -911,8 +930,9 @@ onBeforeUnmount(() => {
 .route-entry[draggable="false"] { cursor: default; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
 @media (max-width: 1180px) { .route-mobile-tabs { display: flex; } .route-workspace { grid-template-columns: minmax(0, 1fr); } .route-selected-pane.is-mobile-hidden, .route-add-section.is-mobile-hidden { display: none; } .route-add-section { padding-left: 0; border-left: none; } .route-entry-list, .route-available-list { max-height: min(52dvh, 440px); } }
-@media (max-width: 1000px) { .model-routes-view { grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 12px; } .route-entry { grid-template-columns: 28px minmax(0, 1fr); align-items: start; } .route-entry-actions { grid-column: 2; justify-self: end; } }
-@media (max-width: 760px) { .model-routes-view { grid-template-columns: minmax(0, 1fr); } .route-models { position: static; } .route-model-list { max-height: 160px; } .route-models, .route-editor { padding: 14px; } .route-panel-head { margin-bottom: 12px; } .route-perspective-select { flex: 1 1 200px; min-width: 0; } .route-perspective-select select { flex: 1; min-width: 0; max-width: none; } .route-perspective-summary { flex-basis: 100%; margin-left: 0; } .route-entry-list, .route-available-list { max-height: min(46dvh, 380px); } .route-entry { padding: 8px 10px; gap: 6px 10px; } .route-entry-actions .icon-button { width: 32px; height: 32px; } .route-save-bar { align-items: stretch; margin: 12px -14px -14px; padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); } .route-save-bar > .route-inline-actions { width: 100%; justify-content: flex-end; } }
-@media (max-width: 640px) { .route-available { flex-direction: column; align-items: stretch; gap: 8px; } .route-available > .button { align-self: flex-end; min-height: 36px; } }
+@media (max-width: 1000px) { .model-routes-view { grid-template-columns: minmax(210px, 250px) minmax(0, 1fr); gap: 12px; } .route-entry { grid-template-columns: auto minmax(0, 1fr); align-items: start; } .route-entry-actions { grid-column: 2; justify-self: end; } }
+@media (max-width: 900px) { .model-routes-view { flex: 0 0 auto; height: auto; min-height: auto; } .route-models, .route-editor { height: auto; min-height: auto; overflow: visible; } .route-workspace, .route-selected-pane, .route-add-section { flex: 0 0 auto; min-height: auto; } .route-entry-list, .route-available-list { flex: 0 0 auto; min-height: auto; max-height: min(52dvh, 440px); } }
+@media (max-width: 760px) { .model-routes-view { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto; height: auto; } .route-models, .route-editor { flex: 0 0 auto; height: auto; min-height: auto; overflow: visible; padding: 14px; } .route-model-list { flex: 0 0 auto; min-height: auto; max-height: 160px; } .route-panel-head { margin-bottom: 12px; } .route-perspective-select { flex: 1 1 200px; min-width: 0; } .route-perspective-select select { flex: 1; min-width: 0; max-width: none; min-height: 40px; font-size: 16px; } .route-perspective-summary { flex-basis: 100%; margin-left: 0; } .route-drag-grip { display: none; } .route-entry-list, .route-available-list { flex: 0 0 auto; min-height: auto; max-height: min(46dvh, 380px); } .route-entry { padding: 8px 10px; gap: 6px 8px; } .route-entry-actions .icon-button { width: 34px; height: 34px; } .route-save-bar { position: sticky; bottom: 0; align-items: stretch; margin: 12px -14px -14px; padding: 12px 14px calc(12px + env(safe-area-inset-bottom, 0px)); } .route-save-bar > .route-inline-actions { display: grid; grid-template-columns: 1fr 1fr; width: 100%; } .route-save-bar .button { min-height: 40px; } }
+@media (max-width: 640px) { .route-mobile-tab { min-height: 40px; } .route-entry-head { flex-direction: column; align-items: stretch; gap: 6px; } .route-entry-actions { justify-content: flex-end; gap: 6px; } .route-entry-actions .icon-button { width: 36px; height: 36px; } .route-position { width: 30px; height: 28px; } .route-available-head { flex-wrap: wrap; align-items: center; } .route-available .button.route-available-add { margin-left: auto; min-height: 36px; padding: 5px 12px; } }
 @media (prefers-reduced-transparency: reduce) { .route-model:hover, .route-model.is-selected, .route-entry, .route-available, .route-save-bar { background: var(--panel); } }
 </style>

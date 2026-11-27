@@ -65,8 +65,8 @@ const accountOpen = ref(false)
 const modelRoutesView = ref<InstanceType<typeof ModelRoutesView> | null>(null)
 const channelsView = ref<InstanceType<typeof ChannelsView> | null>(null)
 const currentMeta = computed(() => meta[view.value] || meta.channels)
-const isDataView = computed(() => view.value === 'channels' || view.value === 'logs' || view.value === 'audit-logs')
-/** 列表型页面：手机上统一成「工具条钉住 + 表格内部滚动」，避免列表末尾留下空白。 */
+const isDataView = computed(() => view.value === 'channels' || view.value === 'model-routes' || view.value === 'logs' || view.value === 'audit-logs')
+/** 列表/分栏视图：固定视口框架 + 内部滚动，避免外层出现多余滚动条。 */
 const isListView = computed(
   () =>
     isDataView.value ||
