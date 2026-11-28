@@ -376,7 +376,7 @@ class GatewayApplication(
     val systemPromptSettingsRepository = SystemPromptSettingsRepository(databaseFactory.database)
     internal val antigravityAgyRuntime = AntigravityAgyRuntime(
         config.antigravityAgy,
-        AntigravityAgySettingsRepository(databaseFactory.database),
+        AntigravityAgySettingsRepository(databaseFactory.database, credentialCipher),
         onAuthenticated = { profile -> registerAgyProfile(profile) },
         prepare = antigravityAgyPreparation,
     )

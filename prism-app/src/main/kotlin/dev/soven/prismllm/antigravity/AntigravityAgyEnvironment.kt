@@ -13,7 +13,7 @@ internal class AgyPreparationException(message: String) : RuntimeException(messa
 
 internal class AntigravityAgyEnvironment(
     private val executable: (Path) -> Boolean = Files::isExecutable,
-    private val command: suspend (List<String>, String, Long) -> String = ::runAgyPreparationCommand,
+    private val command: suspend (List<String>, Map<String, String>, Long) -> String = ::runAgyPreparationCommand,
 ) {
     suspend fun prepare(
         config: AntigravityAgyConfig,
@@ -50,19 +50,19 @@ internal class AntigravityAgyEnvironment(
             if (!executable(Path.of("/usr/bin/apt-get"))) {
                 throw AgyPreparationException("缺少 " + missing.joinToString("、") + "；当前环境不支持 apt-get 自动安装，请由部署管理员安装后重试")
             }
-            if (command(listOf("/usr/bin/id", "-u"), config.proxy, 10).trim() != "0") {
+            if (command(listOf("/usr/bin/id", "-u"), emptyMap(), 10).trim() != "0") {
                 throw AgyPreparationException("缺少 " + missing.joinToString("、") + "；服务用户没有系统安装权限，请由部署管理员安装后重试，不会自动提权")
             }
             if ("Python 3.11+" in missing && config.python != Path.of("/usr/bin/python3")) {
                 throw AgyPreparationException("部署指定的 Python 不可用，请由部署管理员修复该解释器后重试")
             }
-            command(listOf("/usr/bin/apt-get", "update"), config.proxy, 300)
+            command(listOf("/usr/bin/apt-get", "update"), emptyMap(), 300)
             if (!enabled()) return
             val packages = buildList {
                 if ("Python 3.11+" in missing) add("python3")
                 if ("Bubblewrap" in missing) add("bubblewrap")
             }
-            command(listOf("/usr/bin/apt-get", "install", "-y", "--no-install-recommends") + packages, config.proxy, 600)
+            command(listOf("/usr/bin/apt-get", "install", "-y", "--no-install-recommends") + packages, emptyMap(), 600)
             if (!enabled()) return
             if (!pythonSupported(config) || !executable(Path.of("/usr/bin/bwrap"))) {
                 throw AgyPreparationException("安装后依赖仍不满足要求；系统软件源需提供 Python 3.11+ 和 Bubblewrap，请更新运行环境后重试")
@@ -71,16 +71,17 @@ internal class AntigravityAgyEnvironment(
         if (!enabled()) return
         report("PREPARING", missing)
         try {
-            command(config.preparationCommand(), config.proxy, 180)
+            command(config.preparationCommand(), config.proxyEnvironment(), 180)
         } catch (failure: AgyPreparationException) {
-            throw AgyPreparationException("agy 下载或隔离检查失败：请检查本机 HTTP 代理、官方发行包下载，以及宿主机是否允许 Bubblewrap 用户/网络命名空间；不会禁用沙盒或回退旧 OAuth")
+            val egress = if (config.proxy.isBlank()) "服务端直连官方发行包的网络" else "已配置的 HTTP 代理"
+            throw AgyPreparationException("agy 下载或隔离检查失败：请检查$egress，以及宿主机是否允许 Bubblewrap 用户/网络命名空间；不会禁用沙盒或回退旧 OAuth")
         }
     }
 
     private suspend fun pythonSupported(config: AntigravityAgyConfig): Boolean {
         if (!executable(config.python)) return false
         val version = try {
-            command(listOf(config.python.toString(), "--version"), config.proxy, 10)
+            command(listOf(config.python.toString(), "--version"), emptyMap(), 10)
         } catch (failure: AgyPreparationException) {
             return false
         } catch (failure: java.io.IOException) {
@@ -91,7 +92,7 @@ internal class AntigravityAgyEnvironment(
     }
 }
 
-private suspend fun runAgyPreparationCommand(command: List<String>, proxy: String, timeoutSeconds: Long): String {
+private suspend fun runAgyPreparationCommand(command: List<String>, extraEnvironment: Map<String, String>, timeoutSeconds: Long): String {
     val capture = "--version" in command || command.first() == "/usr/bin/id"
     val output = if (capture) Files.createTempFile("prism-agy-check-", ".txt") else null
     try {
@@ -103,10 +104,7 @@ private suspend fun runAgyPreparationCommand(command: List<String>, proxy: Strin
                     put("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
                     put("LANG", "C.UTF-8")
                     put("DEBIAN_FRONTEND", "noninteractive")
-                    if (command.first() == "/usr/bin/apt-get") {
-                        put("http_proxy", proxy)
-                        put("https_proxy", proxy)
-                    }
+                    putAll(extraEnvironment)
                 }
                 if (output == null) redirectOutput(ProcessBuilder.Redirect.DISCARD) else redirectOutput(output.toFile())
             }

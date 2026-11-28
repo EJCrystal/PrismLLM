@@ -1,4 +1,5 @@
 import contextlib
+import base64
 import hashlib
 import io
 import json
@@ -11,6 +12,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import threading
 import textwrap
 import time
 import unittest
@@ -56,12 +58,63 @@ class PilotPreparationTest(unittest.TestCase):
         with self.assertRaises(pilot.PilotError):
             pilot.private_directory(link)
 
-    def test_proxy_accepts_only_credential_free_loopback_http(self):
+    def test_proxy_accepts_direct_and_remote_http_without_embedded_credentials(self):
+        self.assertIsNone(pilot.proxy_address(""))
         self.assertEqual(("127.0.0.1", 7897), pilot.proxy_address("http://127.0.0.1:7897"))
-        for value in ("http://user:secret@127.0.0.1:7897", "http://example.com:80",
+        self.assertEqual(("proxy.example", 80), pilot.proxy_address("http://proxy.example"))
+        for value in ("http://user:secret@127.0.0.1:7897",
                       "https://127.0.0.1:7897", "http://127.0.0.1:7897/private", "http://127.0.0.1:7897?token=x"):
             with self.subTest(value=value), self.assertRaises(pilot.PilotError):
                 pilot.proxy_address(value)
+
+    def test_proxy_authentication_is_optional_and_kept_out_of_proxy_url(self):
+        pilot.validate_proxy_credentials("", None, None)
+        pilot.validate_proxy_credentials("http://proxy.example:8080", "agy-user", "agy-secret")
+        for proxy, username, password in (("", "agy-user", "agy-secret"),
+                                          ("http://proxy.example:8080", "agy-user", None),
+                                          ("http://proxy.example:8080", "agy:user", "agy-secret")):
+            with self.subTest(username=username), self.assertRaises(pilot.PilotError):
+                pilot.validate_proxy_credentials(proxy, username, password)
+        with patch.object(pilot.urllib.request, "build_opener") as build_opener:
+            pilot.release_opener("http://proxy.example:8080", "agy-user", "agy-secret")
+        handlers = build_opener.call_args.args
+        auth_handler = next(handler for handler in handlers if isinstance(handler, pilot.BasicAuthProxyHandler))
+        request = pilot.urllib.request.Request("https://storage.googleapis.com/fixture.tar.gz")
+        auth_handler.https_open(request)
+        expected = "Basic " + base64.b64encode(b"agy-user:agy-secret").decode("ascii")
+        self.assertEqual(expected, request.get_header("Proxy-authorization"))
+        self.assertEqual("http://proxy.example:8080", auth_handler.proxies["https"])
+
+    def test_authenticated_proxy_bridge_sends_basic_auth_only_to_upstream_proxy(self):
+        self.root.mkdir()
+        with socket.socket() as upstream_listener:
+            upstream_listener.bind(("127.0.0.1", 0))
+            upstream_listener.listen()
+            port = upstream_listener.getsockname()[1]
+            received = []
+
+            def accept_connect():
+                connection, _ = upstream_listener.accept()
+                with connection:
+                    received.append(pilot.read_header(connection))
+                    connection.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    while connection.recv(4096):
+                        pass
+
+            upstream_thread = threading.Thread(target=accept_connect)
+            upstream_thread.start()
+            try:
+                with pilot.bridge(self.root, f"http://127.0.0.1:{port}", "agy-user", "agy-secret"):
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                        client.connect(str(self.root / "egress.sock"))
+                        client.sendall(b"CONNECT oauth2.googleapis.com:443 HTTP/1.1\r\n\r\n")
+                        self.assertTrue(client.recv(1024).startswith(b"HTTP/1.1 200"))
+            finally:
+                upstream_thread.join(timeout=2)
+            self.assertFalse(upstream_thread.is_alive())
+            expected = base64.b64encode(b"agy-user:agy-secret")
+            self.assertIn(b"Proxy-Authorization: Basic " + expected, received[0])
+            self.assertIn(b"CONNECT oauth2.googleapis.com:443", received[0])
 
     def test_egress_denies_host_services_api_key_endpoint_and_non_google_hosts(self):
         self.assertEqual("oauth2.googleapis.com", pilot.destination(b"CONNECT oauth2.googleapis.com:443 HTTP/1.1\r\n\r\n"))
@@ -449,7 +502,7 @@ class GatewayAgentTest(unittest.TestCase):
         self.agent.return_value = 23
         with patch.object(pilot, "prepare_files", side_effect=AssertionError("No preparation")), patch.object(Path, "open", guarded_open):
             self.assertEqual(23, self.gateway())
-        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp"])
+        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp"], username=None, password=None)
         self.installer.assert_not_called()
         self.assertEqual("", self.stdout.getvalue())
         self.assertEqual(before, self.snapshot())
@@ -457,7 +510,7 @@ class GatewayAgentTest(unittest.TestCase):
     def test_gateway_accepts_only_explicit_false_if_report_mentions_extra_credits(self):
         pilot.private_json(self.verification, dict(self.report, extraCredits=False))
         self.assertEqual(0, self.gateway())
-        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp"])
+        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp"], username=None, password=None)
 
     def test_missing_state_paths_are_never_recreated(self):
         for relative in ("", "pilot.lock", "policy.json", "release.json", "bin", "bin/agy", "home",
@@ -597,7 +650,7 @@ class GatewayAgentTest(unittest.TestCase):
     def test_gateway_holds_lock_until_agent_exit_and_releases_it_after_errors(self):
         previous_handler = signal.getsignal(signal.SIGTERM)
 
-        def agent(*arguments):
+        def agent(*arguments, **keywords):
             with self.assertRaisesRegex(pilot.PilotError, "already running"):
                 self.invoke("login")
             raise KeyboardInterrupt()
@@ -649,7 +702,7 @@ class GatewayAgentTest(unittest.TestCase):
         self.assertEqual("", self.stdout.getvalue())
 
     def test_login_invalidates_acceptance_before_reauthentication(self):
-        def login(root, proxy, online, arguments):
+        def login(root, proxy, online, arguments, username=None, password=None):
             self.assertFalse(self.verification.exists())
             self.assertEqual(["acp", "--login"], arguments)
             return 1
@@ -658,7 +711,7 @@ class GatewayAgentTest(unittest.TestCase):
         with patch.object(pilot, "install_release", return_value=None):
             self.assertEqual(1, self.invoke("login"))
         self.assertFalse(self.verification.exists())
-        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp", "--login"])
+        self.agent.assert_called_once_with(self.root, self.proxy, True, ["acp", "--login"], username=None, password=None)
         self.assertEqual(b"mock credential must not be read by wrapper", self.credentials.read_bytes())
 
     def test_login_and_verify_invalidate_even_if_cli_check_fails(self):

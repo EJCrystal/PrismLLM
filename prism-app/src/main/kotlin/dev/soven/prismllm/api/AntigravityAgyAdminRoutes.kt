@@ -44,7 +44,16 @@ data class AntigravityAgyLoginRequest(val name: String? = null, val sourceAccoun
 data class AntigravityAgyCodeRequest(val code: String)
 
 @Serializable
-data class AntigravityAgySettingsRequest(val enabled: Boolean, val proxy: String)
+data class AntigravityAgySettingsRequest(
+    val enabled: Boolean,
+    val proxy: String,
+    val username: String? = null,
+    val password: String? = null,
+    val clearAuthentication: Boolean = false,
+) {
+    override fun toString(): String =
+        "AntigravityAgySettingsRequest(enabled=$enabled, proxy=$proxy, authentication=[REDACTED], clearAuthentication=$clearAuthentication)"
+}
 
 internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
     get("/antigravity-agy-settings") {
@@ -56,7 +65,9 @@ internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
     put("/antigravity-agy-settings") {
         call.requireAdmin(app)
         val request = call.receive<AntigravityAgySettingsRequest>()
-        val settings = app.antigravityAgyRuntime.update(request.enabled, request.proxy.trim())
+        val settings = app.antigravityAgyRuntime.update(
+            request.enabled, request.proxy, request.username, request.password, request.clearAuthentication,
+        )
         call.response.headers.append("Cache-Control", "no-store")
         call.respond(settings)
     }

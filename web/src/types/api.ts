@@ -1443,6 +1443,8 @@ export type AntigravityAgyEnvironmentStatus = 'DISABLED' | 'CHECKING' | 'INSTALL
 export interface AntigravityAgySettings {
   enabled: boolean
   proxy: string
+  username: string | null
+  hasAuthentication: boolean
   status: AntigravityAgyEnvironmentStatus
   missingDependencies: string[]
   error: string | null

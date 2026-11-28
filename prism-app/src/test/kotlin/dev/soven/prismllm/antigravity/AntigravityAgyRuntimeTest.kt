@@ -11,6 +11,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -40,6 +42,34 @@ class AntigravityAgyRuntimeTest {
             assertEquals("DISABLED", runtime.snapshot().status)
             assertNull(runtime.login)
         }
+    }
+
+    @Test
+    fun directEgressIsAllowedAndAuthenticatedProxySecretsNeverAppearInSnapshotsOrArguments() = runBlocking {
+        var preparedConfig: AntigravityAgyConfig? = null
+        val runtime = AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository(), {}, prepare = { config, _, _ ->
+            preparedConfig = config
+        })
+        runtime.use {
+            runtime.start()
+            runtime.update(true, "")
+            waitFor(runtime, "READY")
+            assertEquals("", preparedConfig?.proxy)
+
+            runtime.update(true, "http://proxy.example:8080", "agy-user", "agy-secret")
+            waitFor(runtime, "READY")
+            val authenticated = preparedConfig!!
+            assertEquals("agy-user", authenticated.proxyUsername)
+            assertEquals("agy-secret", authenticated.proxyPassword)
+            assertEquals("agy-user", runtime.snapshot().username)
+            assertEquals(true, runtime.snapshot().hasAuthentication)
+            assertFalse(Json.encodeToString(runtime.snapshot()).contains("agy-secret"))
+            assertFalse(authenticated.loginCommand(authenticated.stateDir).contains("agy-secret"))
+
+            runtime.update(true, "http://proxy.example:8080", "agy-user")
+            assertFailsWith<GatewayError> { runtime.update(true, "http://other.example:8080", "agy-user") }
+        }
+        Unit
     }
 
     @Test

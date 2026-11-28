@@ -21,7 +21,7 @@ Antigravity 的管理台新增和旧账号重新登录不再调用 `/admin/api/o
 ## 管理台开关与按需准备
 
 无需填写 agy 环境变量。在“系统配置 → Antigravity 运行环境”或 Antigravity 账号区的“配置运行环境”
-打开开关，确认服务环境内可访问的本机 HTTP 代理并保存。设置持久化到数据库，后台异步准备，
+打开开关，按服务端网络环境选择直连或填写可访问的 HTTP 出口代理；代理认证可选。设置持久化到数据库，后台异步准备，
 HTTP 请求不等待安装结束。默认关闭时不检查、不下载、不安装相关运行依赖。
 
 1. 检查当前服务环境是否为 Linux x86_64，以及 Python 3.11+ 和 Bubblewrap 是否已存在。
@@ -38,6 +38,7 @@ HTTP 请求不等待安装结束。默认关闭时不检查、不下载、不安
 默认镜像基于 Ubuntu 24.04，使系统源中的 Python 满足最低版本；其他部署环境需自行保证兼容的软件源、
 安装权限和可写文件系统。容器必须允许 Bubblewrap 所需的内核命名空间；这不是下载软件能修复的问题，
 不会通过关闭沙盒、提权容器或旧 OAuth 回退绕过检查。
+系统包安装遵循服务环境的 apt 软件源配置，不继承 agy 出口代理；官方发行包下载和隔离网络检查按设置使用直连或 HTTP 代理。
 
 准备状态包括检查、安装缺失依赖、下载校验 CLI/沙盒检查、就绪、失败和关闭。
 关闭后不删除依赖或账号凭据；已开始的系统安装步骤不会因管理台关闭开关而中断，完成该步骤后停止后续准备。
@@ -46,7 +47,7 @@ HTTP 请求不等待安装结束。默认关闭时不检查、不下载、不安
 
 默认脚本位于应用工作目录的 scripts/antigravity_agy_admin.py，状态根目录为 data/antigravity-agy；
 Docker 中分别是 /app/scripts 和 /app/data/antigravity-agy，Compose 使用独立的 prism-llm_agydata 命名卷持久化。
-HTTP 代理仍要求 http://127.0.0.1:端口，不能携带账号密码；容器回环地址指容器自身，需要部署者提供可用出口。
+HTTP 代理地址使用 http://主机:端口，认证账号和密码单独填写，可选不启用认证。密码用网关主密钥 AES-GCM 加密保存且不回显；编辑时留空保留原密码，更换代理地址后需重填密码或关闭认证。代理凭据只注入服务端的受限中继进程，不放入命令行参数或沙盒环境。代理留空时尝试直连；无论直连还是经代理，agy 沙盒只可连接固定的 Google 官方服务域名，不提供任意网络出口。
 不继承宿主 API Key、Google 凭据、钥匙串或 D-Bus。每个 CLI 档案使用独立私有 home、工作目录和排他锁。
 Google token 只保留在 CLI 自己管理的私有 home，设置始终恢复为 useG1Credits: false。
 
@@ -93,10 +94,12 @@ Google token 只保留在 CLI 自己管理的私有 home，设置始终恢复为
 所有端点要求管理会话 Cookie；写操作还要求有效 `X-CSRF-Token`。登录状态属于发起管理员，其他管理员
 不能查询或提交其验证码。响应均不含 Google token，登录响应加 `Cache-Control: no-store`。
 
+运行环境设置读取返回代理地址、代理账号与是否已保存密码，不返回密码。更新请求可省略账号密码以保留已保存认证；发送 password 可新增或替换密码，clearAuthentication: true 可清除认证。代理地址留空表示直连；密码始终单独提交，不能嵌入 URL。
+
 | 方法 | 路径（前缀 `/admin/api`） | 用途 |
 | --- | --- | --- |
 | GET | /antigravity-agy-settings | 开关、服务端准备状态、缺失依赖与失败原因 |
-| PUT | /antigravity-agy-settings | 保存开关和本机 HTTP 代理，开启后异步检查并按需安装 |
+| PUT | /antigravity-agy-settings | 保存开关、可选 HTTP 代理及可选账号密码认证，开启后异步检查并按需安装 |
 | GET | `/antigravity/agy/accounts` | 配置可用性与 CLI 档案元数据 |
 | POST | `/antigravity/agy/logins` | 发起登录，202；可带 `name`、`sourceAccountId` |
 | GET | `/antigravity/agy/logins/{loginId}` | 轮询脱敏状态和官方登录链接 |

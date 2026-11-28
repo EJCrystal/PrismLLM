@@ -256,7 +256,13 @@ export const api = {
     request<OAuthLoginStart>('/oauth-login/start', { method: 'POST', body: JSON.stringify(payload) }),
   listAntigravityAgyAccounts: () => request<AntigravityAgyAccounts>('/antigravity/agy/accounts'),
   getAntigravityAgySettings: () => request<AntigravityAgySettings>('/antigravity-agy-settings'),
-  updateAntigravityAgySettings: (payload: { enabled: boolean; proxy: string }) =>
+  updateAntigravityAgySettings: (payload: {
+    enabled: boolean
+    proxy: string
+    username?: string | null
+    password?: string | null
+    clearAuthentication?: boolean
+  }) =>
     request<AntigravityAgySettings>('/antigravity-agy-settings', { method: 'PUT', body: JSON.stringify(payload) }),
   deleteAntigravityAgyAccount: (profileId: string) =>
     request<void>(`/antigravity/agy/accounts/${encodeURIComponent(profileId)}`, { method: 'DELETE' }),
