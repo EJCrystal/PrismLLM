@@ -634,6 +634,7 @@ internal fun responsesToGeminiRequest(responses: JsonObject, upstreamModel: Stri
                     }
                 }
                 "reasoning" -> Unit
+                "web_search_call" -> Unit
                 else -> unsupported("input[$index].type", "第一版不支持 Responses 输入项")
             }
         }
@@ -750,6 +751,8 @@ internal fun responsesToGeminiResponse(responses: JsonObject, model: String): Js
                 put("thought", true)
             }
             "function_call" -> buildJsonObject { putJsonObject("functionCall") { put("name", item.string("name").orEmpty()); put("args", parseJsonObjectOrEmpty(item.string("arguments"))) } }
+            // 上游代执行的宿主工具（如内置 web_search）：结果体现在后续 message 项里，Gemini 无对应形状，置 null 跳过。
+            "web_search_call" -> null
             else -> unsupported("output[$index].type", "第一版不支持 Responses 输出项")
         }
     }

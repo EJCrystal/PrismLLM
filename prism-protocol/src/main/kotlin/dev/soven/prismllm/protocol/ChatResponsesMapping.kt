@@ -92,6 +92,8 @@ public fun responsesToChatRequest(request: JsonObject): JsonObject {
                     toolImages.defer(callId, result.images)
                 }
                 "reasoning" -> Unit
+                // 历史里的宿主工具项（如 web_search_call）与 reasoning 一样没有可回放的形状，跳过。
+                "web_search_call" -> Unit
                 else -> unsupported("input[$index].type", "第一版不支持 Responses 输入项 ${item.string("type")}")
             }
         }
@@ -245,6 +247,8 @@ internal fun responsesToChatResponse(
                 }
                 reasoning += parts
             }
+            // 上游代执行的宿主工具（如内置 web_search）：结果体现在后续 message 项里，Chat 无对应形状，直接忽略。
+            "web_search_call" -> Unit
             else -> unsupported("output[$index].type", "第一版不支持 Responses 输出项 ${item.string("type")}")
         }
     }
