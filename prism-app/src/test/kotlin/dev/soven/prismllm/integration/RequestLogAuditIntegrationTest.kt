@@ -561,7 +561,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                     }
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("84", result.getString(1))
+                        assertEquals("85", result.getString(1))
                     }
                     statement.executeQuery("select count(*) from channels where egress_proxies <> '[]'").use { result ->
                         assertTrue(result.next())
@@ -1278,7 +1278,7 @@ class RequestLogAuditIntegrationTest : GatewayIntegrationTestBase() {
                 connection.createStatement().use { statement ->
                     statement.executeQuery("select version from flyway_schema_history where success order by installed_rank desc limit 1").use { result ->
                         assertTrue(result.next())
-                        assertEquals("84", result.getString(1))
+                        assertEquals("85", result.getString(1))
                     }
                     statement.executeQuery("select id, model_mapping_revision, key_disable_policy_revision, updated_at from channels order by id").use { result ->
                         for (id in listOf("v69-provider", "v69-static")) {

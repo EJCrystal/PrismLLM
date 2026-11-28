@@ -677,6 +677,7 @@ data class RetentionPolicyResponse(
     val retentionDays: Int,
     val batchSize: Int,
     val cleanupEnabled: Boolean,
+    val requestBodyLoggingEnabled: Boolean = false,
     val cleanupIntervalMs: Long,
     val cutoff: Long,
 )
@@ -684,6 +685,7 @@ data class RetentionPolicyResponse(
 @Serializable
 data class UpdateRetentionPolicyRequest(
     val cleanupEnabled: Boolean,
+    val requestBodyLoggingEnabled: Boolean? = null,
 )
 
 @Serializable
@@ -753,10 +755,11 @@ fun UsageTrendPoint.toResponse() = UsageTrendResponse(
     costUsd = costUsd?.stripTrailingZeros()?.toPlainString(),
 )
 
-fun RetentionPolicy.toResponse(now: Long) = RetentionPolicyResponse(
+fun RetentionPolicy.toResponse(now: Long, requestBodyLoggingEnabled: Boolean = false) = RetentionPolicyResponse(
     retentionDays = retentionDays,
     batchSize = batchSize,
     cleanupEnabled = cleanupEnabled,
+    requestBodyLoggingEnabled = requestBodyLoggingEnabled,
     cleanupIntervalMs = cleanupIntervalMs,
     cutoff = now - retentionDays * 86_400_000L,
 )
@@ -1065,7 +1068,14 @@ data class RequestLogResponse(
     val upstreamAttempts: Int?,
     val attempts: List<UpstreamAttemptResponse> = emptyList(),
     val outcome: String = "other",
+    val requestBodySizeBytes: Long? = null,
+    val requestBodySizeExact: Boolean = true,
+    val requestBodyCaptured: Boolean = false,
+    val requestBodyTruncated: Boolean = false,
 )
+
+@Serializable
+data class RequestLogBodyResponse(val body: String)
 
 /** 单次上游尝试或路由跳过的日志明细。 */
 @Serializable
@@ -1159,6 +1169,10 @@ fun RequestLogRecord.toResponse() = RequestLogResponse(
             skipReason = attempt.skipReason,
         )
     },
+    requestBodySizeBytes = requestBodySizeBytes,
+    requestBodySizeExact = requestBodySizeExact,
+    requestBodyCaptured = requestBodyCaptured,
+    requestBodyTruncated = requestBodyTruncated,
 )
 
 /**

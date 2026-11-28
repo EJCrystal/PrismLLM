@@ -614,6 +614,7 @@ export interface RetentionPolicy {
   retentionDays: number
   batchSize: number
   cleanupEnabled: boolean
+  requestBodyLoggingEnabled: boolean
   cleanupIntervalMs: number
   cutoff: number
 }
@@ -740,6 +741,10 @@ export interface RequestLog {
   createdAt: number
   upstreamAttempts: number | null
   attempts: RequestLogAttempt[]
+  requestBodySizeBytes: number | null
+  requestBodySizeExact: boolean
+  requestBodyCaptured: boolean
+  requestBodyTruncated: boolean
 }
 
 export interface RequestLogAttempt {

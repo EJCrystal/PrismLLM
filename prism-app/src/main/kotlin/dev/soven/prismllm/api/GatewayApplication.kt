@@ -123,6 +123,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.cancelAndJoin
@@ -132,6 +133,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import org.slf4j.LoggerFactory
 import org.slf4j.event.Level
@@ -640,6 +642,7 @@ class GatewayApplication(
                     logRetentionService.currentPolicy().cleanupEnabled,
                 )
             }
+            retentionSettingsRepository.loadRequestBodyLoggingEnabled()
         }
 
         app.install(ContentNegotiation) {
@@ -849,10 +852,15 @@ class GatewayApplication(
         }
     }
 
-    suspend fun updateLogCleanupEnabled(enabled: Boolean) = logRetentionMutex.withLock {
-        retentionSettingsRepository.saveCleanupEnabled(enabled)
-        logRetentionService.setCleanupEnabled(enabled)
-        if (enabled) startLogRetentionJobLocked() else stopLogRetentionJobLocked()
+    suspend fun updateLogCleanupEnabled(enabled: Boolean, requestBodyLoggingEnabled: Boolean? = null) = logRetentionMutex.withLock {
+        withContext(NonCancellable) {
+            retentionSettingsRepository.saveSettings(
+                enabled,
+                requestBodyLoggingEnabled ?: retentionSettingsRepository.isRequestBodyLoggingEnabled(),
+            )
+            logRetentionService.setCleanupEnabled(enabled)
+            if (enabled) startLogRetentionJobLocked() else stopLogRetentionJobLocked()
+        }
     }
 
     private suspend fun syncLogRetentionJob() = logRetentionMutex.withLock {

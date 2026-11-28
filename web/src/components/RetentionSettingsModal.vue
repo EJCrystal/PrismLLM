@@ -14,6 +14,7 @@ const emit = defineEmits<{
 }>()
 
 const enabled = ref(props.policy.cleanupEnabled)
+const bodyLoggingEnabled = ref(props.policy.requestBodyLoggingEnabled ?? false)
 const saving = ref(false)
 const cleaning = ref(false)
 const lastCleanup = ref<number | null>(null)
@@ -22,8 +23,11 @@ async function save(): Promise<void> {
   if (saving.value) return
   saving.value = true
   try {
-    await api.updateRetentionPolicy({ cleanupEnabled: enabled.value })
-    notify(`自动清理已${enabled.value ? '开启' : '关闭'}`)
+    await api.updateRetentionPolicy({
+      cleanupEnabled: enabled.value,
+      requestBodyLoggingEnabled: bodyLoggingEnabled.value,
+    })
+    notify('请求日志设置已保存')
     emit('saved')
     emit('close')
   } catch (cause) {
@@ -51,8 +55,22 @@ async function cleanup(): Promise<void> {
 </script>
 
 <template>
-  <Modal title="请求日志保留" eyebrow="全局业务设置" @close="$emit('close')">
+  <Modal title="请求日志" eyebrow="全局业务设置" @close="$emit('close')">
     <form id="retention-settings-form" class="form-grid" @submit.prevent="save">
+      <label class="switch-row">
+        <input v-model="bodyLoggingEnabled" type="checkbox" :disabled="saving" />
+        <span class="switch"></span>
+        <span>
+          <strong>记录请求正文</strong>
+          <small>默认关闭。开启后，普通模型代理已鉴权并读取到的正文（包括解析失败的内容）会保存到日志详情，最多保留前 64 KiB；Antigravity ACP 等独立接口不采集。</small>
+        </span>
+      </label>
+
+      <div class="callout warning">
+        正文可能包含提示词、个人信息和业务秘密，数据库中以 Base64 保存（不是加密），不会自动脱敏。此开关不采集 Authorization、Cookie 等请求头或成功响应正文。
+        关闭后仅停止新记录，不补录历史；已保存正文随请求日志一起清理。
+      </div>
+
       <label class="switch-row">
         <input v-model="enabled" type="checkbox" :disabled="saving" />
         <span class="switch"></span>
