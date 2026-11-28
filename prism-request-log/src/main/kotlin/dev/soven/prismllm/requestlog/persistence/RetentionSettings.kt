@@ -8,6 +8,7 @@ import org.jetbrains.exposed.v1.core.Table
 object RetentionSettings : Table("retention_settings") {
     val id = integer("id")
     val cleanupEnabled = bool("cleanup_enabled")
+    val requestBodyLoggingEnabled = bool("request_body_logging_enabled").default(false)
     val updatedAt = long("updated_at")
 
     override val primaryKey = PrimaryKey(id)

@@ -56,11 +56,12 @@ import org.jetbrains.exposed.v1.jdbc.select
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import java.math.BigDecimal
+import java.util.Base64
 import kotlinx.coroutines.CancellationException
 import org.slf4j.LoggerFactory
 
 /**
- * 请求日志持久化。只写入元数据与用量，不写 prompt 和响应正文。
+ * 请求日志持久化。请求正文在单独表中按需保存，成功响应正文不保存。
  *
  * @author 文杰
  * @since 2026-10-21
@@ -131,10 +132,28 @@ class RequestLogRepository(
             it[upstreamErrorBody] = record.upstreamErrorBody
             it[upstreamAttempts] = record.upstreamAttempts
             it[attemptsJson] = UpstreamAttemptCodec.encode(record.attempts)
+            it[requestBodySizeBytes] = record.requestBodySizeBytes
+            it[requestBodySizeExact] = record.requestBodySizeExact
+            it[requestBodyCaptured] = record.requestBody != null
+            it[requestBodyTruncated] = record.requestBodyTruncated
             it[createdAt] = record.createdAt
             it[healthIndexed] = true
         }[RequestLogs.id]
+        record.requestBody?.let { body ->
+            RequestLogBodies.insert {
+                it[RequestLogBodies.logId] = logId
+                it[bodyBase64] = Base64.getEncoder().encodeToString(body.toByteArray(Charsets.UTF_8))
+            }
+        }
         indexAttempts(logId, record)
+    }
+
+    suspend fun findRequestBody(logId: Long): String? = suspendTransaction(database) {
+        RequestLogBodies.select(RequestLogBodies.bodyBase64)
+            .where { RequestLogBodies.logId eq logId }
+            .singleOrNull()
+            ?.get(RequestLogBodies.bodyBase64)
+            ?.let { Base64.getDecoder().decode(it).toString(Charsets.UTF_8) }
     }
 
     /** Bounded, restart-safe historical indexing; live writes are indexed atomically above. */
@@ -765,6 +784,10 @@ class RequestLogRepository(
         upstreamAttempts = row[RequestLogs.upstreamAttempts],
         attempts = UpstreamAttemptCodec.decode(row[RequestLogs.attemptsJson]),
         id = row[RequestLogs.id],
+        requestBodySizeBytes = row[RequestLogs.requestBodySizeBytes],
+        requestBodySizeExact = row[RequestLogs.requestBodySizeExact],
+        requestBodyCaptured = row[RequestLogs.requestBodyCaptured],
+        requestBodyTruncated = row[RequestLogs.requestBodyTruncated],
     )
 
 }
