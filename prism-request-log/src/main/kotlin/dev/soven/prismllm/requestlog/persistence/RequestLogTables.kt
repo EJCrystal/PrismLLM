@@ -54,12 +54,23 @@ object RequestLogs : Table("request_logs") {
     val upstreamAttempts = integer("upstream_attempts").nullable()
     val attemptsJson = text("attempts_json")
     val healthIndexed = bool("health_indexed").default(false)
+    val requestBodySizeBytes = long("request_body_size_bytes").nullable()
+    val requestBodySizeExact = bool("request_body_size_exact").default(true)
+    val requestBodyCaptured = bool("request_body_captured").default(false)
+    val requestBodyTruncated = bool("request_body_truncated").default(false)
     val createdAt = long("created_at")
 
     override val primaryKey = PrimaryKey(id)
     init {
         index(false, createdAt)
     }
+}
+
+object RequestLogBodies : Table("request_log_bodies") {
+    val logId = long("log_id").references(RequestLogs.id, onDelete = ReferenceOption.CASCADE)
+    val bodyBase64 = text("body_base64")
+
+    override val primaryKey = PrimaryKey(logId)
 }
 
 /** Normalized observations; identifiers survive channel/key deletion, requests own retention. */

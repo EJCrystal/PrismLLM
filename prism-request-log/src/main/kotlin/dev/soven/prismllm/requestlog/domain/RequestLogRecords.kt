@@ -7,7 +7,7 @@ import dev.soven.prismllm.shared.domain.GatewayProtocol
 import java.math.BigDecimal
 
 /**
- * 请求日志记录。默认不含 prompt 与响应正文。
+ * 请求日志记录。请求正文仅在显式启用时单独保存，响应正文不保存。
  *
  * @author 文杰
  * @since 2026-10-21
@@ -61,6 +61,11 @@ data class RequestLogRecord(
     val attempts: List<UpstreamAttemptRecord> = emptyList(),
     val pricingModelId: String? = null,
     val id: Long = 0,
+    val requestBody: String? = null,
+    val requestBodySizeBytes: Long? = null,
+    val requestBodySizeExact: Boolean = true,
+    val requestBodyCaptured: Boolean = requestBody != null,
+    val requestBodyTruncated: Boolean = false,
 )
 
 /**

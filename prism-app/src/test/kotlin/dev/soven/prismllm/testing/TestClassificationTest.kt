@@ -134,6 +134,7 @@ class TestClassificationTest {
             "ProtocolConversionIntegrationTest" to setOf("shard-2", "protocol"),
             "RateLimitIntegrationTest" to setOf("shard-1", "channel"),
             "RequestAuthenticationIntegrationTest" to setOf("shard-1"),
+            "RequestBodyLoggingIntegrationTest" to setOf("shard-2"),
             "RequestFinalizationIntegrationTest" to setOf("shard-4"),
             "RequestLogAuditIntegrationTest" to setOf("shard-2"),
             "RequestLogQueryIntegrationTest" to setOf("shard-2"),

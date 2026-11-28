@@ -445,6 +445,7 @@ export const api = {
     if (to != null) params.set('to', String(to))
     return request<RequestLogFilterOptions>('/request-logs/filter-options?' + params)
   },
+  getRequestLogBody: (id: number) => request<{ body: string }>('/request-logs/' + id + '/body'),
   getUsageReport: ({ from, to, clientKeyId = null, channelId = null, model = null, protocol = null, timezoneOffsetMinutes = 0 }: UsageReportQuery, options: RequestOptions = {}) => {
     const params = new URLSearchParams({ from: String(from), to: String(to) })
     if (clientKeyId) params.set('clientKeyId', clientKeyId)
@@ -455,7 +456,7 @@ export const api = {
     return request<UsageReport>(`/usage-report?${params}`, options)
   },
   getRetentionPolicy: () => request<RetentionPolicy>('/request-log-retention'),
-  updateRetentionPolicy: (payload: { cleanupEnabled: boolean }) =>
+  updateRetentionPolicy: (payload: { cleanupEnabled: boolean; requestBodyLoggingEnabled: boolean }) =>
     request<RetentionPolicy>('/request-log-retention', { method: 'PUT', body: JSON.stringify(payload) }),
   cleanupRequestLogs: () => request<CleanupResult>('/request-log-retention/cleanup', { method: 'POST' }),
 }

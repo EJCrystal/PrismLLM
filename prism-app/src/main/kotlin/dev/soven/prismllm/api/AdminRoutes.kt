@@ -2278,6 +2278,16 @@ fun Route.adminRoutes(app: GatewayApplication) {
             call.respond(app.requestLogRepository.listForDisplay(limit, beforeId, call.requestLogQuery()).map { it.toResponse() })
         }
 
+        get("/request-logs/{id}/body") {
+            call.requireAdmin(app)
+            val id = call.parameters["id"]?.toLongOrNull()?.takeIf { it > 0 }
+                ?: throw badRequest("invalid_request_log_id", "请求日志 ID 无效")
+            val body = app.requestLogRepository.findRequestBody(id)
+                ?: throw notFound("request_body_not_recorded", "该请求没有已保存的请求正文")
+            call.response.headers.append("Cache-Control", "no-store")
+            call.respond(RequestLogBodyResponse(body))
+        }
+
         get("/request-logs/filter-options") {
             call.requireAdmin(app)
             call.respond(app.requestLogRepository.filterOptions(call.requestLogQuery()))
@@ -2306,14 +2316,22 @@ fun Route.adminRoutes(app: GatewayApplication) {
 
         get("/request-log-retention") {
             call.requireAdmin(app)
-            call.respond(app.logRetentionService.currentPolicy().toResponse(System.currentTimeMillis()))
+            call.respond(
+                app.logRetentionService.currentPolicy().toResponse(
+                    System.currentTimeMillis(), app.retentionSettingsRepository.isRequestBodyLoggingEnabled(),
+                ),
+            )
         }
 
         put("/request-log-retention") {
             call.requireAdmin(app)
             val request = call.receive<UpdateRetentionPolicyRequest>()
-            app.updateLogCleanupEnabled(request.cleanupEnabled)
-            call.respond(app.logRetentionService.currentPolicy().toResponse(System.currentTimeMillis()))
+            app.updateLogCleanupEnabled(request.cleanupEnabled, request.requestBodyLoggingEnabled)
+            call.respond(
+                app.logRetentionService.currentPolicy().toResponse(
+                    System.currentTimeMillis(), app.retentionSettingsRepository.isRequestBodyLoggingEnabled(),
+                ),
+            )
         }
 
         post("/request-log-retention/cleanup") {

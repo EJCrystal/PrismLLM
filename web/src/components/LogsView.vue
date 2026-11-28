@@ -190,6 +190,34 @@ function setLogDensity(value: 'comfortable' | 'compact'): void {
   try { localStorage.setItem('prism-llm.logs.density', value) } catch { /* ignore storage failures */ }
 }
 const selected = ref<RequestLog | null>(null)
+const requestBody = ref<string | null>(null)
+const requestBodyLoading = ref(false)
+const requestBodyError = ref('')
+let requestBodyGeneration = 0
+
+watch(() => selected.value?.id, () => {
+  requestBodyGeneration++
+  requestBody.value = null
+  requestBodyLoading.value = false
+  requestBodyError.value = ''
+}, { flush: 'sync' })
+
+async function loadRequestBody(): Promise<void> {
+  if (!selected.value?.requestBodyCaptured || requestBodyLoading.value) return
+  const id = selected.value.id
+  const generation = ++requestBodyGeneration
+  requestBodyLoading.value = true
+  requestBodyError.value = ''
+  try {
+    const result = await api.getRequestLogBody(id)
+    if (generation === requestBodyGeneration) requestBody.value = result.body
+  } catch (cause) {
+    if (generation === requestBodyGeneration) requestBodyError.value = cause instanceof Error ? cause.message : String(cause)
+  } finally {
+    if (generation === requestBodyGeneration) requestBodyLoading.value = false
+  }
+}
+
 const detailDialog = ref<HTMLDivElement | null>(null)
 const tableScroll = ref<HTMLElement | null>(null)
 let detailTrigger: HTMLElement | null = null
@@ -481,6 +509,7 @@ onBeforeUnmount(() => {
   clearTimeout(searchTimer)
   clearTimeout(filterTimer)
   optionsGeneration++
+  requestBodyGeneration++
   mediaQuery?.removeEventListener('change', updateLayout)
 })
 </script>
@@ -886,6 +915,13 @@ onBeforeUnmount(() => {
                 <span>来源 IP</span>
                 <strong class="mono detail-wrap" :title="selected.clientIp">{{ selected.clientIp }}</strong>
               </div>
+              <div class="detail-item">
+                <span>请求体大小</span>
+                <strong v-if="selected.requestBodySizeBytes != null" class="detail-wrap">
+                  {{ selected.requestBodySizeExact ? '' : '至少 ' }}{{ formatTokens(selected.requestBodySizeBytes) }} 字节{{ selected.requestBodySizeExact ? '' : '（未读完）' }}
+                </strong>
+                <strong v-else>未读取或历史未记录</strong>
+              </div>
               </div>
             </section>
             <section class="detail-card" aria-labelledby="request-route-title">
@@ -1080,6 +1116,22 @@ onBeforeUnmount(() => {
               </ol>
             </details>
 
+            <section class="detail-block" aria-labelledby="request-body-title">
+              <div class="detail-block-head">
+                <span id="request-body-title">请求正文</span>
+                <CopyButton v-if="requestBody !== null" :text="requestBody" title="复制请求正文" :size="13" />
+              </div>
+              <p v-if="!selected.requestBodyCaptured" class="muted small">未记录正文：当时未开启记录、请求体未读取，或属于历史日志。</p>
+              <template v-else>
+                <p class="muted small">敏感内容未脱敏。{{ selected.requestBodyTruncated ? '仅保留部分正文（超过 64 KiB 或请求未读完）。' : '已保留完整正文。' }}</p>
+                <pre v-if="requestBody !== null" class="detail-code">{{ requestBody || '（空正文）' }}</pre>
+                <button v-else type="button" class="button subtle" :disabled="requestBodyLoading" @click="loadRequestBody">
+                  {{ requestBodyLoading ? '读取中…' : requestBodyError ? '重试读取正文' : '查看请求正文' }}
+                </button>
+                <p v-if="requestBodyError" class="small" role="alert">{{ requestBodyError }}</p>
+              </template>
+            </section>
+
             <div v-if="selected.upstreamErrorBody" class="detail-block">
               <div class="detail-block-head">
                 <span>上游响应正文</span>
@@ -1090,7 +1142,7 @@ onBeforeUnmount(() => {
 
             <details class="detail-hint muted small">
               <summary>字段与计费说明</summary>
-              <p>输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。未提供的可选字段不展示，已记录的 0 值保留；用量未知或未发起请求会明确标注，不做估算。尝试耗时仅比较已记录的上游调用，不代表请求总耗时。日志不保存 prompt 与成功响应正文；失败请求的上游错误正文会截断并脱敏后保存。</p>
+              <p>输出速率为输出 token / 总耗时；缓存命中为 cached / input。费用按渠道 + 上游模型的单价快照计算，推理 token 已包含在输出 token 中。未提供的可选字段不展示，已记录的 0 值保留；用量未知或未发起请求会明确标注，不做估算。尝试耗时仅比较已记录的上游调用，不代表请求总耗时。请求体大小为实际读取的字节数，未读完时仅为下限。请求正文仅在管理台开启记录后保存，最多 64 KiB；不保存成功响应正文，失败请求的上游错误正文会截断并脱敏后保存。</p>
             </details>
           </div>
 
