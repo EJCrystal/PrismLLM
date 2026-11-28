@@ -5,7 +5,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Tag
 
+@Tag("unit")
 class RequestBodyCaptureTest {
     @Test
     fun disabledCaptureCountsBytesWithoutKeepingBody() {

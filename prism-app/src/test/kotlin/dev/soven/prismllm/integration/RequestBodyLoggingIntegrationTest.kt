@@ -27,7 +27,9 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.jupiter.api.Tag
 
+@Tag("shard-2")
 class RequestBodyLoggingIntegrationTest : GatewayIntegrationTestBase() {
     private val body = """ {"model":"body-test","messages":[{"role":"user","content":"PRIVATE_PROMPT_中文"}]} """
 
