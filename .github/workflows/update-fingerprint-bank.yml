@@ -1,0 +1,95 @@
+name: Update fingerprint bank
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Upstream lm-detector ref to use
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fingerprint-bank-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Prepare fingerprint bank update
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      SOURCE_REF: ${{ inputs.source_ref || 'main' }}
+      UPDATE_BRANCH: automation/update-fingerprint-bank
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prepare update branch
+        env:
+          # 不能使用默认 GITHUB_TOKEN：由它产生的 push / pull_request 事件不会触发
+          # 其他工作流，自动更新 PR 将永远等不到 CI 与审查。使用专用令牌推送。
+          GH_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法以可触发 CI 的身份推送更新分支"
+            exit 1
+          fi
+          gh auth setup-git
+          git fetch origin main
+          # 已有更新分支先取回，--force-with-lease 才有可比的远端引用。
+          git fetch origin "$UPDATE_BRANCH" || true
+          # 一律从 origin/main 起分支：workflow_dispatch 允许在任意 ref 上触发，
+          # 直接 switch --create 会把触发分支上的无关提交带进面向 main 的 PR。
+          git switch --force-create "$UPDATE_BRANCH" origin/main
+
+      - name: Validate updater
+        run: |
+          python3 -m py_compile scripts/update_fingerprint_bank.py
+          python3 .github/scripts/test_fingerprint_bank_update.py
+
+      - name: Update embedded detector
+        run: python3 scripts/update_fingerprint_bank.py --ref "$SOURCE_REF"
+
+      - name: Commit and open pull request
+        env:
+          # 同上：用专用令牌推送与开 PR，才能触发目标分支的 CI 和 AI 审查。
+          GH_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法推送更新分支或创建可触发 CI 的 PR"
+            exit 1
+          fi
+          if git diff --quiet -- prism-app/src/main/resources/fingerprint/models.json prism-app/src/main/resources/fingerprint/shared_detector.bin; then
+            echo "Fingerprint bank is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prism-app/src/main/resources/fingerprint/models.json prism-app/src/main/resources/fingerprint/shared_detector.bin
+          git commit -m "chore(fingerprint): update detector bank"
+          git push --force-with-lease origin "$UPDATE_BRANCH"
+          if [ -z "$(gh pr list --head "$UPDATE_BRANCH" --base main --json url --jq '.[0].url')" ]; then
+            body_file="$(mktemp)"
+            cat > "$body_file" <<EOF
+          Automated update from Ikaleio/lm-detector ref $SOURCE_REF.
+
+          The updater validates the detector header, model IDs, response counts, SHA-256 binding, and Kotlin metadata before opening this PR.
+          EOF
+            gh pr create \
+              --base main \
+              --head "$UPDATE_BRANCH" \
+              --title "chore(fingerprint): update detector bank" \
+              --body-file "$body_file"
+          fi

@@ -125,6 +125,7 @@ jobs:
             ci:
               - '.github/workflows/**'
               - '.github/scripts/**'
+              - 'scripts/update_fingerprint_bank.py'
               - '.coderabbit.yaml'
               - 'docker-compose.yml'
               - 'docker-compose.build.yml'
@@ -161,6 +162,11 @@ jobs:
           python3 .github/scripts/test_ci_test_modules.py
           python3 -m py_compile .github/scripts/ci_test_report.py
           python3 .github/scripts/test_ci_test_report.py
+
+      - name: Validate fingerprint bank updater
+        run: |
+          python3 -m py_compile scripts/update_fingerprint_bank.py
+          python3 .github/scripts/test_fingerprint_bank_update.py
 
       - name: Validate review bot config
         run: |
