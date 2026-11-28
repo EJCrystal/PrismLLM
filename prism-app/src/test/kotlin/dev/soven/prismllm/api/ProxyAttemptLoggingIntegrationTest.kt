@@ -580,9 +580,11 @@ class ProxyAttemptLoggingIntegrationTest {
             val summary = report.channels.single { it.channelId == channel.id }
             assertEquals(1, summary.metrics.attempts)
             assertEquals(1, summary.metrics.successes)
-            assertEquals("UNKNOWN", summary.state)
+            // 展示不设最少样本门槛：单次新鲜成功即按实际失败率判定为健康，不足 minimumSamples 仅供小样本提示。
+            assertTrue(summary.metrics.attempts < report.minimumSamples)
+            assertEquals("HEALTHY", summary.state)
             assertEquals(1, summary.recent!!.metrics.attempts)
-            assertEquals("UNKNOWN", summary.recent!!.state)
+            assertEquals("HEALTHY", summary.recent!!.state)
             assertEquals(report.to - 3_600_000, summary.recent!!.from)
             assertEquals("SUCCESS", summary.recentAttempts.single().outcome)
             assertEquals(modelId, summary.recentAttempts.single().upstreamModel)
