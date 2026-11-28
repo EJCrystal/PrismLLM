@@ -74,7 +74,9 @@ internal fun healthTransition(
     now: Long,
 ): NotificationAlertUpdate {
     val before = previous ?: NotificationAlertState(health.channelId, "health")
-    if (health.state == "UNKNOWN") return NotificationAlertUpdate(before.copy(updatedAt = now))
+    if (health.state == "UNKNOWN" ||
+        (health.state in setOf("HEALTHY", "WARNING", "CRITICAL") && health.metrics.attempts < ChannelHealthThresholds.MINIMUM_SAMPLES)
+    ) return NotificationAlertUpdate(before.copy(updatedAt = now))
     if (health.state == "DISABLED") return NotificationAlertUpdate(before.copy(active = false, state = "DISABLED", updatedAt = now))
     fun rank(state: String?): Int = when (state) {
         "WARNING" -> 1

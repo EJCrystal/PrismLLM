@@ -4,6 +4,7 @@ import dev.soven.prismllm.admin.domain.NotificationAlertState
 import dev.soven.prismllm.admin.domain.NotificationEvents
 import dev.soven.prismllm.requestlog.domain.AttemptOutcome
 import dev.soven.prismllm.requestlog.domain.ChannelHealthSummary
+import dev.soven.prismllm.requestlog.domain.ChannelHealthThresholds
 import dev.soven.prismllm.requestlog.domain.HealthMetrics
 import dev.soven.prismllm.requestlog.domain.UpstreamAttemptRecord
 import dev.soven.prismllm.requestlog.domain.attemptOutcome
@@ -87,6 +88,27 @@ class NotificationRulesTest {
         assertNull(disabled.event)
         assertFalse(disabled.state.active)
         assertNull(healthTransition(disabled.state, summary("HEALTHY"), "渠道", 10).event)
+    }
+
+    @Test
+    fun `small sample verdicts neither alert nor recover existing health alerts`() {
+        val minimum = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong()
+        val priorStates = listOf(null, NotificationAlertState("channel", "health", active = true, state = "CRITICAL"))
+        for (state in listOf("HEALTHY", "WARNING", "CRITICAL")) {
+            for (attempts in listOf(0L, 1L, minimum - 1)) {
+                val summary = ChannelHealthSummary("channel", HealthMetrics(attempts = attempts), state = state)
+                for (previous in priorStates) {
+                    val result = healthTransition(previous, summary, "渠道", 1234)
+                    assertNull(result.event)
+                    assertEquals((previous ?: NotificationAlertState("channel", "health")).copy(updatedAt = 1234), result.state)
+                }
+            }
+        }
+        val critical = ChannelHealthSummary("channel", HealthMetrics(attempts = minimum, failures = minimum), state = "CRITICAL")
+        val alert = healthTransition(null, critical, "渠道", 1234)
+        assertEquals(NotificationEvents.CHANNEL_UNHEALTHY, alert.event?.eventType)
+        val recovered = healthTransition(alert.state, critical.copy(state = "HEALTHY", metrics = critical.metrics.copy(successes = minimum, failures = 0)), "渠道", 1235)
+        assertEquals(NotificationEvents.CHANNEL_RECOVERED, recovered.event?.eventType)
     }
 
     @Test

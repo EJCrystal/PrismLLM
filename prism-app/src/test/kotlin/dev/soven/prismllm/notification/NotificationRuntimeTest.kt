@@ -11,6 +11,7 @@ import dev.soven.prismllm.admin.domain.NotificationSettings
 import dev.soven.prismllm.admin.domain.NotificationTarget
 import dev.soven.prismllm.admin.persistence.NotificationRepository
 import dev.soven.prismllm.requestlog.domain.ChannelHealthSummary
+import dev.soven.prismllm.requestlog.domain.HealthMetrics
 import dev.soven.prismllm.requestlog.domain.UpstreamAttemptRecord
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -135,9 +136,10 @@ class NotificationRuntimeTest {
     fun `health polling emits on startup and preserves deduplication across a runtime restart`() = runTest {
         val fixture = Observations()
         var state = "NO_CREDENTIALS"
+        var attempts = 0L
         fun runtime() = NotificationRuntime(
             fixture.repository, NotificationTransport { _, _ -> error("no queued deliveries") }, backgroundScope,
-            healthSnapshot = { listOf(ChannelHealthSummary("channel", state = state)) },
+            healthSnapshot = { listOf(ChannelHealthSummary("channel", HealthMetrics(attempts = attempts), state = state)) },
             channelNames = { mapOf("channel" to "渠道") },
         )
         val first = runtime()
@@ -155,6 +157,9 @@ class NotificationRuntimeTest {
         restarted.checkHealth()
         assertEquals(1, fixture.events.size)
         state = "HEALTHY"
+        restarted.checkHealth()
+        assertEquals(1, fixture.events.size)
+        attempts = 20
         restarted.checkHealth()
         assertEquals(NotificationEvents.CHANNEL_RECOVERED, fixture.events.last().eventType)
         restarted.closeAndDrain()

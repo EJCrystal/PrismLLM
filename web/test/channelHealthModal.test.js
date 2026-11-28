@@ -124,6 +124,31 @@ describe('channel health detail dashboard', () => {
     assert.doesNotMatch(overall.textContent, /上游失败率达到 5%|90\.0%/)
   })
 
+  it('shows small sample verdicts and reference hints without suppressing failure warnings', async () => {
+    for (const [state, attempts, failures] of [['HEALTHY', 7, 0], ['WARNING', 19, 1], ['CRITICAL', 7, 7]]) {
+      const data = fixture()
+      const sampleMetrics = { ...metrics, attempts, successes: attempts - failures, failures, successRate: (attempts - failures) / attempts, firstTokenSamples: 0 }
+      Object.assign(data.report.channels[0], { state, reason: failures ? '上游失败率达到阈值' : '成功率正常', metrics: sampleMetrics })
+      data.byModel[0].metrics = sampleMetrics
+      const { document } = await render({ data })
+      assert.equal(document.querySelector('.health-verdict').getAttribute('data-state'), state)
+      const metricGrid = document.querySelector('.health-metric-grid')
+      assert.match(metricGrid.textContent, /小样本，仅供参考/)
+      assert.doesNotMatch(document.body.textContent, /暂不判定|样本不足/)
+      assert.equal(metricGrid.querySelectorAll('.health-metric-warning').length, failures ? 2 : 0)
+      assert.match(document.querySelector('.health-breakdown tbody').textContent, /小样本/)
+    }
+  })
+
+  it('does not label empty or sufficient observations as small samples', async () => {
+    for (const attempts of [0, 20]) {
+      const data = fixture()
+      Object.assign(data.report.channels[0], { state: attempts ? 'HEALTHY' : 'UNKNOWN', metrics: { ...metrics, attempts, successes: attempts, failures: 0, successRate: attempts ? 1 : null } })
+      const { document } = await render({ data })
+      assert.doesNotMatch(document.querySelector('.health-metric-grid').textContent, /小样本|样本不足/)
+    }
+  })
+
   it('uses only the selected window verdict after switching the detail range', async () => {
     for (const [window, label] of [['24h', '24 小时'], ['7d', '7 天'], ['15d', '15 天'], ['30d', '30 天']]) {
       const data = fixture()

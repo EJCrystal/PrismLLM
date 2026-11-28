@@ -151,7 +151,7 @@ data class ChannelHealthDetail(
 )
 
 /**
- * 渠道健康状态的判定顺序：停用 → 无可用凭据 → 样本不足 → 成功率与延迟。
+ * 渠道健康状态的判定顺序：停用 → 无可用凭据 → 无样本或观测过期 → 成功率与延迟。
  *
  * `DISABLED` 是运营者主动停用；`NO_CREDENTIALS` 是渠道仍启用、但支持它的凭据全部不可路由
  * （人工停用、永久停用或尚未到期的临时停用），此时渠道接不到任何请求。
@@ -168,7 +168,6 @@ fun healthState(
     routableCredentials == 0 -> "NO_CREDENTIALS" to "没有可用的上游凭据"
     metrics.attempts == 0L -> "UNKNOWN" to "暂无有效样本"
     metrics.lastObservedAt == null || now - metrics.lastObservedAt > ChannelHealthThresholds.STALE_AFTER_MS -> "UNKNOWN" to "最近一小时无有效样本"
-    metrics.attempts < ChannelHealthThresholds.MINIMUM_SAMPLES -> "UNKNOWN" to "样本不足（至少 ${ChannelHealthThresholds.MINIMUM_SAMPLES} 次）"
     metrics.failures.toDouble() / metrics.attempts >= ChannelHealthThresholds.CRITICAL_ERROR_RATE ->
         "CRITICAL" to "上游失败率达到 ${ChannelHealthThresholds.CRITICAL_ERROR_RATE.asPercent()}%"
     metrics.failures.toDouble() / metrics.attempts >= ChannelHealthThresholds.WARNING_ERROR_RATE ->

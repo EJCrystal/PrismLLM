@@ -259,7 +259,9 @@ class ChannelHealthRepositoryTest {
         assertEquals(100.0, observedA.metrics.outputTokensPerSecond)
         assertEquals(1, report.channels[1].metrics.successes)
         assertEquals(HealthMetrics(), report.channels[2].metrics)
-        assertEquals("UNKNOWN", observedA.state)
+        assertEquals("CRITICAL", observedA.state)
+        assertEquals("HEALTHY", report.channels[1].state)
+        assertEquals("UNKNOWN", report.channels[2].state)
 
         val detail = health.detail("24h", subject(a), 30, emptyList(), now)
         assertEquals(24, detail.trend.size)
@@ -267,6 +269,7 @@ class ChannelHealthRepositoryTest {
         assertEquals("model-a", detail.byModel.single().id)
         assertEquals("responses", detail.byProtocol.single().id)
         assertEquals("key-a", detail.byKey.single().id)
+        assertEquals("CRITICAL", detail.report.channels.single().state)
         assertEquals(setOf("rate_limit", "stream_error"), detail.errors.map { it.code }.toSet())
     }
 
@@ -549,7 +552,8 @@ class ChannelHealthRepositoryTest {
         assertEquals(200, summary.recentAttempts.last().statusCode)
         assertEquals("responses_failed", summary.recentAttempts.last().errorCode)
         assertEquals(2, summary.recent!!.metrics.failures)
-        assertEquals("UNKNOWN", summary.recent!!.state)
+        assertEquals("CRITICAL", summary.state)
+        assertEquals("CRITICAL", summary.recent!!.state)
     }
 
     @Test
