@@ -241,11 +241,32 @@ function setMappingDraft(model: string, draft: OAuthMappingDraft) {
 function changeMappingMode(model: string, mode: OAuthModelMappingMode) {
   const baseline = baselineMappingByModel.value.get(model)
   const draft = mappingDraftFor(model)
-  setMappingDraft(model, { mode, canonicalModelId: draft.canonicalModelId || baseline?.automaticCanonicalModelId || model })
+  const canonicalModelId = mode === 'auto'
+    ? baseline?.automaticCanonicalModelId ?? model
+    : draft.canonicalModelId || baseline?.automaticCanonicalModelId || model
+  setMappingDraft(model, { mode, canonicalModelId })
 }
 
 function changeManualMapping(model: string, canonicalModelId: string) {
+  if (!canonicalModelId.trim()) {
+    changeMappingMode(model, 'upstream')
+    return
+  }
   setMappingDraft(model, { mode: 'manual', canonicalModelId })
+}
+
+function mappingInputValue(model: string): string {
+  const draft = mappingDraftFor(model)
+  if (draft.mode === 'upstream') return ''
+  if (draft.mode === 'manual') return draft.canonicalModelId
+  return baselineMappingByModel.value.get(model)?.automaticCanonicalModelId ?? (draft.canonicalModelId || model)
+}
+
+function mappingModeLabel(model: string): string {
+  const mode = mappingDraftFor(model).mode
+  if (mode === 'auto') return '自动映射'
+  if (mode === 'upstream') return '沿用上游 ID'
+  return '手动映射'
 }
 
 function mappingPublicId(model: string): string {
@@ -1357,7 +1378,7 @@ onBeforeUnmount(() => {
             </div>
             <div class="oauth-model-list oauth-mapping-list">
               <div class="oauth-mapping-head small" aria-hidden="true">
-                <span>授权 / 上游模型</span><span>对外 ID / public ID</span><span>映射模式</span><span>映射来源</span>
+                <span>授权 / 上游模型</span><span></span><span>对外模型 ID</span>
               </div>
               <div v-for="model in filteredSettingsModels" :key="model" class="oauth-mapping-row" :data-upstream-model="model">
                 <div class="oauth-mapping-upstream">
@@ -1367,33 +1388,34 @@ onBeforeUnmount(() => {
                   </label>
                   <span v-if="settingsModelOutsideCatalog(model)" class="badge warning small oauth-model-outside" title="不在当前账号目录中；保留草稿不会增加上游套餐权限">目录外</span>
                 </div>
+                <div class="oauth-mapping-arrow" aria-hidden="true"><Icon name="arrow" :size="13" /></div>
                 <div class="oauth-mapping-public">
-                  <span class="mono small" :title="mappingPublicId(model)">{{ mappingPublicId(model) }}</span>
                   <OAuthMappingInput
-                    v-if="mappingDraftFor(model).mode === 'manual'"
-                    :model-value="mappingDraftFor(model).canonicalModelId"
+                    :model-value="mappingInputValue(model)"
                     :upstream-model="model"
                     :options="mappingCandidates"
-                    :disabled="settingsOperationBusy"
+                    :disabled="settingsOperationBusy || !baselineMappingByModel.has(model)"
+                    inline
+                    picker-text="候选"
                     @update:model-value="changeManualMapping(model, $event)"
                   />
+                  <div class="oauth-mapping-meta">
+                    <span class="badge neutral small oauth-mapping-mode-indicator" :data-mode="mappingDraftFor(model).mode">{{ mappingModeLabel(model) }}</span>
+                    <span class="muted small oauth-mapping-source">来源：{{ mappingSource(model) }}</span>
+                    <button v-if="mappingDraftFor(model).mode !== 'auto'" type="button" class="link-button small oauth-mapping-restore" :disabled="settingsOperationBusy" @click="changeMappingMode(model, 'auto')">恢复自动</button>
+                  </div>
                   <span v-if="conflictingMappings.has(model)" class="small oauth-conflict-baseline">最新共享值：{{ baselineMappingByModel.get(model)?.publicModelId ?? model }}（{{ baselineMappingByModel.get(model)?.mode ?? 'auto' }}；来源 {{ baselineMappingByModel.get(model)?.mappingSource ?? '无' }}；{{ baselineMappingByModel.get(model)?.catalogActive ? '有效' : '目录休眠' }}；自动默认 {{ baselineMappingByModel.get(model)?.automaticCanonicalModelId ?? model }}）</span>
                   <div v-if="invalidMappingDrafts.includes(model)" class="small oauth-conflict-baseline">
                     无共享映射：此草稿不会提交，可保留账号授权。同步模型恢复共享行后再核对，或
                     <button type="button" class="link-button small" :disabled="settingsOperationBusy" @click="discardMappingDraft(model)">丢弃此映射草稿</button>
                   </div>
                 </div>
-                <div class="oauth-mapping-mode">
-                  <select :value="mappingDraftFor(model).mode" :aria-label="model + ' 映射模式'" :disabled="settingsOperationBusy" @change="changeMappingMode(model, ($event.target as HTMLSelectElement).value as OAuthModelMappingMode)">
-                    <option value="auto">自动</option><option value="manual">手工</option><option value="upstream">使用上游 ID</option>
-                  </select>
-                  <button v-if="mappingDraftFor(model).mode !== 'auto'" type="button" class="link-button small" :disabled="settingsOperationBusy" @click="changeMappingMode(model, 'auto')">恢复自动</button>
-                </div>
-                <span class="oauth-mapping-source muted small">{{ mappingSource(model) }}</span>
               </div>
               <span v-if="settingsModelOptions.length === 0" class="oauth-model-empty muted small">该账号还没有可选模型。同步模型或补充列表外的模型。</span>
               <span v-else-if="filteredSettingsModels.length === 0" class="oauth-model-empty muted small">没有匹配「{{ settingsForm.modelQuery }}」的模型。</span>
             </div>
+            <p class="oauth-model-all-hint muted small">留空沿用上游 ID；有自动映射时显示当前对外 ID，点「恢复自动」可重新跟随提供方默认。映射由同一提供方的账号共享。
+            </p>
             <p v-if="settingsForm.allModels" class="oauth-model-all-hint muted small">
               {{ settingsTarget?.modelCatalog ? '当前使用该账号目录里的全部模型；' : '当前继承所关联渠道的全部模型；' }}取消勾选「全部模型」后可只调度勾选的模型。全部模式不限制映射编辑。
             </p>
@@ -1445,8 +1467,8 @@ onBeforeUnmount(() => {
 .oauth-settings-notice, .oauth-mapping-error { background: var(--warning-soft); }
 .oauth-settings-notice .checkbox-row { margin-top: 8px; }
 .oauth-mapping-list {
-  --oauth-mapping-columns: minmax(150px, 1.1fr) minmax(220px, 1.5fr) minmax(130px, .8fr) minmax(90px, .6fr);
-  --oauth-mapping-min-width: 660px;
+  --oauth-mapping-columns: minmax(150px, 1.1fr) 28px minmax(220px, 1.5fr);
+  --oauth-mapping-min-width: 480px;
   min-width: 0;
   max-width: 100%;
   max-height: 440px;
@@ -1461,7 +1483,7 @@ onBeforeUnmount(() => {
 }
 .oauth-mapping-head { position: sticky; top: 0; z-index: 1; background: var(--panel); color: var(--muted); }
 .oauth-mapping-row + .oauth-mapping-row { border-top: 1px solid var(--line); }
-.oauth-mapping-upstream, .oauth-mapping-public, .oauth-mapping-mode {
+.oauth-mapping-upstream, .oauth-mapping-public {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
   min-width: 0;
@@ -1469,14 +1491,15 @@ onBeforeUnmount(() => {
   gap: 6px;
 }
 .oauth-mapping-upstream .oauth-model-option { min-width: 0; padding: 0; align-items: start; }
-.oauth-mapping-upstream .mono, .oauth-mapping-public > .mono, .oauth-mapping-source { min-width: 0; overflow-wrap: anywhere; }
-.oauth-mapping-mode select { box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; }
-.oauth-mapping-mode .link-button { justify-self: start; }
+.oauth-mapping-upstream .mono, .oauth-mapping-source { min-width: 0; overflow-wrap: anywhere; }
+.oauth-mapping-arrow { display: grid; min-height: 32px; place-items: center; color: var(--muted); }
+.oauth-mapping-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; min-width: 0; }
+.oauth-mapping-restore { justify-self: start; }
 .oauth-conflict-baseline { color: var(--warning); overflow-wrap: anywhere; }
 @media (max-width: 680px) {
   .oauth-mapping-list { --oauth-mapping-columns: minmax(0, 1fr); --oauth-mapping-min-width: 0; }
   .oauth-mapping-head { display: none; }
-  .oauth-mapping-row { gap: 12px; }
-  .oauth-mapping-source::before { content: '映射来源：'; }
+  .oauth-mapping-row { gap: 8px; }
+  .oauth-mapping-arrow { min-height: 14px; transform: rotate(90deg); }
 }
 </style>

@@ -31,20 +31,12 @@ class GatewayConfigTest {
     }
 
     @Test
-    fun channelProxyAllowlistIsIndependentFromOAuthAndValidated() {
+    fun channelProxyAllowlistIsNotConfiguredThroughAnEnvironmentVariable() {
         val config = GatewayConfig.fromEnv(requiredEnv + mapOf(
-            "CHANNEL_PROXY_ALLOWED_HOSTS" to " Proxy.Example,host.docker.internal,*.onesproxy.vip ",
+            "CHANNEL_PROXY_ALLOWED_HOSTS" to "http://proxy.example:7897",
             "OAUTH_PROXY_ALLOWED_HOSTS" to "oauth.example",
         ))
-        assertEquals(
-            setOf("proxy.example", "host.docker.internal", "*.onesproxy.vip"),
-            config.channelProxyAllowedHosts,
-        )
         assertEquals(setOf("oauth.example"), config.oauth.proxyAllowedHosts)
-        assertTrue(GatewayConfig.fromEnv(requiredEnv).channelProxyAllowedHosts.isEmpty())
-        assertFailsWith<IllegalArgumentException> {
-            GatewayConfig.fromEnv(requiredEnv + ("CHANNEL_PROXY_ALLOWED_HOSTS" to "http://proxy.example:7897"))
-        }
     }
 
     @Test

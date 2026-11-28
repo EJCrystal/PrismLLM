@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { api } from '../api'
 import { notify } from '../toast'
 import { ApiError } from '../types/api'
@@ -16,8 +16,6 @@ const current = ref<ChannelEgressSettings | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const hostsText = ref('')
-
-const deploymentHosts = computed(() => current.value?.deploymentHosts || [])
 
 function errorMessage(cause: unknown): string {
   return cause instanceof Error && cause.message ? cause.message : String(cause)
@@ -84,7 +82,7 @@ onMounted(load)
           rows="7"
           spellcheck="false"
           autocapitalize="off"
-          placeholder="例如：&#10;na-data.onesproxy.vip&#10;*.onesproxy.vip"
+          placeholder="例如：&#10;proxy.example.com&#10;*.example.com"
           :disabled="saving"
         ></textarea>
         <small>
@@ -93,14 +91,6 @@ onMounted(load)
           移除仍有渠道在用的主机后，这些渠道的代理请求会被拒绝。
         </small>
       </label>
-
-      <div v-if="deploymentHosts.length" class="callout info">
-        <strong>部署环境变量已放行（只读）</strong>
-        <p><code>CHANNEL_PROXY_ALLOWED_HOSTS</code> 提供的主机始终生效，不能在这里删除。</p>
-        <ul>
-          <li v-for="host in deploymentHosts" :key="host"><code>{{ host }}</code></li>
-        </ul>
-      </div>
     </form>
     <template #footer>
       <button type="button" class="button ghost" @click="$emit('close')">取消</button>
@@ -110,14 +100,3 @@ onMounted(load)
     </template>
   </Modal>
 </template>
-
-<style scoped>
-.callout ul {
-  margin: 6px 0 0;
-  padding-left: 18px;
-}
-
-.callout li {
-  line-height: 1.7;
-}
-</style>

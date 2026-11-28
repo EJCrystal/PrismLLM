@@ -21,15 +21,16 @@ defineEmits<{ 'update:modelValue': [value: string] }>()
   <div class="oauth-mapping-input" :class="{ 'is-inline': inline }">
     <input
       :value="modelValue"
-      :aria-label="upstreamModel + ' 手工对外 ID'"
+      :aria-label="upstreamModel + ' 对外模型 ID'"
       :disabled="disabled"
       autocomplete="off"
-      placeholder="输入对外 ID（1..200 字符）"
+      placeholder="留空沿用上游名"
+      title="留空沿用上游 ID；输入值作为对外 ID（最多 200 个字符）"
       @input="$emit('update:modelValue', ($event.target as HTMLInputElement).value)"
     />
     <SearchSelect
       :model-value="modelValue"
-      :label="upstreamModel + ' 对外 ID'"
+      :label="upstreamModel + ' 对外模型 ID'"
       :options="options"
       :disabled="disabled"
       :panel-width="360"

@@ -27,7 +27,7 @@ open class ChannelEgressConfigurationException(message: String) : IllegalArgumen
  * 代理主机不在放行名单内。单独成类型，管理台据此提供“放行此主机”入口。
  */
 class ChannelProxyHostNotAllowedException(val host: String) : ChannelEgressConfigurationException(
-    "渠道代理主机「$host」不在允许列表内；请在「系统配置 → 渠道出口代理」放行该主机，或配置 CHANNEL_PROXY_ALLOWED_HOSTS",
+    "渠道代理主机「$host」不在允许列表内；请在「系统配置 → 渠道出口代理」放行该主机",
 )
 
 fun channelProxyUri(url: String): URI {

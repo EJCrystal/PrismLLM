@@ -2,7 +2,6 @@ package dev.soven.prismllm.config
 
 import java.nio.file.Path
 import java.util.Base64
-import dev.soven.prismllm.channel.domain.ChannelProxyHosts
 import dev.soven.prismllm.requestlog.domain.HealthPolicy
 import dev.soven.prismllm.requestlog.domain.RetentionPolicy
 import dev.soven.prismllm.resilience.CooldownPolicy
@@ -59,7 +58,6 @@ data class GatewayConfig(
     val oauth: OAuthConfig = OAuthConfig(),
     /** Responses 内置 web_search 的网关代执行配置。 */
     val webSearch: WebSearchConfig = WebSearchConfig(),
-    val channelProxyAllowedHosts: Set<String> = emptySet(),
     val antigravityAcp: AntigravityAcpConfig? = null,
     val antigravityAgy: AntigravityAgyConfig = AntigravityAgyConfig.defaults(),
 ) {
@@ -227,10 +225,6 @@ data class GatewayConfig(
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
                 oauth = OAuthConfig.fromEnv(env),
                 antigravityAcp = AntigravityAcpConfig.fromEnv(env),
-                channelProxyAllowedHosts = ChannelProxyHosts.parse(
-                    env["CHANNEL_PROXY_ALLOWED_HOSTS"],
-                    "CHANNEL_PROXY_ALLOWED_HOSTS",
-                ).toSet(),
                 webSearch = WebSearchConfig(
                     enabled = webSearchEnabled,
                     provider = webSearchProvider,
