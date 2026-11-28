@@ -124,8 +124,8 @@ export function channelListHealthState(
 }
 
 /** Trend colours describe observed error bands, not a guarantee of current availability. */
-export function healthBucketState(metrics: HealthMetrics, minimumSamples = 20, warningRate = 0.05, criticalRate = 0.2): HealthState {
-  if (metrics.attempts < minimumSamples || metrics.successRate == null) return 'UNKNOWN'
+export function healthBucketState(metrics: HealthMetrics, warningRate = 0.05, criticalRate = 0.2): HealthState {
+  if (metrics.attempts <= 0) return 'UNKNOWN'
   const rate = metrics.failures / metrics.attempts
   return rate >= criticalRate ? 'CRITICAL' : rate >= warningRate ? 'WARNING' : 'HEALTHY'
 }

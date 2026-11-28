@@ -224,14 +224,13 @@ function tryClose() {
           <section class="health-trend" aria-label="健康度历史">
             <h3>成功率趋势 <small class="muted">{{ window === '24h' ? '每小时' : '每 24 小时' }}</small></h3>
             <div class="health-history">
-              <button v-for="(bucket, index) in detail.trend" :key="bucket.from" type="button" class="health-history-bar" :data-state="healthBucketState(bucket.metrics, detail.report.minimumSamples, detail.report.warningErrorRate, detail.report.criticalErrorRate)" :class="{ selected: selectedBucket === index, 'is-empty': bucket.metrics.attempts === 0 }" :title="bucketLabel(bucket)" :aria-label="bucketLabel(bucket)" :aria-pressed="selectedBucket === index" @click="selectedBucket = index" />
+              <button v-for="(bucket, index) in detail.trend" :key="bucket.from" type="button" class="health-history-bar" :data-state="healthBucketState(bucket.metrics, detail.report.warningErrorRate, detail.report.criticalErrorRate)" :class="{ selected: selectedBucket === index, 'is-empty': bucket.metrics.attempts === 0 }" :title="bucketLabel(bucket)" :aria-label="bucketLabel(bucket)" :aria-pressed="selectedBucket === index" @click="selectedBucket = index" />
             </div>
             <div class="health-history-axis muted small"><span>{{ formatTime(detail.report.from) }}</span><span>{{ formatTime(detail.report.to) }}</span></div>
             <div class="health-history-legend" aria-label="成功率趋势图例">
               <span><i class="health-legend-swatch healthy" aria-hidden="true" />正常</span>
               <span><i class="health-legend-swatch warning" aria-hidden="true" />需关注 ≥ {{ healthPercent(detail.report.warningErrorRate) }} 失败</span>
               <span><i class="health-legend-swatch critical" aria-hidden="true" />异常 ≥ {{ healthPercent(detail.report.criticalErrorRate) }} 失败</span>
-              <span><i class="health-legend-swatch insufficient" aria-hidden="true" />样本不足 &lt; {{ detail.report.minimumSamples }} 次</span>
               <span><i class="health-legend-swatch empty" aria-hidden="true" />无请求</span>
             </div>
             <p v-if="activeBucket" class="small health-bucket-detail" role="status">{{ bucketLabel(activeBucket) }}；失败 {{ activeBucket.metrics.failures }} 次，P95 首 token {{ formatDuration(activeBucket.metrics.p95FirstTokenMs) }}。</p>
@@ -243,6 +242,7 @@ function tryClose() {
               <p>真实请求观测 · 不发起额外探测，也不修改模型路由顺序。所有时间按请求完成时间统计。</p>
               <p>排除 {{ metrics.excluded }} 次客户端取消、参数错误或网关协议转换失败。HTTP 200 后流式失败仍算失败。未知不代表可用或不可用。</p>
               <p>至少 {{ detail.report.minimumSamples }} 个样本才判定健康度；最近一小时无有效样本显示未知。错误率 ≥ {{ healthPercent(detail.report.warningErrorRate) }} 需关注、≥ {{ healthPercent(detail.report.criticalErrorRate) }} 异常；首 token P95 超过 {{ formatDuration(detail.report.slowFirstTokenMs) }}、或 P50 超过 {{ formatDuration(detail.report.slowP50FirstTokenMs) }}，且样本足够时提示关注。这两条只影响关注提示，不触发冷却。</p>
+              <p>趋势色块按各时段的实际失败率显示正常、需关注或异常，不设最少样本门槛；无有效请求的时段留空，不代表正常。</p>
               <p>TTFT 仅统计有首 token 的成功流式尝试；总耗时按上游单次尝试计时。输出速度为输出 token ÷（上游耗时 − 首 token），包含传输及工具等待，只供同模型、同协议比较。</p>
               <p>估算输出速度完整值：{{ healthThroughput(metrics.outputTokensPerSecond) === '—' ? '—' : metrics.outputTokensPerSecond?.toFixed(1) + ' tok/s' }}。</p>
             </div>
@@ -369,7 +369,6 @@ function tryClose() {
 .health-history-bar[data-state='HEALTHY'] { background: var(--success-fill); }
 .health-history-bar[data-state='WARNING'] { background: var(--warning-fill); }
 .health-history-bar[data-state='CRITICAL'] { background: var(--danger-fill); }
-.health-history-bar[data-state='UNKNOWN'] { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning-fill) 22%, var(--surface-solid)) 0 7px, color-mix(in srgb, var(--warning-fill) 52%, var(--surface-solid)) 7px 11px); outline: 1px solid color-mix(in srgb, var(--warning-fill) 72%, var(--glass-line)); outline-offset: -1px; }
 .health-history-bar.is-empty { background: transparent; outline: 1px dashed var(--line-strong); outline-offset: -1px; }
 .health-history-bar.selected, .health-history-bar:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; opacity: 1; }
 .health-history-legend { display: flex; flex-wrap: wrap; gap: 6px 12px; color: var(--muted); font-size: 11px; line-height: 1.4; }
@@ -377,7 +376,6 @@ function tryClose() {
 .health-legend-swatch { display: inline-block; width: 16px; height: 9px; flex: 0 0 16px; border-radius: 2px; }
 .health-legend-swatch.healthy { background: var(--success-fill); }
 .health-legend-swatch.warning { background: var(--warning-fill); }
-.health-legend-swatch.insufficient { background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--warning-fill) 22%, var(--surface-solid)) 0 4px, color-mix(in srgb, var(--warning-fill) 52%, var(--surface-solid)) 4px 7px); border: 1px solid color-mix(in srgb, var(--warning-fill) 72%, var(--glass-line)); }
 .health-legend-swatch.critical { background: var(--danger-fill); }
 .health-legend-swatch.empty { background: transparent; border: 1px dashed var(--line-strong); }
 .health-history-axis { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 4px 12px; }
