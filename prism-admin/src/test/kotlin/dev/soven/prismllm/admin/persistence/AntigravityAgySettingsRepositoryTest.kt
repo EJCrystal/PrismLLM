@@ -15,6 +15,7 @@ import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -54,5 +55,23 @@ class AntigravityAgySettingsRepositoryTest {
         assertTrue("agy-user" !in row[AntigravityAgySettings.proxyPasswordCiphertext])
         val disabled = repository.save(saved.copy(enabled = false))
         assertEquals(disabled, repository.load())
+    }
+
+    @Test
+    fun disablingWithUnreadableCredentialsPreservesEncryptedAuthentication() = runBlocking {
+        val repository = AntigravityAgySettingsRepository(factory.database, cipher)
+        val saved = repository.save(AntigravityAgySettingsRecord(true, "http://proxy.example:8080", "agy-user", "agy-secret"))
+        val before = suspendTransaction(factory.database) { AntigravityAgySettings.selectAll().single() }
+        val wrongKey = CredentialCipher(ByteArray(32) { (it + 1).toByte() })
+        val unreadable = AntigravityAgySettingsRepository(factory.database, wrongKey)
+        assertTrue(unreadable.load()!!.proxyCredentialsUnreadable)
+        val updatedAt = unreadable.disable()
+        assertEquals(saved.copy(enabled = false, updatedAt = updatedAt), repository.load())
+        assertFalse(unreadable.load()!!.enabled)
+        assertTrue(unreadable.load()!!.proxyCredentialsUnreadable)
+        val after = suspendTransaction(factory.database) { AntigravityAgySettings.selectAll().single() }
+        assertEquals(before[AntigravityAgySettings.proxyPasswordCiphertext], after[AntigravityAgySettings.proxyPasswordCiphertext])
+        assertEquals(before[AntigravityAgySettings.proxyPasswordNonce], after[AntigravityAgySettings.proxyPasswordNonce])
+        assertEquals(before[AntigravityAgySettings.proxyPasswordKeyVersion], after[AntigravityAgySettings.proxyPasswordKeyVersion])
     }
 }

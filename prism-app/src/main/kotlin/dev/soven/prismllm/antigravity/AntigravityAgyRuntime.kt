@@ -107,6 +107,19 @@ internal class AntigravityAgyRuntime(
         if (!clearAuthentication && normalizedProxy.isNotEmpty() && username != null && username.isBlank()) {
             throw badRequest("invalid_agy_proxy_authentication", "代理账号不能为空；如不启用认证，请关闭账号密码认证")
         }
+        if (!enabled && proxyCredentialsUnreadable && normalizedProxy == current.proxy &&
+            (username == null || username == current.username) && password.isNullOrEmpty() && !clearAuthentication) {
+            withContext(NonCancellable) {
+                val updatedAt = repository.disable()
+                synchronized(monitor) {
+                    current = current.copy(
+                        enabled = false, status = "DISABLED", missingDependencies = emptyList(),
+                        error = null, updatedAt = updatedAt,
+                    )
+                }
+            }
+            return@withLock current
+        }
         val nextAuthentication = when {
             clearAuthentication || normalizedProxy.isEmpty() -> null to null
             !password.isNullOrEmpty() -> (username?.takeIf(String::isNotBlank) ?: current.username) to password
