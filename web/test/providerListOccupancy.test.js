@@ -20,7 +20,7 @@ function snapshot(counts) {
 
 const displayedKeys = state => state.displayedProviders.value.map(item => item.key)
 
-describe('提供商列表实时在途排序', () => {
+describe('提供商列表实时在途与近期路由排序', () => {
   let server
   let component
   let api
@@ -76,7 +76,7 @@ describe('提供商列表实时在途排序', () => {
     assert.deepEqual(displayedKeys(state), [CHATGPT, ANTIGRAVITY, 'custom-a', 'custom-z', 'oauth:unprovisioned'])
   })
 
-  it('按渠道总在途数降序混排官方订阅与自定义 API，快照变化立即重排', async () => {
+  it('实时在途数优先，归零后按近期路由时间混排提供商', async () => {
     const state = await setup()
     const originalChannels = state.channels.value.map(channel => channel.id)
     let counts = { [CHATGPT]: 2, [ANTIGRAVITY]: 5, 'custom-a': 1, 'custom-z': 9 }
@@ -84,9 +84,18 @@ describe('提供商列表实时在途排序', () => {
     await state.loadOccupancy()
     assert.deepEqual(displayedKeys(state), ['custom-z', ANTIGRAVITY, CHATGPT, 'custom-a', 'oauth:unprovisioned'])
 
+    const now = Date.now()
+    state.healthReport.value = {
+      window: '24h',
+      channels: [
+        { channelId: ANTIGRAVITY, metrics: { lastObservedAt: now - 2_000 } },
+        { channelId: 'custom-z', metrics: { lastObservedAt: now - 1_000 } },
+        { channelId: 'custom-a', metrics: { lastObservedAt: now - 3_000 } },
+      ],
+    }
     counts = { [CHATGPT]: 8, 'custom-a': 12 }
     await state.loadOccupancy()
-    assert.deepEqual(displayedKeys(state), ['custom-a', CHATGPT, ANTIGRAVITY, 'oauth:unprovisioned', 'custom-z'])
+    assert.deepEqual(displayedKeys(state), ['custom-a', CHATGPT, 'custom-z', ANTIGRAVITY, 'oauth:unprovisioned'])
     assert.deepEqual(state.channels.value.map(channel => channel.id), originalChannels)
     assert.deepEqual(state.providerItems.value.map(item => item.key), [CHATGPT, ANTIGRAVITY, 'oauth:unprovisioned', 'custom-z', 'custom-a'])
   })
