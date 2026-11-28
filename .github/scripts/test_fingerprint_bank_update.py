@@ -199,6 +199,7 @@ class WorkflowBranchBaseTests(unittest.TestCase):
             **self.environment,
             "PATH": f"{binary_dir}{os.pathsep}{os.environ['PATH']}",
             "UPDATE_BRANCH": "automation/update-fingerprint-bank",
+            "GH_TOKEN": "test-token",
         }
         return subprocess.run(["bash", "-euo", "pipefail", "-c", script], cwd=work, env=environment, capture_output=True, text=True)
 
@@ -209,6 +210,15 @@ class WorkflowBranchBaseTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual("automation/update-fingerprint-bank", self.git(work, "branch", "--show-current"))
             self.assertEqual(main_sha, self.git(work, "rev-parse", "HEAD"))
+
+    def test_push_uses_a_token_that_can_trigger_ci(self):
+        # GITHUB_TOKEN 产生的 push/pull_request 事件不会启动其他工作流，
+        # 自动更新 PR 必须用专用令牌推送与开 PR，否则永远等不到 CI 与审查。
+        workflow = (ROOT / ".github/workflows/update-fingerprint-bank.yml").read_text(encoding="utf-8")
+        for header in ("      - name: Prepare update branch", "      - name: Commit and open pull request"):
+            step = yaml_block(workflow, header)
+            self.assertIn("secrets.PR_AGENT_TRIGGER_TOKEN", step)
+            self.assertNotIn("github.token", step)
 
     def test_existing_update_branch_is_reset_to_main(self):
         with tempfile.TemporaryDirectory() as directory:

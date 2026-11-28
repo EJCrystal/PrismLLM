@@ -38,8 +38,14 @@ jobs:
 
       - name: Prepare update branch
         env:
-          GH_TOKEN: ${{ github.token }}
+          # 不能使用默认 GITHUB_TOKEN：由它产生的 push / pull_request 事件不会触发
+          # 其他工作流，自动更新 PR 将永远等不到 CI 与审查。使用专用令牌推送。
+          GH_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法以可触发 CI 的身份推送更新分支"
+            exit 1
+          fi
           gh auth setup-git
           git fetch origin main
           # 已有更新分支先取回，--force-with-lease 才有可比的远端引用。
@@ -58,8 +64,13 @@ jobs:
 
       - name: Commit and open pull request
         env:
-          GH_TOKEN: ${{ github.token }}
+          # 同上：用专用令牌推送与开 PR，才能触发目标分支的 CI 和 AI 审查。
+          GH_TOKEN: ${{ secrets.PR_AGENT_TRIGGER_TOKEN }}
         run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::error::未配置 secret PR_AGENT_TRIGGER_TOKEN，无法推送更新分支或创建可触发 CI 的 PR"
+            exit 1
+          fi
           if git diff --quiet -- prism-app/src/main/resources/fingerprint/models.json prism-app/src/main/resources/fingerprint/shared_detector.bin; then
             echo "Fingerprint bank is already up to date."
             exit 0
