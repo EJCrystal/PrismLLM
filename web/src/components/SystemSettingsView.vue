@@ -294,7 +294,7 @@ const settingRows = computed<SettingRow[]>(() => {
       valueTitle: channelEgress.data?.effectiveHosts.join('\n') || '',
       meta: channelEgress.data?.updatedAt
         ? updatedLabel(channelEgress.data.updatedAt)
-        : (channelEgress.data?.deploymentHosts.length ? '仅使用环境变量默认值' : '尚未放行非回环主机'),
+        : (channelEgress.data?.hosts.length ? '管理台名单已配置' : '尚未放行非回环主机'),
       alert: '',
       tone: channelEgress.data ? (channelEgress.data.effectiveHosts.length > 0 ? 'success' : 'muted') : undefined,
       onAction: () => { showChannelEgress.value = true },

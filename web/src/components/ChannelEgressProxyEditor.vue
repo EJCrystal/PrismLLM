@@ -52,7 +52,7 @@ function addProxy(): void {
       </div>
     </div>
     <button type="button" class="button ghost mini" :disabled="proxies.length >= 100" @click="addProxy">添加出口代理</button>
-    <p class="muted small">HTTP、SOCKS5 均支持账号密码认证，凭据请单独填写，不要放进代理地址。SOCKS5 的目标域名由代理解析。非本机回环地址需在「系统配置 → 渠道出口代理」放行，也可由部署环境变量 CHANNEL_PROXY_ALLOWED_HOSTS 提供。</p>
+    <p class="muted small">HTTP、SOCKS5 均支持账号密码认证，凭据请单独填写，不要放进代理地址。SOCKS5 的目标域名由代理解析。非本机回环地址需在「系统配置 → 渠道出口代理」放行。</p>
   </details>
 </template>
 

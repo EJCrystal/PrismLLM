@@ -10,8 +10,7 @@ class ChannelProxyHostsTest {
     @Test
     fun `entries are normalized deduplicated and support wildcard suffixes`() {
         val hosts = ChannelProxyHosts.parse(
-            " Proxy.Example , *.onesproxy.vip,proxy.example,,10.0.0.8 ",
-            "CHANNEL_PROXY_ALLOWED_HOSTS",
+            listOf(" Proxy.Example ", " *.onesproxy.vip", "proxy.example", "", "10.0.0.8 "),
         )
 
         assertEquals(listOf("proxy.example", "*.onesproxy.vip", "10.0.0.8"), hosts)
@@ -19,7 +18,10 @@ class ChannelProxyHostsTest {
 
     @Test
     fun `trailing dots are normalized for entries and requested hosts`() {
-        assertEquals(listOf("proxy.example", "*.example.com"), ChannelProxyHosts.parse("proxy.example.,*.example.com."))
+        assertEquals(
+            listOf("proxy.example", "*.example.com"),
+            ChannelProxyHosts.parse(listOf("proxy.example.", "*.example.com.")),
+        )
         assertTrue(ChannelProxyHosts.matches("proxy.example.", listOf("proxy.example")))
         assertTrue(ChannelProxyHosts.matches("na.example.com", listOf("*.example.com.")))
         assertFalse(ChannelProxyHosts.matches("example.com.", listOf("*.example.com.")))
@@ -37,11 +39,11 @@ class ChannelProxyHostsTest {
             "*.",
         ).forEach { entry ->
             assertFailsWith<IllegalArgumentException>(entry) {
-                ChannelProxyHosts.parse(listOf(entry), "CHANNEL_PROXY_ALLOWED_HOSTS")
+                ChannelProxyHosts.parse(listOf(entry), "渠道出口代理白名单")
             }
         }
         assertFailsWith<IllegalArgumentException> {
-            ChannelProxyHosts.parse(List(65) { "host$it.example" }, "CHANNEL_PROXY_ALLOWED_HOSTS")
+            ChannelProxyHosts.parse(List(65) { "host$it.example" }, "渠道出口代理白名单")
         }
     }
 

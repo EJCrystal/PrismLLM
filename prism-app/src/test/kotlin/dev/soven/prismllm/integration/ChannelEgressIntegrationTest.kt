@@ -615,7 +615,7 @@ class ChannelEgressIntegrationTest : GatewayIntegrationTestBase() {
         testApplication {
             application { app.install(this) }
             // 模拟另一个实例：未刷新前持有旧快照，周期刷新后收敛。
-            val replica = ChannelProxyHostAllowlist(app.config.channelProxyAllowedHosts, app.channelEgressSettingsRepository)
+            val replica = ChannelProxyHostAllowlist(app.channelEgressSettingsRepository)
             replica.refresh()
             assertFalse(replica.allows("egress.example.com"))
             val body = """{"name":"allowlist-channel","baseUrl":"${fake.baseUrl}/ok/v1","modelMappings":[{"upstreamModel":"m1"}],"egressProxies":[{"id":"us","name":"美国","url":"http://egress.example.com:8080"}],"keys":[{"name":"key","credential":"secret","models":["m1"],"egressProxyId":"us"}]}"""
