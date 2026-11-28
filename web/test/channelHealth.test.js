@@ -70,18 +70,21 @@ describe('channel health display', () => {
     assert.equal(healthPercent(-0.2), '0.0%')
   })
 
-  it('keeps sparse buckets unknown and distinguishes the failure bands', () => {
+  it('keeps empty buckets unknown and classifies sparse buckets by observed failures', () => {
     assert.equal(healthBucketState({ attempts: 0, failures: 0, successRate: null }), 'UNKNOWN')
-    assert.equal(healthBucketState({ attempts: 19, failures: 19, successRate: 0 }), 'UNKNOWN')
+    assert.equal(healthBucketState({ attempts: 1, failures: 0, successRate: 1 }), 'HEALTHY')
+    assert.equal(healthBucketState({ attempts: 19, failures: 1, successRate: 18 / 19 }), 'WARNING')
+    assert.equal(healthBucketState({ attempts: 1, failures: 1, successRate: 0 }), 'CRITICAL')
+    assert.equal(healthBucketState({ attempts: 19, failures: 19, successRate: 0 }), 'CRITICAL')
     assert.equal(healthBucketState({ attempts: 100, failures: 4, successRate: .96 }), 'HEALTHY')
     assert.equal(healthBucketState({ attempts: 20, failures: 1, successRate: .95 }), 'WARNING')
     assert.equal(healthBucketState({ attempts: 20, failures: 4, successRate: .8 }), 'CRITICAL')
   })
 
   it('uses health thresholds supplied by the server', () => {
-    assert.equal(healthBucketState({ attempts: 20, failures: 2, successRate: .9 }, 20, .1, .3), 'WARNING')
-    assert.equal(healthBucketState({ attempts: 20, failures: 6, successRate: .7 }, 20, .1, .3), 'CRITICAL')
-    assert.equal(healthBucketState({ attempts: 20, failures: 1, successRate: .95 }, 20, .1, .3), 'HEALTHY')
+    assert.equal(healthBucketState({ attempts: 20, failures: 2, successRate: .9 }, .1, .3), 'WARNING')
+    assert.equal(healthBucketState({ attempts: 20, failures: 6, successRate: .7 }, .1, .3), 'CRITICAL')
+    assert.equal(healthBucketState({ attempts: 20, failures: 1, successRate: .95 }, .1, .3), 'HEALTHY')
   })
 
   it('provides symbols and labels independent of colour in all windows', () => {

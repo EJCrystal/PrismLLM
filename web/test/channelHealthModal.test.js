@@ -32,9 +32,10 @@ describe('channel health detail dashboard', () => {
       channels: [{ channelId: channel.id, state: 'WARNING', reason: 'P95 首 token 超过阈值', metrics: { ...metrics }, coolingCandidates: 0, requests: { requests: 98, successes: 97, successRate: 0.99, failoverRate: 0.01, legacyRequests: 0 } }],
     },
     trend: [
-      { from: timestamp - 3000, to: timestamp - 2000, metrics: { ...metrics, failures: 0, successRate: 1 } },
-      { from: timestamp - 2000, to: timestamp - 1000, metrics: { ...metrics, attempts: 1 } },
-      { from: timestamp - 1000, to: timestamp, metrics: { ...metrics, attempts: 0, failures: 0, successRate: null } },
+      { from: timestamp - 4000, to: timestamp - 3000, metrics: { ...metrics, attempts: 1, successes: 1, failures: 0, successRate: 1 } },
+      { from: timestamp - 3000, to: timestamp - 2000, metrics: { ...metrics, attempts: 1, successes: 0, failures: 1, successRate: 0 } },
+      { from: timestamp - 2000, to: timestamp - 1000, metrics: { ...metrics, attempts: 19, successes: 18, failures: 1, successRate: 18 / 19 } },
+      { from: timestamp - 1000, to: timestamp, metrics: { ...metrics, attempts: 0, successes: 0, failures: 0, successRate: null } },
     ],
     byModel: [{ id: 'model', name: 'long-provider-model-name', metrics: { ...metrics } }],
     byProtocol: [{ id: 'responses', name: 'Responses', metrics: { ...metrics } }],
@@ -186,10 +187,14 @@ describe('channel health detail dashboard', () => {
     assert.match(document.body.textContent, /缓存用量读取失败/)
   })
 
-  it('keeps no-request and sparse trend shapes and exposes selected sample details', async () => {
+  it('uses three failure bands for populated trend buckets and leaves no-request buckets empty', async () => {
     const { document } = await render({ interact: state => { state.selectedBucket.value = 1 } })
-    assert.ok(document.querySelector('.health-history-bar.is-empty'))
-    assert.ok(document.querySelector('.health-history-bar[data-state="UNKNOWN"]:not(.is-empty)'))
+    const bars = [...document.querySelectorAll('.health-history-bar')]
+    assert.deepEqual(bars.map(bar => bar.getAttribute('data-state')), ['HEALTHY', 'CRITICAL', 'WARNING', 'UNKNOWN'])
+    assert.equal(document.querySelectorAll('.health-history-bar.is-empty').length, 1)
+    assert.equal(document.querySelector('.health-history-bar[data-state="UNKNOWN"]:not(.is-empty)'), null)
+    const legend = document.querySelector('.health-history-legend')
+    assert.deepEqual([...legend.querySelectorAll('span')].map(item => item.textContent.trim()), ['正常', '需关注 ≥ 5.0% 失败', '异常 ≥ 20.0% 失败', '无请求'])
     assert.equal(document.querySelector('.health-history-bar.selected').getAttribute('aria-pressed'), 'true')
     assert.match(document.querySelector('.health-bucket-detail').textContent, /1 次尝试/)
   })
