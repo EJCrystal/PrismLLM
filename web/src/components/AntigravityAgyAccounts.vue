@@ -18,6 +18,9 @@ let timer: ReturnType<typeof setTimeout> | undefined
 let disposed = false
 let requestVersion = 0
 let waitingForEnvironment = false
+function shouldWatchEnvironment(status: string | undefined): boolean {
+  return isAgyEnvironmentPreparing(status) || status === 'READY'
+}
 async function load(initial = true) {
   if (disposed) return
   const version = ++requestVersion
@@ -31,12 +34,11 @@ async function load(initial = true) {
     accounts.value = result.accounts
     if (result.configured) {
       waitingForEnvironment = false
-    } else if (waitingForEnvironment) {
+    } else {
+      waitingForEnvironment = true
       const settings = await api.getAntigravityAgySettings()
       if (disposed || version !== requestVersion) return
-      waitingForEnvironment = isAgyEnvironmentPreparing(settings.status) || settings.status === 'READY'
-    } else {
-      waitingForEnvironment = false
+      waitingForEnvironment = shouldWatchEnvironment(settings.status)
     }
   } catch (cause) {
     if (!disposed && version === requestVersion) {
@@ -52,7 +54,7 @@ async function load(initial = true) {
 }
 function settingsSaved(settings: AntigravityAgySettings) {
   if (disposed) return
-  waitingForEnvironment = isAgyEnvironmentPreparing(settings.status) || settings.status === 'READY'
+  waitingForEnvironment = shouldWatchEnvironment(settings.status)
   void load()
 }
 async function cleanOrphan(account: AntigravityAgyAccount) {

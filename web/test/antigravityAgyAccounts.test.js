@@ -174,6 +174,17 @@ describe('agy 账号区准备状态跟踪', () => {
     assert.equal(timers.size, 0)
   })
 
+  it('初次挂载发现账号未配置时读取环境状态并持续观察到账号就绪', async () => {
+    settings.status = 'INSTALLING'
+    await mount()
+    assert.ok(calls.some(call => call.path === '/admin/api/antigravity-agy-settings' && call.method === 'GET'))
+    assert.equal(timers.size, 1)
+    settings.status = 'READY'; configured = true
+    await tick()
+    assert.equal(button('新增 CLI 账号').disabled, false)
+    assert.equal(timers.size, 0)
+  })
+
   it('账号区卸载后忽略迟到读取且不再发起设置读取或计时', async () => {
     settings.status = 'INSTALLING'
     await mount()
