@@ -1,0 +1,85 @@
+name: Update fingerprint bank
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Upstream lm-detector ref to use
+        required: false
+        default: main
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fingerprint-bank-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    name: Prepare fingerprint bank update
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      SOURCE_REF: ${{ inputs.source_ref || 'main' }}
+      UPDATE_BRANCH: automation/update-fingerprint-bank
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Prepare update branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh auth setup-git
+          git fetch origin "$UPDATE_BRANCH" || true
+          if git show-ref --verify --quiet "refs/remotes/origin/$UPDATE_BRANCH"; then
+            git switch --create "$UPDATE_BRANCH" --track "origin/$UPDATE_BRANCH"
+            git reset --hard origin/main
+          else
+            git switch --create "$UPDATE_BRANCH"
+          fi
+
+      - name: Validate updater
+        run: |
+          python3 -m py_compile scripts/update_fingerprint_bank.py
+          python3 .github/scripts/test_fingerprint_bank_update.py
+
+      - name: Update embedded detector
+        run: python3 scripts/update_fingerprint_bank.py --ref "$SOURCE_REF"
+
+      - name: Commit and open pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet -- prism-app/src/main/resources/fingerprint/models.json prism-app/src/main/resources/fingerprint/shared_detector.bin; then
+            echo "Fingerprint bank is already up to date."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prism-app/src/main/resources/fingerprint/models.json prism-app/src/main/resources/fingerprint/shared_detector.bin
+          git commit -m "chore(fingerprint): update detector bank"
+          git push --force-with-lease origin "$UPDATE_BRANCH"
+          if [ -z "$(gh pr list --head "$UPDATE_BRANCH" --base main --json url --jq '.[0].url')" ]; then
+            body_file="$(mktemp)"
+            cat > "$body_file" <<EOF
+          Automated update from Ikaleio/lm-detector ref $SOURCE_REF.
+
+          The updater validates the detector header, model IDs, response counts, SHA-256 binding, and Kotlin metadata before opening this PR.
+          EOF
+            gh pr create \
+              --base main \
+              --head "$UPDATE_BRANCH" \
+              --title "chore(fingerprint): update detector bank" \
+              --body-file "$body_file"
+          fi
