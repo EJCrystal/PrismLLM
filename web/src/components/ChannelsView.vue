@@ -512,10 +512,19 @@ const displayedProviders = computed(() => {
   const customs = matched
     .filter((item) => item.kind === 'custom')
     .sort((left, right) => left.displayName.localeCompare(right.displayName))
-  return [...subscriptions, ...customs].sort((left, right) =>
-    (right.channel ? channelConcurrent(right.channel.id) : 0)
-      - (left.channel ? channelConcurrent(left.channel.id) : 0),
-  )
+  return [...subscriptions, ...customs].sort((left, right) => {
+    const occupancyDifference = (right.channel ? channelConcurrent(right.channel.id) : 0)
+      - (left.channel ? channelConcurrent(left.channel.id) : 0)
+    if (occupancyDifference !== 0) return occupancyDifference
+
+    const leftLastObservedAt = left.channel
+      ? healthByChannel.value.get(left.channel.id)?.metrics.lastObservedAt ?? 0
+      : 0
+    const rightLastObservedAt = right.channel
+      ? healthByChannel.value.get(right.channel.id)?.metrics.lastObservedAt ?? 0
+      : 0
+    return rightLastObservedAt - leftLastObservedAt
+  })
 })
 const activeOAuthDrawerItem = computed(() => {
   const target = activeOAuthDrawer.value
