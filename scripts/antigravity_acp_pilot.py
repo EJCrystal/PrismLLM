@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import contextlib
 import fcntl
 import hashlib
@@ -200,12 +201,28 @@ def validate_model(model):
 
 
 def proxy_address(value):
+    if not value:
+        return None
     parsed = urllib.parse.urlsplit(value)
-    if (parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or
-            parsed.username is not None or parsed.password is not None or
-            parsed.path not in ("", "/") or parsed.query or parsed.fragment or not parsed.port):
-        raise PilotError("Use a credential-free HTTP proxy on 127.0.0.1")
-    return parsed.hostname, parsed.port
+    try:
+        port = parsed.port if parsed.port is not None else 80
+    except ValueError:
+        raise PilotError("Use an HTTP proxy host and port without embedded credentials") from None
+    if (parsed.scheme != "http" or not parsed.hostname or parsed.username is not None or parsed.password is not None or
+            parsed.path not in ("", "/") or parsed.query or parsed.fragment or not 1 <= port <= 65535):
+        raise PilotError("Use an HTTP proxy host and port without embedded credentials")
+    return parsed.hostname, port
+
+
+def validate_proxy_credentials(proxy, username, password):
+    if username is None and password is None:
+        return
+    if not proxy or not isinstance(username, str) or not isinstance(password, str) or not username.strip():
+        raise PilotError("Proxy authentication requires an HTTP proxy, username, and password")
+    if (len(username.encode("utf-8")) > 255 or ":" in username or any(ord(char) < 32 or ord(char) == 127 for char in username) or
+            not password or len(password.encode("utf-8")) > 255 or
+            any(ord(char) < 32 or ord(char) == 127 for char in password)):
+        raise PilotError("Proxy credentials must be 1..255 bytes without control characters")
 
 
 def destination(header):
@@ -242,30 +259,54 @@ class PrivateProxy(socketserver.ThreadingUnixStreamServer):
     daemon_threads = True
 
 
-class ProxyHandler(socketserver.BaseRequestHandler):
+class BasicAuthProxyHandler(urllib.request.ProxyHandler):
+    def __init__(self, proxies, username, password):
+        credentials = ":".join((username, password)).encode("utf-8")
+        self.authorization = "Basic " + base64.b64encode(credentials).decode("ascii")
+        super().__init__(proxies)
+
+    def proxy_open(self, request, proxy, proxy_type):
+        if request.host and urllib.request.proxy_bypass(request.host):
+            return super().proxy_open(request, proxy, proxy_type)
+        request.add_unredirected_header("Proxy-Authorization", self.authorization)
+        return super().proxy_open(request, proxy, proxy_type)
+
+
+class ConfigurableProxyHandler(socketserver.BaseRequestHandler):
     def handle(self):
         self.request.settimeout(20)
         try:
             host = destination(read_header(self.request))
-            with socket.create_connection(self.server.upstream, timeout=20) as upstream:
-                upstream.sendall((f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n\r\n").encode("ascii"))
-                response = read_header(upstream)
-                if not response.split(b"\r\n", 1)[0].startswith(b"HTTP/1.1 200"):
-                    raise PilotError("Upstream proxy rejected the connection")
+            address = (host, 443) if self.server.upstream is None else self.server.upstream
+            with socket.create_connection(address, timeout=20) as upstream:
+                if self.server.upstream is not None:
+                    line_break = bytes((13, 10))
+                    headers = [f"CONNECT {host}:443 HTTP/1.1", f"Host: {host}:443"]
+                    if self.server.proxy_credentials is not None:
+                        raw = ":".join(self.server.proxy_credentials).encode("utf-8")
+                        headers.append("Proxy-Authorization: Basic " + base64.b64encode(raw).decode("ascii"))
+                    request = b"".join(header.encode("ascii") + line_break for header in headers) + line_break
+                    upstream.sendall(request)
+                    response = read_header(upstream)
+                    status = response.split(line_break, 1)[0]
+                    if status.split(b" ", 2)[:2] not in ([b"HTTP/1.0", b"200"], [b"HTTP/1.1", b"200"]):
+                        raise PilotError("Upstream proxy rejected the connection")
                 observer = getattr(self.server, "on_connect", None)
                 if observer is not None:
                     observer(host)
-                self.request.sendall(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                self.request.sendall(b"HTTP/1.1 200 Connection established" + bytes((13, 10, 13, 10)))
                 relay(self.request, upstream)
         except (OSError, UnicodeError, PilotError):
             with contextlib.suppress(OSError):
-                self.request.sendall(b"HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n")
+                self.request.sendall(b"HTTP/1.1 403 Forbidden" + bytes((13, 10)) +
+                                     b"Content-Length: 0" + bytes((13, 10, 13, 10)))
 
 
 @contextlib.contextmanager
-def bridge(directory, proxy, on_connect=None):
-    with PrivateProxy(str(directory / "egress.sock"), ProxyHandler) as server:
+def bridge(directory, proxy, username=None, password=None, on_connect=None):
+    with PrivateProxy(str(directory / "egress.sock"), ConfigurableProxyHandler) as server:
         server.upstream = proxy_address(proxy)
+        server.proxy_credentials = (username, password) if username is not None else None
         server.on_connect = on_connect
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -274,6 +315,13 @@ def bridge(directory, proxy, on_connect=None):
         finally:
             server.shutdown()
             thread.join(timeout=2)
+
+
+def release_opener(proxy, username=None, password=None):
+    if not proxy:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    handler = BasicAuthProxyHandler({"https": proxy}, username, password) if username is not None else urllib.request.ProxyHandler({"https": proxy})
+    return urllib.request.build_opener(handler)
 
 
 def sandbox_command(root, runtime, online, arguments, login=False):
@@ -328,7 +376,7 @@ def inside(arguments):
     return run_owned_process(command, stop_signal=signal.SIGKILL).returncode
 
 
-def check_sandbox(root, proxy):
+def check_sandbox(root, proxy, username=None, password=None):
     with tempfile.TemporaryDirectory(prefix="sandbox-", dir=root) as name:
         runtime = Path(name)
         (runtime / "workspace").mkdir(mode=0o700)
@@ -345,7 +393,7 @@ def check_sandbox(root, proxy):
         )
         run_owned_process(sandbox_command(root, runtime, False, ["/usr/bin/python3", "-c", code]), check=True,
                        env={}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
-        with bridge(runtime, proxy):
+        with bridge(runtime, proxy, username, password):
             code = (
                 "import socket,urllib.request; "
                 "proxy=urllib.request.ProxyHandler({'https':'http://127.0.0.1:18080'}); "
@@ -405,7 +453,7 @@ def existing_private_file(path, executable=False):
     return True
 
 
-def install_release(root, proxy):
+def install_release(root, proxy, username=None, password=None):
     release = pinned_release()
     binary = root / "bin/agy"
     receipt = root / "release.json"
@@ -424,7 +472,7 @@ def install_release(root, proxy):
     parsed = urllib.parse.urlsplit(release["url"])
     if parsed.scheme != "https" or parsed.hostname != "storage.googleapis.com" or not parsed.path.startswith("/antigravity-public/antigravity-cli/"):
         raise PilotError("Release is not an official Antigravity download")
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy}))
+    opener = release_opener(proxy, username, password)
     with tempfile.TemporaryDirectory(prefix="download-", dir=root) as name:
         archive = Path(name) / "release.tar.gz"
         staged_binary = Path(name) / "agy"
@@ -458,11 +506,11 @@ def install_release(root, proxy):
         verify_installed_release(root, release)
 
 
-def run_agent(root, proxy, online, arguments, runner=None):
+def run_agent(root, proxy, online, arguments, runner=None, username=None, password=None):
     with tempfile.TemporaryDirectory(prefix="agent-", dir=root) as name:
         runtime = Path(name)
         (runtime / "workspace").mkdir(mode=0o700)
-        with bridge(runtime, proxy) if online else contextlib.nullcontext():
+        with bridge(runtime, proxy, username, password) if online else contextlib.nullcontext():
             login = "--login" in arguments
             command = ["/opt/agy", arguments[0], "--disable-telemetry", "--include-default-customizations=false",
                        "--cli_log_file", "/dev/null", "--log-file", "/dev/null", *arguments[1:]]
@@ -492,7 +540,7 @@ def validate_gateway_state(root, model):
         raise PilotError("Gateway requires successful ACP acceptance for the exact model with no extra credits")
 
 
-def run_gateway_agent(root, proxy, model):
+def run_gateway_agent(root, proxy, model, username=None, password=None):
     validate_gateway_state(root, model)
 
     def interrupted(signum, frame):
@@ -500,7 +548,7 @@ def run_gateway_agent(root, proxy, model):
 
     previous_handler = signal.signal(signal.SIGTERM, interrupted)
     try:
-        return run_agent(root, proxy, True, ["acp"])
+        return run_agent(root, proxy, True, ["acp"], username=username, password=password)
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
 
@@ -544,7 +592,7 @@ def main():
         return inside(sys.argv[2:])
     parser = argparse.ArgumentParser(description="Isolated official Antigravity subscription acceptance pilot")
     parser.add_argument("--state", type=Path, default=DEFAULT_STATE)
-    parser.add_argument("--proxy", default="http://127.0.0.1:7897")
+    parser.add_argument("--proxy", default="")
     sub = parser.add_subparsers(dest="action", required=True)
     sub.add_parser("prepare")
     sub.add_parser("login")
@@ -562,11 +610,14 @@ def main():
         raise PilotError("This pinned pilot only supports Linux x86_64")
     root = args.state.absolute()
     proxy_address(args.proxy)
+    username = os.environ.get("AGY_PROXY_USERNAME") or None
+    password = os.environ.get("AGY_PROXY_PASSWORD") or None
+    validate_proxy_credentials(args.proxy, username, password)
     if args.action == "agent":
         command = args.arguments[1:] if args.arguments[:1] == ["--"] else args.arguments
         if command != ["acp"]:
             raise PilotError("Only ACP is permitted in the agent subprocess")
-        return run_agent(root, args.proxy, args.online, command)
+        return run_agent(root, args.proxy, args.online, command, username=username, password=password)
     if args.action in ("verify", "gateway-agent"):
         validate_model(args.model)
     if args.action == "gateway-agent":
@@ -577,7 +628,7 @@ def main():
         private_directory(root)
     with pilot_lock(root, existing=args.action == "gateway-agent"):
         if args.action == "gateway-agent":
-            return run_gateway_agent(root, args.proxy, args.model)
+            return run_gateway_agent(root, args.proxy, args.model, username, password)
         prepare_files(root)
         if args.action in ("login", "verify"):
             invalidate_verification(root)
@@ -586,9 +637,9 @@ def main():
         if args.action == "prepare":
             (root / "reports/ready.json").unlink(missing_ok=True)
             print("Installing and verifying the pinned official CLI...", flush=True)
-            install_release(root, args.proxy)
+            install_release(root, args.proxy, username, password)
             print("Checking filesystem/process/network isolation and Google-only HTTPS egress...", flush=True)
-            check_sandbox(root, args.proxy)
+            check_sandbox(root, args.proxy, username, password)
             print("Building the standalone acceptance entry (no gateway is started)...", flush=True)
             run_owned_process([shutil.which("mvn"), "--batch-mode", "--no-transfer-progress", "-pl", "prism-app", "-am",
                             "-DskipTests", "package"], cwd=REPO, check=True)
@@ -599,10 +650,10 @@ def main():
                          "sandbox": "private-filesystem-pid-network", "extraCredits": False, "realGenerationVerified": False})
             print("READY_FOR_GOOGLE_LOGIN: run the login command in your own terminal. Do not paste codes into chat.")
             return 0
-        install_release(root, args.proxy)
+        install_release(root, args.proxy, username, password)
         if args.action == "login":
             print("Choose Log in with Google for your own subscription account. Enter the code only in this terminal.", flush=True)
-            return run_agent(root, args.proxy, True, ["acp", "--login"])
+            return run_agent(root, args.proxy, True, ["acp", "--login"], username=username, password=password)
         if args.action == "probe":
             return run_checks(root, args.proxy, "probe")
         return run_checks(root, args.proxy, "verify", args.model)

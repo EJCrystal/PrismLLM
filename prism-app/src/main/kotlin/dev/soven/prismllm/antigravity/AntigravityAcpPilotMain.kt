@@ -34,6 +34,7 @@ internal suspend fun runAcpAcceptance(
             val pilot = AntigravityAcpPilot(
                 command = command,
                 workspace = workspace,
+                environment = System.getenv().filterKeys { it == "AGY_PROXY_USERNAME" || it == "AGY_PROXY_PASSWORD" },
                 agentWorkspace = Path.of("/workspace"),
                 timeoutMs = 60_000,
                 cancelGraceMs = 3_000,

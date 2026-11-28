@@ -7,14 +7,14 @@ import { JSDOM } from 'jsdom'
 
 const dom = new JSDOM('<!DOCTYPE html><html><body></body></html>', { url: 'http://localhost/' })
 for (const name of ['window', 'document', 'Node', 'Element', 'HTMLElement', 'HTMLInputElement', 'SVGElement', 'Event']) globalThis[name] = dom.window[name]
-const { compile, createApp, nextTick, ssrContextKey } = await import('vue')
+const { compile, createApp, h, nextTick, ssrContextKey } = await import('vue')
 const { parse } = await import('@vue/compiler-sfc')
 const { createServer } = await import('vite')
 const vue = (await import('@vitejs/plugin-vue')).default
 const originalFetch = globalThis.fetch
 const originalTimeout = globalThis.setTimeout
 const originalClearTimeout = globalThis.clearTimeout
-const fixture = (extra = {}) => ({ enabled: false, proxy: 'http://127.0.0.1:7897', status: 'DISABLED', missingDependencies: [], error: null, updatedAt: 0, ...extra })
+const fixture = (extra = {}) => ({ enabled: false, proxy: '', username: null, hasAuthentication: false, status: 'DISABLED', missingDependencies: [], error: null, updatedAt: 0, ...extra })
 const response = (data, status = 200) => new Response(JSON.stringify(data), { status })
 async function settle() { await nextTick(); await delay(10); await nextTick() }
 function button(text) { return [...document.querySelectorAll('button')].find(node => node.textContent.trim() === text) }
@@ -28,9 +28,15 @@ describe('agy 管理台按需准备', () => {
     const loaded = (await server.ssrLoadModule('/src/components/AntigravityAgySettingsModal.vue')).default
     const { descriptor } = parse(readFileSync(new URL('../src/components/AntigravityAgySettingsModal.vue', import.meta.url), 'utf8'))
     const Modal = { props: ['title'], template: '<section><h2>{{ title }}</h2><slot/><footer><slot name="footer"/></footer></section>' }
+    const SecretInput = {
+      props: ['modelValue'], emits: ['update:modelValue'],
+      setup(props, { emit }) {
+        return () => h('input', { type: 'password', value: props.modelValue, onInput: event => emit('update:modelValue', event.target.value) })
+      },
+    }
     component = {
-      ...loaded, ssrRender: undefined, render: compile(descriptor.template.content), components: { Modal },
-      setup(props, context) { return { ...loaded.setup(props, context), Modal } },
+      ...loaded, ssrRender: undefined, render: compile(descriptor.template.content), components: { Modal, SecretInput },
+      setup(props, context) { return { ...loaded.setup(props, context), Modal, SecretInput } },
     }
   })
 
@@ -44,7 +50,13 @@ describe('agy 管理台按需准备', () => {
     globalThis.fetch = async (url, options = {}) => {
       assert.equal(String(url), '/admin/api/antigravity-agy-settings')
       calls.push({ method: options.method || 'GET', body: options.body ? JSON.parse(options.body) : null })
-      if (options.method === 'PUT') settings = fixture({ ...JSON.parse(options.body), status: 'INSTALLING', missingDependencies: ['Python 3.11+', 'Bubblewrap'], updatedAt: 1 })
+      if (options.method === 'PUT') {
+        const payload = JSON.parse(options.body)
+        settings = fixture({ enabled: payload.enabled, proxy: payload.proxy,
+          username: payload.clearAuthentication ? null : payload.username ?? settings.username,
+          hasAuthentication: payload.clearAuthentication ? false : Boolean(payload.username || settings.hasAuthentication),
+          status: 'INSTALLING', missingDependencies: ['Python 3.11+', 'Bubblewrap'], updatedAt: 1 })
+      }
       return response(settings)
     }
   })
@@ -72,7 +84,7 @@ describe('agy 管理台按需准备', () => {
     const toggle = document.querySelector('input[type="checkbox"]')
     toggle.checked = true; toggle.dispatchEvent(new Event('change', { bubbles: true }))
     button('保存设置').click(); await settle()
-    assert.deepEqual(calls[1], { method: 'PUT', body: { enabled: true, proxy: 'http://127.0.0.1:7897' } })
+    assert.deepEqual(calls[1], { method: 'PUT', body: { enabled: true, proxy: '' } })
     assert.match(document.body.textContent, /正在下载安装缺失依赖/)
     assert.match(document.body.textContent, /Python 3.11\+、Bubblewrap/)
     settings = fixture({ enabled: true, status: 'READY', missingDependencies: ['Python 3.11+', 'Bubblewrap'] })
@@ -80,6 +92,30 @@ describe('agy 管理台按需准备', () => {
     assert.match(document.body.textContent, /运行环境已就绪/)
     assert.match(document.body.textContent, /本次已补齐的依赖/)
     assert.ok(saved >= 2)
+  })
+
+  it('可选代理认证会单独提交账号密码，读取状态不回显密码', async () => {
+    await mount()
+    let textInputs = document.querySelectorAll('input[type="text"]')
+    textInputs[0].value = 'http://proxy.example:8080'
+    textInputs[0].dispatchEvent(new Event('input', { bubbles: true }))
+    await settle()
+    const checkboxes = document.querySelectorAll('input[type="checkbox"]')
+    checkboxes[1].checked = true
+    checkboxes[1].dispatchEvent(new Event('change', { bubbles: true }))
+    await settle()
+    textInputs = document.querySelectorAll('input[type="text"]')
+    textInputs[1].value = 'agy-user'
+    textInputs[1].dispatchEvent(new Event('input', { bubbles: true }))
+    const secret = document.querySelector('input[type="password"]')
+    secret.value = 'agy-secret'
+    secret.dispatchEvent(new Event('input', { bubbles: true }))
+    button('保存设置').click(); await settle()
+    assert.deepEqual(calls[1].body, {
+      enabled: false, proxy: 'http://proxy.example:8080', username: 'agy-user', password: 'agy-secret',
+    })
+    assert.equal(settings.hasAuthentication, true)
+    assert.equal('password' in settings, false)
   })
 
   it('缺少权限时显示原因与重试入口，关闭弹窗不会取消服务端准备', async () => {

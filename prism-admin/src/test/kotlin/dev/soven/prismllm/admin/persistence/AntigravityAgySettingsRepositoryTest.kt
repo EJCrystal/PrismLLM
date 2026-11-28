@@ -3,8 +3,10 @@ package dev.soven.prismllm.admin.persistence
 import dev.soven.prismllm.admin.domain.AntigravityAgySettingsRecord
 import dev.soven.prismllm.testsupport.db.SharedPostgres
 import dev.soven.prismllm.testsupport.db.TestDatabase
+import dev.soven.prismllm.shared.crypto.CredentialCipher
 import kotlinx.coroutines.runBlocking
 import org.jetbrains.exposed.v1.jdbc.deleteAll
+import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.junit.jupiter.api.AfterAll
 import org.junit.jupiter.api.BeforeAll
@@ -13,6 +15,7 @@ import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.TestInstance
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -20,6 +23,7 @@ import kotlin.test.assertTrue
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 class AntigravityAgySettingsRepositoryTest {
     private lateinit var factory: TestDatabase
+    private val cipher = CredentialCipher(ByteArray(32) { it.toByte() })
 
     @BeforeAll
     fun start() {
@@ -40,12 +44,34 @@ class AntigravityAgySettingsRepositoryTest {
 
     @Test
     fun settingsAreOptInPersistAcrossRepositoryInstancesAndCanBeDisabled() = runBlocking {
-        val repository = AntigravityAgySettingsRepository(factory.database)
+        val repository = AntigravityAgySettingsRepository(factory.database, cipher)
         assertNull(repository.load())
-        val saved = repository.save(AntigravityAgySettingsRecord(true, "http://127.0.0.1:7897"))
+        val saved = repository.save(AntigravityAgySettingsRecord(true, "http://proxy.example:7897", "agy-user", "agy-secret"))
         assertTrue(saved.updatedAt > 0)
-        assertEquals(saved, AntigravityAgySettingsRepository(factory.database).load())
+        val restored = AntigravityAgySettingsRepository(factory.database, cipher).load()
+        assertEquals(saved, restored)
+        val row = suspendTransaction(factory.database) { AntigravityAgySettings.selectAll().single() }
+        assertTrue("agy-secret" !in row[AntigravityAgySettings.proxyPasswordCiphertext])
+        assertTrue("agy-user" !in row[AntigravityAgySettings.proxyPasswordCiphertext])
         val disabled = repository.save(saved.copy(enabled = false))
         assertEquals(disabled, repository.load())
+    }
+
+    @Test
+    fun disablingWithUnreadableCredentialsPreservesEncryptedAuthentication() = runBlocking {
+        val repository = AntigravityAgySettingsRepository(factory.database, cipher)
+        val saved = repository.save(AntigravityAgySettingsRecord(true, "http://proxy.example:8080", "agy-user", "agy-secret"))
+        val before = suspendTransaction(factory.database) { AntigravityAgySettings.selectAll().single() }
+        val wrongKey = CredentialCipher(ByteArray(32) { (it + 1).toByte() })
+        val unreadable = AntigravityAgySettingsRepository(factory.database, wrongKey)
+        assertTrue(unreadable.load()!!.proxyCredentialsUnreadable)
+        val updatedAt = unreadable.disable()
+        assertEquals(saved.copy(enabled = false, updatedAt = updatedAt), repository.load())
+        assertFalse(unreadable.load()!!.enabled)
+        assertTrue(unreadable.load()!!.proxyCredentialsUnreadable)
+        val after = suspendTransaction(factory.database) { AntigravityAgySettings.selectAll().single() }
+        assertEquals(before[AntigravityAgySettings.proxyPasswordCiphertext], after[AntigravityAgySettings.proxyPasswordCiphertext])
+        assertEquals(before[AntigravityAgySettings.proxyPasswordNonce], after[AntigravityAgySettings.proxyPasswordNonce])
+        assertEquals(before[AntigravityAgySettings.proxyPasswordKeyVersion], after[AntigravityAgySettings.proxyPasswordKeyVersion])
     }
 }

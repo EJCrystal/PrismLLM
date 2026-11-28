@@ -5,12 +5,15 @@ import dev.soven.prismllm.admin.persistence.AntigravityAgySettingsRepository
 import dev.soven.prismllm.config.AntigravityAgyConfig
 import dev.soven.prismllm.shared.error.GatewayError
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Tag
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.params.ParameterizedTest
@@ -43,6 +46,34 @@ class AntigravityAgyRuntimeTest {
     }
 
     @Test
+    fun directEgressIsAllowedAndAuthenticatedProxySecretsNeverAppearInSnapshotsOrArguments() = runBlocking {
+        var preparedConfig: AntigravityAgyConfig? = null
+        val runtime = AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository(), {}, prepare = { config, _, _ ->
+            preparedConfig = config
+        })
+        runtime.use {
+            runtime.start()
+            runtime.update(true, "")
+            waitFor(runtime, "READY")
+            assertEquals("", preparedConfig?.proxy)
+
+            runtime.update(true, "http://proxy.example:8080", "agy-user", "agy-secret")
+            waitFor(runtime, "READY")
+            val authenticated = preparedConfig!!
+            assertEquals("agy-user", authenticated.proxyUsername)
+            assertEquals("agy-secret", authenticated.proxyPassword)
+            assertEquals("agy-user", runtime.snapshot().username)
+            assertEquals(true, runtime.snapshot().hasAuthentication)
+            assertFalse(Json.encodeToString(runtime.snapshot()).contains("agy-secret"))
+            assertFalse(authenticated.loginCommand(authenticated.stateDir).contains("agy-secret"))
+
+            runtime.update(true, "http://proxy.example:8080", "agy-user")
+            assertFailsWith<GatewayError> { runtime.update(true, "http://other.example:8080", "agy-user") }
+        }
+        Unit
+    }
+
+    @Test
     fun savedDisableAndProxyRemainAuthoritativeAfterRestart() = runBlocking {
         val saved = AntigravityAgySettingsRecord(false, "http://127.0.0.1:7898")
         AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository(saved), {},
@@ -65,6 +96,50 @@ class AntigravityAgyRuntimeTest {
             assertFailsWith<IllegalStateException> { runtime.update(true, "http://127.0.0.1:7897") }
             assertFalse(runtime.snapshot().enabled)
             assertNull(runtime.login)
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = [false, true])
+    fun unreadableProxyCredentialsCanBeDisabledWithoutReplacingAuthentication(enabled: Boolean) = runBlocking {
+        val saved = AntigravityAgySettingsRecord(
+            enabled, "http://proxy.example:8080", "agy-user", proxyCredentialsUnreadable = true,
+        )
+        val repository = repository(saved)
+        coEvery { repository.disable() } returns 2
+        AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository, {},
+            prepare = { _, _, _ -> error("Unreadable credentials must never start preparation") }).use { runtime ->
+            runtime.start()
+            val disabled = runtime.update(false, saved.proxy, saved.proxyUsername)
+            assertFalse(disabled.enabled)
+            assertEquals("DISABLED", disabled.status)
+            assertEquals(saved.proxyUsername, disabled.username)
+            assertEquals(true, disabled.hasAuthentication)
+            assertEquals(2L, disabled.updatedAt)
+            assertNull(disabled.error)
+            assertNull(runtime.login)
+            assertNull(runtime.gateway)
+            assertFailsWith<GatewayError> { runtime.update(true, saved.proxy) }
+            assertFailsWith<GatewayError> { runtime.update(false, "http://other.example:8080") }
+            assertFailsWith<GatewayError> { runtime.update(false, saved.proxy, "other-user") }
+            coVerify(exactly = 1) { repository.disable() }
+            coVerify(exactly = 0) { repository.save(any()) }
+        }
+    }
+
+    @Test
+    fun failedDisableOfUnreadableCredentialsLeavesEnabledStateUnchanged() = runBlocking {
+        val saved = AntigravityAgySettingsRecord(
+            true, "http://proxy.example:8080", "agy-user", proxyCredentialsUnreadable = true,
+        )
+        val repository = repository(saved)
+        coEvery { repository.disable() } throws IllegalStateException("fixture database failure")
+        AntigravityAgyRuntime(AntigravityAgyConfig.defaults(), repository, {},
+            prepare = { _, _, _ -> error("Unreadable credentials must never start preparation") }).use { runtime ->
+            runtime.start()
+            val before = runtime.snapshot()
+            assertFailsWith<IllegalStateException> { runtime.update(false, saved.proxy) }
+            assertEquals(before, runtime.snapshot())
         }
     }
 

@@ -45,7 +45,7 @@
 
 ## 一键实号验收入口
 
-当前入口仅支持 Linux x86_64，使用 Python 3.11+、Bubblewrap、Java 21 和 Maven。默认借助本机 `http://127.0.0.1:7897` 的 HTTP 代理访问官方服务；代理不可用时停止，不自动改为直连。可用入口的 `--proxy` 参数指定另一个无凭据的本机 HTTP 代理端口。
+当前入口仅支持 Linux x86_64，使用 Python 3.11+、Bubblewrap、Java 21 和 Maven。可通过 --proxy 指定 HTTP 代理；留空时直接连接官方服务。认证代理可通过 AGY_PROXY_USERNAME 与 AGY_PROXY_PASSWORD 环境变量提供 HTTP Basic 认证，凭据不会拼进代理 URL。无论直连或代理，沙盒出口仍只允许固定的 Google OAuth/Code Assist 域名，失败时不会绕过沙盒。
 
 在仓库根目录执行：
 

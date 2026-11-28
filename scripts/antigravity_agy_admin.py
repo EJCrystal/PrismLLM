@@ -117,10 +117,10 @@ def interactive_login(command, **arguments):
             os.close(terminal)
 
 
-def install_account_release(root, proxy):
+def install_account_release(root, proxy, username=None, password=None):
     cache = root.parent / ".runtime"
     if root.name == ".runtime" or not cache.exists():
-        pilot.install_release(root, proxy)
+        pilot.install_release(root, proxy, username, password)
         return
     pilot.require_private_path(cache, directory=True)
     with pilot.pilot_lock(cache):
@@ -143,12 +143,15 @@ def install_account_release(root, proxy):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", required=True, type=Path)
-    parser.add_argument("--proxy", required=True)
+    parser.add_argument("--proxy", default="")
     parser.add_argument("--prepare", action="store_true")
     args = parser.parse_args()
     if platform.system() != "Linux" or platform.machine() != "x86_64" or not args.state.is_absolute():
         raise pilot.PilotError("UNSUPPORTED_LOGIN_ENVIRONMENT")
     pilot.proxy_address(args.proxy)
+    username = os.environ.get("AGY_PROXY_USERNAME") or None
+    password = os.environ.get("AGY_PROXY_PASSWORD") or None
+    pilot.validate_proxy_credentials(args.proxy, username, password)
     root = args.state
     os.umask(0o077)
     pilot.private_directory(root)
@@ -156,12 +159,13 @@ def main():
         pilot.prepare_files(root)
         pilot.invalidate_verification(root)
         emit("preparing")
-        install_account_release(root, args.proxy)
-        pilot.check_sandbox(root, args.proxy)
+        install_account_release(root, args.proxy, username, password)
+        pilot.check_sandbox(root, args.proxy, username, password)
         if args.prepare:
             emit("ready")
             return 0
-        pilot.run_agent(root, args.proxy, True, ["acp", "--login"], runner=interactive_login)
+        pilot.run_agent(root, args.proxy, True, ["acp", "--login"], runner=interactive_login,
+                        username=username, password=password)
 
 
 if __name__ == "__main__":

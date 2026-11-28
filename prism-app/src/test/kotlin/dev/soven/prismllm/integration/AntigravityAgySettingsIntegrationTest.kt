@@ -53,8 +53,8 @@ class AntigravityAgySettingsIntegrationTest : GatewayIntegrationTestBase() {
                 contentType(ContentType.Application.Json)
                 setBody("""{"enabled":false,"proxy":"$proxy"}""")
             }
-            val repository = AntigravityAgySettingsRepository(app.databaseFactory.database)
-            assertEquals(HttpStatusCode.BadRequest, save("http://untrusted.invalid:7897").status)
+            val repository = AntigravityAgySettingsRepository(app.databaseFactory.database, app.credentialCipher)
+            assertEquals(HttpStatusCode.BadRequest, save("https://proxy.invalid:7897").status)
             assertNull(repository.load())
             val saved = save("http://127.0.0.1:7898")
             assertEquals(HttpStatusCode.OK, saved.status)

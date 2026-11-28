@@ -57,7 +57,8 @@ internal class AntigravityAgyLoginService(
     private val config: AntigravityAgyConfig,
     private val onAuthenticated: suspend (AntigravityAgyAccount) -> Unit = {},
     private val inspect: suspend (Path) -> AcpPilotCatalog = { state ->
-        AntigravityAcpPilot(config.inspectCommand(state), state, agentWorkspace = Path.of("/workspace")).inspect()
+        AntigravityAcpPilot(config.inspectCommand(state), state, environment = config.proxyEnvironment(),
+            agentWorkspace = Path.of("/workspace")).inspect()
     },
 ) : AutoCloseable {
     private class Session(
@@ -181,7 +182,10 @@ internal class AntigravityAgyLoginService(
             val directory = config.stateDir.resolve(session.profileId)
             process = ProcessBuilder(config.loginCommand(directory))
                 .redirectError(ProcessBuilder.Redirect.DISCARD)
-                .apply { environment().clear() }
+                .apply {
+                    environment().clear()
+                    environment().putAll(config.proxyEnvironment())
+                }
                 .start()
             synchronized(monitor) {
                 if (terminal(session.snapshot.state)) return

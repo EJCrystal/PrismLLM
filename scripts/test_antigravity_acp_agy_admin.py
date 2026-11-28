@@ -29,8 +29,8 @@ class AgyAdminAuthorizationTest(unittest.TestCase):
                     patch.object(pilot, "run_agent", side_effect=AssertionError("No login or generation")), \
                     patch.object(admin, "emit") as emit:
                 self.assertEqual(0, admin.main())
-            install.assert_called_once_with(state, "http://127.0.0.1:7897")
-            sandbox.assert_called_once_with(state, "http://127.0.0.1:7897")
+            install.assert_called_once_with(state, "http://127.0.0.1:7897", None, None)
+            sandbox.assert_called_once_with(state, "http://127.0.0.1:7897", None, None)
             self.assertEqual("ready", emit.call_args.args[0])
 
     def test_new_account_reuses_only_verified_cli_not_cached_home(self):

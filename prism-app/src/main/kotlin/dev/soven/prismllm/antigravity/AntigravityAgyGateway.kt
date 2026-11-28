@@ -25,6 +25,7 @@ internal class AntigravityAgyGateway(
         AntigravityAcpPilot(
             command = command,
             workspace = state,
+            environment = config.proxyEnvironment(),
             agentWorkspace = Path.of("/workspace"),
             timeoutMs = 120_000,
             cancelGraceMs = 3_000,

@@ -26,6 +26,8 @@ import kotlinx.serialization.Serializable
 internal data class AntigravityAgySettingsSnapshot(
     val enabled: Boolean,
     val proxy: String,
+    val username: String? = null,
+    val hasAuthentication: Boolean = false,
     val status: String,
     val missingDependencies: List<String> = emptyList(),
     val error: String? = null,
@@ -56,7 +58,13 @@ internal class AntigravityAgyRuntime(
     private var preparing = false
 
     @Volatile
-    private var current = AntigravityAgySettingsSnapshot(false, defaults.proxy, "DISABLED")
+    private var proxyPassword: String? = null
+
+    @Volatile
+    private var proxyCredentialsUnreadable = false
+
+    @Volatile
+    private var current = AntigravityAgySettingsSnapshot(enabled = false, proxy = defaults.proxy, status = "DISABLED")
 
     @Volatile
     private var services: Services? = null
@@ -68,25 +76,94 @@ internal class AntigravityAgyRuntime(
     suspend fun start() {
         val saved = repository.load()
         if (saved != null) {
-            synchronized(monitor) { current = current.copy(enabled = saved.enabled, proxy = saved.proxy, updatedAt = saved.updatedAt) }
-            if (saved.enabled) launchPreparation()
+            synchronized(monitor) {
+                proxyPassword = saved.proxyPassword
+                proxyCredentialsUnreadable = saved.proxyCredentialsUnreadable
+                current = current.copy(
+                    enabled = saved.enabled,
+                    proxy = saved.proxy,
+                    username = saved.proxyUsername,
+                    hasAuthentication = saved.proxyUsername != null,
+                    updatedAt = saved.updatedAt,
+                    status = if (saved.enabled && saved.proxyCredentialsUnreadable) "FAILED" else current.status,
+                    error = if (saved.enabled && saved.proxyCredentialsUnreadable) "代理认证凭据无法解密，请重新填写密码或关闭认证" else null,
+                )
+            }
+            if (saved.enabled && !saved.proxyCredentialsUnreadable) launchPreparation()
         }
     }
 
-    suspend fun update(enabled: Boolean, proxy: String): AntigravityAgySettingsSnapshot = changes.withLock {
-        try {
-            defaults.copy(proxy = proxy)
-        } catch (failure: IllegalArgumentException) {
-            throw badRequest("invalid_agy_proxy", "agy 代理必须是 http://127.0.0.1:端口，不接受账号密码、路径或非回环主机")
+    suspend fun update(
+        enabled: Boolean,
+        proxy: String,
+        username: String? = null,
+        password: String? = null,
+        clearAuthentication: Boolean = false,
+    ): AntigravityAgySettingsSnapshot = changes.withLock {
+        val normalizedProxy = proxy.trim()
+        if (clearAuthentication && (!username.isNullOrEmpty() || !password.isNullOrEmpty())) {
+            throw badRequest("invalid_agy_proxy_authentication", "不能同时填写和清除代理认证信息")
         }
-        if (preparing && (proxy != current.proxy || enabled && !current.enabled)) {
+        if (!clearAuthentication && normalizedProxy.isNotEmpty() && username != null && username.isBlank()) {
+            throw badRequest("invalid_agy_proxy_authentication", "代理账号不能为空；如不启用认证，请关闭账号密码认证")
+        }
+        if (!enabled && proxyCredentialsUnreadable && normalizedProxy == current.proxy &&
+            (username == null || username == current.username) && password.isNullOrEmpty() && !clearAuthentication) {
+            withContext(NonCancellable) {
+                val updatedAt = repository.disable()
+                synchronized(monitor) {
+                    current = current.copy(
+                        enabled = false, status = "DISABLED", missingDependencies = emptyList(),
+                        error = null, updatedAt = updatedAt,
+                    )
+                }
+            }
+            return@withLock current
+        }
+        val nextAuthentication = when {
+            clearAuthentication || normalizedProxy.isEmpty() -> null to null
+            !password.isNullOrEmpty() -> (username?.takeIf(String::isNotBlank) ?: current.username) to password
+            current.hasAuthentication -> {
+                if (normalizedProxy != current.proxy || proxyCredentialsUnreadable) {
+                    throw badRequest("invalid_agy_proxy_authentication", "代理地址已变更，请重新填写代理密码或关闭认证")
+                }
+                (username ?: current.username) to proxyPassword
+            }
+            !username.isNullOrEmpty() -> throw badRequest("invalid_agy_proxy_authentication", "填写代理账号时必须同时填写密码")
+            else -> null to null
+        }
+        val nextUsername = nextAuthentication.first
+        val nextPassword = nextAuthentication.second
+        if (nextPassword != null && nextUsername == null) {
+            throw badRequest("invalid_agy_proxy_authentication", "启用代理认证时必须填写代理账号和密码")
+        }
+        if (nextUsername != null && nextPassword == null) {
+            throw badRequest("invalid_agy_proxy_authentication", "启用代理认证时必须填写代理密码")
+        }
+        try {
+            defaults.copy(proxy = normalizedProxy, proxyUsername = nextUsername, proxyPassword = nextPassword)
+        } catch (failure: IllegalArgumentException) {
+            throw badRequest("invalid_agy_proxy", "agy 代理地址须为 HTTP 主机和端口；账号密码请分开填写，代理可留空以直连")
+        }
+        if (preparing && (normalizedProxy != current.proxy || nextUsername != current.username ||
+                nextPassword != proxyPassword || enabled && !current.enabled)) {
             throw GatewayError(HttpStatusCode.Conflict, "agy_preparation_busy", "运行环境正在准备或停止，请等待完成后再修改代理或重新开启", "invalid_request_error")
         }
         withContext(NonCancellable) {
-            val saved = repository.save(AntigravityAgySettingsRecord(enabled, proxy))
-            val unchanged = enabled && current.enabled && current.proxy == proxy && current.status == "READY"
+            val saved = repository.save(AntigravityAgySettingsRecord(enabled, normalizedProxy, nextUsername, nextPassword))
+            val unchanged = enabled && current.enabled && current.proxy == normalizedProxy &&
+                current.username == nextUsername && proxyPassword == nextPassword && current.status == "READY"
             synchronized(monitor) {
-                current = current.copy(enabled = enabled, proxy = proxy, updatedAt = saved.updatedAt, error = null)
+                proxyPassword = saved.proxyPassword
+                proxyCredentialsUnreadable = false
+                current = current.copy(
+                    enabled = enabled,
+                    proxy = normalizedProxy,
+                    username = saved.proxyUsername,
+                    hasAuthentication = saved.proxyUsername != null,
+                    updatedAt = saved.updatedAt,
+                    error = null,
+                )
             }
             if (!unchanged) {
                 val previous = services
@@ -112,7 +189,11 @@ internal class AntigravityAgyRuntime(
         }
         preparation = scope.launch(start = CoroutineStart.LAZY) {
             try {
-                val config = defaults.copy(proxy = current.proxy)
+                val config = defaults.copy(
+                    proxy = current.proxy,
+                    proxyUsername = current.username.takeIf { current.hasAuthentication },
+                    proxyPassword = proxyPassword.takeIf { current.hasAuthentication },
+                )
                 prepare(config, { status, missing ->
                     synchronized(monitor) {
                         phase = status

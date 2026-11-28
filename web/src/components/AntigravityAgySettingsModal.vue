@@ -5,6 +5,7 @@ import { notify } from '../toast'
 import type { AntigravityAgySettings } from '../types/api'
 import { agyEnvironmentStatus, isAgyEnvironmentPreparing } from '../utils/systemConfig'
 import Modal from './Modal.vue'
+import SecretInput from './SecretInput.vue'
 
 const props = defineProps<{ onSaved?: (settings: AntigravityAgySettings) => void }>()
 defineEmits<{ (event: 'close'): void }>()
@@ -12,7 +13,11 @@ const current = ref<AntigravityAgySettings | null>(null)
 const loading = ref(true)
 const saving = ref(false)
 const enabled = ref(false)
-const proxy = ref('http://127.0.0.1:7897')
+const proxy = ref('')
+const username = ref('')
+const password = ref('')
+const authenticationEnabled = ref(false)
+const hasSavedAuthentication = ref(false)
 const error = ref('')
 const preparing = computed(() => isAgyEnvironmentPreparing(current.value?.status))
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -40,6 +45,9 @@ async function load(initial = true) {
     if (initial) {
       enabled.value = settings.enabled
       proxy.value = settings.proxy
+      username.value = settings.username ?? ''
+      authenticationEnabled.value = settings.hasAuthentication
+      hasSavedAuthentication.value = settings.hasAuthentication
     }
     if (changed) props.onSaved?.(settings)
   } catch (cause) {
@@ -59,10 +67,24 @@ async function save() {
   saving.value = true
   error.value = ''
   try {
-    const settings = await api.updateAntigravityAgySettings({ enabled: enabled.value, proxy: proxy.value.trim() })
+    const payload: { enabled: boolean; proxy: string; username?: string; password?: string; clearAuthentication?: boolean } = {
+      enabled: enabled.value,
+      proxy: proxy.value.trim(),
+    }
+    if (authenticationEnabled.value) {
+      payload.username = username.value
+      if (password.value) payload.password = password.value
+    } else if (hasSavedAuthentication.value) {
+      payload.clearAuthentication = true
+    }
+    const settings = await api.updateAntigravityAgySettings(payload)
     props.onSaved?.(settings)
     if (closed) return
     current.value = settings
+    password.value = ''
+    username.value = settings.username ?? ''
+    authenticationEnabled.value = settings.hasAuthentication
+    hasSavedAuthentication.value = settings.hasAuthentication
     notify(enabled.value ? '设置已保存，服务端将检查并按需安装运行环境' : '关闭设置已保存，不会删除账号凭据')
   } catch (cause) {
     error.value = message(cause)
@@ -87,10 +109,25 @@ onUnmounted(() => { closed = true; clearTimeout(timer) })
         <span>启用官方 agy</span>
       </label>
       <label class="field">
-        <span>服务环境的 HTTP 代理</span>
+        <span>服务环境的 HTTP 代理（可选）</span>
         <input v-model="proxy" type="text" spellcheck="false" autocomplete="off" :disabled="saving || !!preparing" />
-        <small>格式为 http://127.0.0.1:端口，不接受账号密码。容器中的 127.0.0.1 指容器自身，不是宿主机。</small>
+        <small>留空时尝试直连。地址格式为 http://主机:端口；账号密码请单独填写，不要放进地址。</small>
       </label>
+      <label class="checkbox-row">
+        <input v-model="authenticationEnabled" type="checkbox" :disabled="saving || !!preparing || !proxy.trim()" />
+        <span>代理需要账号密码认证</span>
+      </label>
+      <template v-if="authenticationEnabled">
+        <label class="field">
+          <span>代理账号</span>
+          <input v-model="username" type="text" autocomplete="off" :disabled="saving || !!preparing" />
+        </label>
+        <label class="field">
+          <span>代理密码</span>
+          <SecretInput v-model="password" :placeholder="hasSavedAuthentication ? '留空保持已保存密码' : '输入代理密码'" autocomplete="new-password" :disabled="saving || !!preparing" />
+          <small v-if="hasSavedAuthentication">密码已加密保存且不会回显；更换代理地址时需重新填写密码。</small>
+        </label>
+      </template>
       <div class="callout" :class="current.status === 'FAILED' ? 'danger' : current.status === 'READY' ? 'success' : 'info'" role="status" aria-live="polite">
         <strong>{{ agyEnvironmentStatus(current.status) }}</strong>
         <p v-if="current.error">{{ current.error }}</p>
@@ -99,7 +136,7 @@ onUnmounted(() => { closed = true; clearTimeout(timer) })
         </template>
         <p v-if="current.status === 'FAILED'">修复原因后，保留开关开启并点击“重新检查并准备”。</p>
       </div>
-      <p class="muted small">自动安装目前支持 apt-get 软件源，需要服务用户具有安装权限且文件系统可写；不会执行 sudo、添加第三方软件源或降低沙盒隔离。安装期间请勿重启服务或更新容器。</p>
+      <p class="muted small">自动安装目前支持 apt-get 软件源，需要服务用户具有安装权限且文件系统可写；不会执行 sudo、添加第三方软件源或降低沙盒隔离。直连和代理方式都只允许沙盒访问固定的官方服务域名。安装期间请勿重启服务或更新容器。</p>
       <p class="muted small">关闭后不再接受新的 agy 登录或请求，不删除已安装依赖和账号凭据；已开始的系统包安装会在当前步骤完成后停止准备。</p>
     </form>
     <template #footer>
