@@ -376,8 +376,8 @@ const settingRows = computed<SettingRow[]>(() => {
     },
     {
       id: 'retention',
-      title: '请求日志保留',
-      description: '自动清理过期请求日志明细',
+      title: '请求日志',
+      description: '请求正文记录与过期日志清理',
       icon: 'logs',
       loading: retention.loading,
       error: retention.error,
@@ -385,7 +385,7 @@ const settingRows = computed<SettingRow[]>(() => {
         ? `自动清理${retention.data.cleanupEnabled ? '已开启' : '已关闭'}`
         : '',
       valueTitle: '',
-      meta: retention.data ? '每日额度账本不受影响' : '',
+      meta: retention.data ? '正文记录' + (retention.data.requestBodyLoggingEnabled ? '已开启' : '已关闭') : '',
       alert: '',
       tone: retention.data ? (retention.data.cleanupEnabled ? 'success' : 'muted') : undefined,
       onAction: () => { showRetention.value = true },

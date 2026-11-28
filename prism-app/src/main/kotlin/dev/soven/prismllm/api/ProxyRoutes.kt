@@ -115,6 +115,7 @@ import io.ktor.utils.io.cancel
 import io.ktor.utils.io.charsets.TooLongLineException
 import io.ktor.utils.io.core.readBytes
 import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readAvailable
 import io.ktor.utils.io.readUTF8Line
 import io.ktor.utils.io.writeFully
 import kotlinx.coroutines.Job
@@ -255,6 +256,7 @@ private suspend fun handleProxyRequest(
         ?.trim()
         ?.take(300)
         ?.takeUnless { it.isEmpty() }
+    val requestBodyCapture = RequestBodyCapture(app.retentionSettingsRepository.isRequestBodyLoggingEnabled())
 
     val requestId = call.request.headers["X-Request-Id"]
         ?.take(64)
@@ -292,7 +294,7 @@ private suspend fun handleProxyRequest(
     try {
         clientKey = authenticate(call, app, protocol)
         requestLimitLease = app.requestLimitService.acquire(clientKey)
-        val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes)
+        val requestJson = call.receiveLimitedJson(app.config.requestBodyLimitBytes, requestBodyCapture)
         call.attributes.put(UPSTREAM_CONVERSATION, UpstreamConversation.fromRequest(
             { name -> call.request.headers[name] }, requestJson, clientKey.id,
         ))
@@ -978,6 +980,10 @@ private suspend fun handleProxyRequest(
                 createdAt = System.currentTimeMillis(),
                 upstreamAttempts = upstreamAttempts,
                 attempts = finalAttempts,
+                requestBody = requestBodyCapture.body,
+                requestBodySizeBytes = requestBodyCapture.sizeBytes,
+                requestBodySizeExact = requestBodyCapture.sizeExact,
+                requestBodyTruncated = requestBodyCapture.truncated,
             ),
             lease = requestLimitLease,
             elapsedMs = { (System.nanoTime() - startedAt) / 1_000_000 },
@@ -1188,7 +1194,37 @@ internal suspend fun authenticateClientKey(
     return record
 }
 
-internal suspend fun ApplicationCall.receiveLimitedJson(limit: Long): JsonObject {
+internal class RequestBodyCapture(enabled: Boolean) {
+    private val prefix = if (enabled) java.io.ByteArrayOutputStream() else null
+    var sizeBytes: Long? = null
+        private set
+    var sizeExact: Boolean = false
+        private set
+    val body: String?
+        get() = if (sizeBytes == null) null else prefix?.toString(Charsets.UTF_8)
+    val truncated: Boolean
+        get() = prefix != null && sizeBytes != null && (sizeBytes!! > prefix.size() || !sizeExact)
+
+    fun begin() {
+        sizeBytes = 0
+    }
+
+    fun append(bytes: ByteArray, count: Int) {
+        sizeBytes = (sizeBytes ?: 0) + count
+        prefix?.write(bytes, 0, minOf(count, MAX_LOGGED_REQUEST_BODY_BYTES - prefix.size()))
+    }
+
+    fun complete() {
+        sizeExact = true
+    }
+}
+
+private const val MAX_LOGGED_REQUEST_BODY_BYTES = 64 * 1024
+
+internal suspend fun ApplicationCall.receiveLimitedJson(
+    limit: Long,
+    bodyCapture: RequestBodyCapture? = null,
+): JsonObject {
     val declared = request.contentLength()
     if (declared != null && declared > limit) {
         throw GatewayError(
@@ -1198,15 +1234,26 @@ internal suspend fun ApplicationCall.receiveLimitedJson(limit: Long): JsonObject
             "invalid_request_error",
         )
     }
-    val bytes = request.receiveChannel().readRemaining(limit + 1).readBytes()
-    if (bytes.size > limit) {
-        throw GatewayError(
-            HttpStatusCode.PayloadTooLarge,
-            "request_too_large",
-            "请求体超过 $limit 字节",
-            "invalid_request_error",
-        )
+    val channel = request.receiveChannel()
+    val output = java.io.ByteArrayOutputStream()
+    val buffer = ByteArray(8192)
+    bodyCapture?.begin()
+    while (true) {
+        val count = channel.readAvailable(buffer, 0, minOf(buffer.size.toLong(), limit + 1 - output.size()).toInt())
+        if (count == -1) break
+        bodyCapture?.append(buffer, count)
+        output.write(buffer, 0, count)
+        if (output.size().toLong() > limit) {
+            throw GatewayError(
+                HttpStatusCode.PayloadTooLarge,
+                "request_too_large",
+                "请求体超过 $limit 字节",
+                "invalid_request_error",
+            )
+        }
     }
+    bodyCapture?.complete()
+    val bytes = output.toByteArray()
     val element = runCatching { Json.parseToJsonElement(bytes.toString(Charsets.UTF_8)) }.getOrNull()
     return element as? JsonObject ?: throw badRequest("invalid_json", "请求体必须是 JSON 对象")
 }
