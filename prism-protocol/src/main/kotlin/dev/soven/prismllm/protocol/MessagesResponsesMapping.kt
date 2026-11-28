@@ -216,6 +216,7 @@ internal fun responsesToMessagesRequest(request: JsonObject, upstreamModel: Stri
                     put("content", responsesOutputToToolResult(item["output"], "$path.output"))
                 }
                 "reasoning" -> Unit
+                "web_search_call" -> Unit
                 else -> unsupported("$path.type", "第一版不支持 Responses 输入项 "+item.string("type"))
             }
         }
@@ -347,6 +348,8 @@ internal fun responsesToMessagesResponse(
                         }
                     }
                 }
+                // 上游代执行的宿主工具（如内置 web_search）：结果体现在后续 message 项里，Messages 无对应形状，直接忽略。
+                "web_search_call" -> Unit
                 else -> unsupported("output[$index].type", "第一版不支持 Responses 输出项 "+item.string("type"))
             }
         }
