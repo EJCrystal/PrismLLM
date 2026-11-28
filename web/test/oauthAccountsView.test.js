@@ -102,8 +102,15 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await settle()
   }
   async function chooseMode(model, value) {
-    const select = modelRow(model).querySelector('select')
-    select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); await settle()
+    const row = modelRow(model)
+    const field = row.querySelector('.oauth-mapping-input input')
+    if (value === 'auto') {
+      const restore = [...row.querySelectorAll('button')].find(button => text(button) === '恢复自动')
+      restore?.click()
+      await settle()
+      return
+    }
+    await input(field, value === 'upstream' ? '' : field.value || model)
   }
   async function manual(model, value) {
     await chooseMode(model, 'manual')
@@ -896,26 +903,26 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     })
   }
 
-  it('mounts manual editing in a width-constrained public-ID cell separate from mode/source, with local responsive grid tracks', async () => {
+  it('renders upstream-to-public-ID editing with inline mode/source and responsive grid tracks', async () => {
     await mount()
     await openSettings(IDS.groupedHealthy)
     await input(dialog().querySelector('[aria-label="搜索模型授权与映射"]'), 'claude-opus')
     const row = modelRow('claude-opus-4-5-thinking')
-    assert.deepEqual([...row.children].map(child => child.className), ['oauth-mapping-upstream', 'oauth-mapping-public', 'oauth-mapping-mode', 'oauth-mapping-source muted small'])
+    assert.deepEqual([...row.children].map(child => child.className), ['oauth-mapping-upstream', 'oauth-mapping-arrow', 'oauth-mapping-public'])
     const wrapper = row.querySelector('.oauth-mapping-input')
     assert.equal(wrapper.parentElement.className, 'oauth-mapping-public')
-    assert.equal(wrapper.querySelector('select'), null, 'Mode belongs to its sibling column, never the editable wrapper')
+    assert.equal(wrapper.querySelector('select'), null, 'Mode is represented as inline state, not a competing form field')
     assert.ok(wrapper.querySelector('input'))
     assert.ok(wrapper.querySelector('.search-select-trigger'))
-    assert.equal(row.querySelector('.oauth-mapping-mode').contains(row.querySelector('select')), true)
+    assert.equal(row.querySelector('.oauth-mapping-public').contains(row.querySelector('.oauth-mapping-mode-indicator')), true)
     // jsdom has no geometry/layout engine. Assert actual SFC grid containment rules rather than inventing bounding boxes.
     const wrapperStyles = parse(readFileSync(new URL('../src/components/OAuthMappingInput.vue', import.meta.url), 'utf8')).descriptor.styles.map(style => style.content).join('\n')
     const viewStyles = parse(readFileSync(new URL('../src/components/OAuthAccountsView.vue', import.meta.url), 'utf8')).descriptor.styles.map(style => style.content).join('\n')
     assert.match(wrapperStyles, /\.oauth-mapping-input\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*max-width:\s*100%/)
     assert.match(wrapperStyles, /:deep\(\.search-select-trigger\)\s*\{[^}]*min-width:\s*0;[^}]*max-width:\s*100%/)
-    assert.match(viewStyles, /\.oauth-mapping-list\s*\{[^}]*--oauth-mapping-min-width:\s*660px;[^}]*overflow:\s*auto;/)
+    assert.match(viewStyles, /\.oauth-mapping-list\s*\{[^}]*--oauth-mapping-min-width:\s*480px;[^}]*overflow:\s*auto;/)
     assert.match(viewStyles, /\.oauth-mapping-head,\s*\.oauth-mapping-row\s*\{[^}]*grid-template-columns:\s*var\(--oauth-mapping-columns\);[^}]*min-width:\s*var\(--oauth-mapping-min-width\)/)
-    assert.match(viewStyles, /\.oauth-mapping-upstream,\s*\.oauth-mapping-public,\s*\.oauth-mapping-mode\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*max-width:\s*100%/)
+    assert.match(viewStyles, /\.oauth-mapping-upstream,\s*\.oauth-mapping-public\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);[^}]*max-width:\s*100%/)
     assert.match(viewStyles, /@media\s*\(max-width:\s*680px\)\s*\{\s*\.oauth-mapping-list\s*\{[^}]*--oauth-mapping-columns:\s*minmax\(0, 1fr\);[^}]*--oauth-mapping-min-width:\s*0/)
   })
 
@@ -928,9 +935,9 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(initial.mode, 'manual')
     assert.equal(initial.mappingSource, 'models_dev')
     await openSettings(IDS.groupedHealthy)
-    assert.equal(modelRow(model).querySelector('select').value, 'manual')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-mode-indicator').dataset.mode, 'manual')
     assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, initial.publicModelId)
-    assert.equal(text(modelRow(model).querySelector('.oauth-mapping-source')), 'models_dev')
+    assert.equal(text(modelRow(model).querySelector('.oauth-mapping-source')), '来源：models_dev')
     await input(field('账号名称'), '保留旧目录来源覆盖')
     await save()
     assert.deepEqual(writes()[0].body, { name: '保留旧目录来源覆盖' })
@@ -940,10 +947,10 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(mapping('antigravity', model).automaticCanonicalModelId, 'google/changed-auto-flash')
     assert.equal(mapping('antigravity', model).publicModelId, initial.publicModelId)
     assert.equal(mapping('antigravity', model).mappingSource, 'models_dev')
-    assert.equal(modelRow(model).querySelector('select').value, 'manual')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-mode-indicator').dataset.mode, 'manual')
     buttonNamed(modelRow(model), '恢复自动').click(); await settle()
-    assert.equal(text(modelRow(model).querySelector('.oauth-mapping-public > .mono')), 'google/changed-auto-flash')
-    assert.equal(text(modelRow(model).querySelector('.oauth-mapping-source')), '待保存；当前来源：models_dev')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, 'google/changed-auto-flash')
+    assert.equal(text(modelRow(model).querySelector('.oauth-mapping-source')), '来源：待保存；当前来源：models_dev')
     await save()
     assert.deepEqual(writes()[1].body.modelMappingChanges, [{ upstreamModel: model, mode: 'auto' }])
     assert.equal(mapping('antigravity', model).mode, 'auto')
@@ -1019,9 +1026,9 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     const model = 'gemini-3-pro'
     const checkbox = modelRow(model).querySelector('input[type="checkbox"]')
     assert.equal(checkbox.disabled, true)
-    const mode = modelRow(model).querySelector('select')
-    assert.equal(mode.disabled, false)
-    assert.equal(mode.closest('label'), null)
+    const mappingInput = modelRow(model).querySelector('.oauth-mapping-input input')
+    assert.equal(mappingInput.disabled, false)
+    assert.equal(mappingInput.closest('label'), null)
     const query = dialog().querySelector('[aria-label="搜索模型授权与映射"]')
     assert.equal(query.disabled, false)
     await input(query, 'gemini-3-pro')
@@ -1055,7 +1062,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.deepEqual(writes()[0].body.modelMappingChanges, [{ upstreamModel: model, mode: 'manual', canonicalModelId: automatic }])
     assert.equal(mapping('antigravity', model).mode, 'manual')
     await openSettings(IDS.groupedHealthy)
-    assert.equal(modelRow(model).querySelector('select').value, 'manual')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-mode-indicator').dataset.mode, 'manual')
     buttonNamed(modelRow(model), '恢复自动').click(); await settle()
     await save()
     assert.deepEqual(writes()[1].body.modelMappingChanges, [{ upstreamModel: model, mode: 'auto' }])
@@ -1065,6 +1072,39 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.deepEqual(writes()[2].body.modelMappingChanges, [{ upstreamModel: model, mode: 'upstream' }])
     assert.equal(mapping('antigravity', model).publicModelId, model)
     assert.equal(mapping('antigravity', model).mappingSource, 'manual')
+  })
+
+  it('clearing the editable public ID switches to upstream passthrough; restoring auto remains explicit', async () => {
+    await mount()
+    const model = 'gemini-3-pro'
+    await openSettings(IDS.groupedHealthy)
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, mapping('antigravity', model).automaticCanonicalModelId)
+    await input(modelRow(model).querySelector('.oauth-mapping-input input'), '')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-mode-indicator').dataset.mode, 'upstream')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, '')
+    await save()
+    assert.deepEqual(writes()[0].body.modelMappingChanges, [{ upstreamModel: model, mode: 'upstream' }])
+    await openSettings(IDS.groupedHealthy)
+    buttonNamed(modelRow(model), '恢复自动').click(); await settle()
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-mode-indicator').dataset.mode, 'auto')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, mapping('antigravity', model).automaticCanonicalModelId)
+    await save()
+    assert.deepEqual(writes()[1].body.modelMappingChanges, [{ upstreamModel: model, mode: 'auto' }])
+  })
+
+  it('restoring auto without an automatic default clears the previous manual public ID', async () => {
+    const fixture = createOAuthAccountsFixture()
+    const model = 'gemini-3-pro'
+    const baseline = fixture.providerMappings.antigravity.mappings.find(item => item.upstreamModel === model)
+    Object.assign(baseline, { automaticCanonicalModelId: null, mode: 'manual', canonicalModelId: 'legacy/manual', publicModelId: 'legacy/manual', mappingSource: 'manual' })
+    await mount(fixture)
+    await openSettings(IDS.groupedHealthy)
+    await manual(model, 'manual/x')
+    buttonNamed(modelRow(model), '恢复自动').click(); await settle()
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-mode-indicator').dataset.mode, 'auto')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, model)
+    await save()
+    assert.deepEqual(writes()[0].body.modelMappingChanges, [{ upstreamModel: model, mode: 'auto' }])
   })
 
   it('does not rewrite untouched models_dev mappings when only authorization changes and preserves hidden authorized models', async () => {
@@ -1302,7 +1342,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await manual('gemini-3-flash', 'shared/new-flash'); await save()
     assert.deepEqual(b.models, authorization)
     await openSettings(b.id)
-    assert.equal(text(modelRow('gemini-3-flash').querySelector('.oauth-mapping-public > .mono')), 'shared/new-flash')
+    assert.equal(modelRow('gemini-3-flash').querySelector('.oauth-mapping-input input').value, 'shared/new-flash')
     assert.equal(modelRow('gemini-3-flash').querySelector('input[type="checkbox"]').checked, false)
     assert.equal(modelRow('gemini-3-pro').querySelector('input[type="checkbox"]').checked, true)
     assert.match(text(dialog()), /版本 2/)
@@ -1383,7 +1423,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(buttonNamed(dialog(), '保存').disabled, false)
   })
 
-  it('preserves every dirty mapping and authorization/name/proxy/query draft on sync, including catalog-removed/custom rows', async () => {
+  it('preserves dirty mapping and account drafts on sync while custom rows stay unmappable without a shared row', async () => {
     const fixture = createOAuthAccountsFixture()
     const target = account(fixture, IDS.groupedHealthy)
     target.models = ['gemini-3-pro', 'claude-sonnet-4-5']
@@ -1394,7 +1434,11 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await input(field('账号名称'), '同步草稿名称')
     await input(dialog().querySelector('.oauth-proxy-row > input'), 'http://127.0.0.1:7890')
     await input(dialog().querySelector('[aria-label="补充列表外的模型"]'), 'custom-upstream')
-    await manual('custom-upstream', 'custom/public-id')
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, true)
+    const customAuthorization = modelRow('custom-upstream').querySelector('input[type="checkbox"]')
+    assert.equal(customAuthorization.disabled, false)
+    customAuthorization.click(); await settle()
+    assert.equal(customAuthorization.checked, true)
     await manual('claude-sonnet-4-5', 'manual/preserved')
     await input(dialog().querySelector('[aria-label="搜索模型授权与映射"]'), 'claude')
     buttonNamed(dialog(), '同步模型').click(); await settle(); await settle()
@@ -1406,9 +1450,10 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(removed.querySelector('input[type="checkbox"]').checked, true)
     assert.equal(removed.querySelector('.oauth-mapping-input input').value, 'manual/preserved')
     await input(dialog().querySelector('[aria-label="搜索模型授权与映射"]'), '')
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'custom/public-id')
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, true)
+    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
     assert.ok(modelRow('custom-upstream').querySelector('.oauth-model-outside'))
-    assert.equal(text(modelRow('gemini-3-pro').querySelector('.oauth-mapping-public > .mono')), 'google/new-auto-pro')
+    assert.equal(modelRow('gemini-3-pro').querySelector('.oauth-mapping-input input').value, 'google/new-auto-pro')
     assert.equal(mapping('antigravity', 'claude-opus-4-5-thinking').canonicalModelId, 'custom/opus', 'Sync must preserve saved manual mappings')
     await save()
     assert.deepEqual(writes()[0].body.models, ['claude-sonnet-4-5', 'custom-upstream', 'gemini-3-pro'])
@@ -1417,11 +1462,6 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     ])
     assert.equal(writes()[0].body.expectedModelMappingRevision, 2)
     assert.equal(mapping('antigravity', 'custom-upstream'), undefined, 'Unknown upstream is never created by settings')
-    assert.match(text(dialog()), /账号设置与授权已保存成功.*无共享行的映射草稿未提交/)
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'custom/public-id')
-    buttonNamed(modelRow('custom-upstream'), '丢弃此映射草稿').click(); await settle()
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input'), null)
-    await save()
     assert.equal(dialog(), null)
     assert.equal(writes().length, 1)
   })
@@ -1515,7 +1555,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     buttonNamed(dialog(), '刷新共享映射').click(); await settle()
     assert.equal(buttonNamed(dialog(), '保存').disabled, false)
     assert.equal(dialog().querySelector('.oauth-settings-notice'), null)
-    assert.equal(text(modelRow('gemini-3-flash').querySelector('.oauth-mapping-public > .mono')), 'b/other-row')
+    assert.equal(modelRow('gemini-3-flash').querySelector('.oauth-mapping-input input').value, 'b/other-row')
     await save()
     assert.equal(writes()[1].body.expectedModelMappingRevision, 2)
     assert.deepEqual(writes()[1].body.modelMappingChanges, [{ upstreamModel: 'gemini-3-pro', mode: 'manual', canonicalModelId: 'a/unchanged-dirty-row' }])
@@ -1535,38 +1575,38 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(mapping('antigravity', 'gemini-3-flash').publicModelId, 'google/new-automatic-default')
   })
 
-  it('keeps unknown mapping draft out of settings changes while account authorization saves, then sync recovery requires review', async () => {
+  it('keeps unmapped account models authorized but disables mapping until sync creates a shared row', async () => {
     const fixture = createOAuthAccountsFixture()
     const target = account(fixture, IDS.groupedHealthy)
     target.models = ['gemini-3-pro', 'custom-upstream']
     await mount(fixture)
     await openSettings(target.id)
-    await manual('custom-upstream', 'custom/preserved-draft')
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, true)
+    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
     await input(field('账号名称'), '仅账号设置保存')
-    assert.match(text(modelRow('custom-upstream')), /无共享映射.*不会提交/)
     await save()
     assert.deepEqual(writes()[0].body, { name: '仅账号设置保存' })
     assert.equal(mapping('antigravity', 'custom-upstream'), undefined)
-    assert.ok(dialog())
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'custom/preserved-draft')
-    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
+    await openSettings(target.id)
     mock.fixture.syncCatalogs[target.id] = ['gemini-3-pro', 'custom-upstream']
     buttonNamed(dialog(), '同步模型').click(); await settle(); await settle()
     assert.ok(mapping('antigravity', 'custom-upstream'))
-    assert.equal(buttonNamed(dialog(), '保存').disabled, true, 'Restored shared row must be reviewed before submitting old draft')
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'custom/preserved-draft')
-    dialog().querySelector('.oauth-settings-notice input[type="checkbox"]').click(); await settle(); await save()
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, false)
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'catalog/custom-upstream')
+    await manual('custom-upstream', 'custom/preserved-draft')
+    await save()
     assert.equal(mapping('antigravity', 'custom-upstream').publicModelId, 'custom/preserved-draft')
   })
 
-  it('keeps an unsubmitted unknown draft when another account sync restores it during the successful PUT refresh', async () => {
+  it('refreshes a newly shared mapping row without submitting edits for an unmapped model', async () => {
     const fixture = createOAuthAccountsFixture()
     const target = account(fixture, IDS.groupedHealthy)
     target.models = ['gemini-3-pro', 'custom-upstream']
     fixture.syncCatalogs[IDS.quotaError] = ['gemini-3-pro', 'custom-upstream']
     await mount(fixture)
     await openSettings(target.id)
-    await manual('custom-upstream', 'custom/unsubmitted-draft')
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, true)
+    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
     await input(field('账号名称'), '成功保存但保留映射草稿')
     const release = gateFetch((path, init) => path === `/admin/api/oauth-accounts/${target.id}/settings` && init.method === 'PUT')
     buttonNamed(dialog(), '保存').click(); await settle()
@@ -1577,23 +1617,10 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.ok(restored)
     globalThis.fetch = window.fetch = mock.fetch
     release(); await settle(); await settle()
-    assert.ok(dialog(), 'Successful refresh must not close a modal containing unsubmitted mapping drafts')
-    assert.equal(field('账号名称').value, '成功保存但保留映射草稿')
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'custom/unsubmitted-draft')
-    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
-    assert.match(text(modelRow('custom-upstream')), /最新共享值：catalog\/custom-upstream/)
-    assert.match(text(dialog()), /账号设置与授权已保存成功.*未提交的映射草稿待核对/)
-    assert.doesNotMatch(text(dialog()), /保存失败|刷新失败/)
-    assert.equal(buttonNamed(dialog(), '保存').disabled, true)
-    assert.equal(writes().length, 1)
-    dialog().querySelector('.oauth-settings-notice input[type="checkbox"]').click(); await settle(); await save()
     assert.equal(dialog(), null)
-    assert.equal(writes().length, 2)
-    assert.deepEqual(writes()[1].body, {
-      modelMappingChanges: [{ upstreamModel: 'custom-upstream', mode: 'manual', canonicalModelId: 'custom/unsubmitted-draft' }],
-      expectedModelMappingRevision: 2,
-    }, 'Confirmation submits only the previously unsubmitted mapping, not the saved account fields')
-    assert.equal(mapping('antigravity', 'custom-upstream').publicModelId, 'custom/unsubmitted-draft')
+    assert.equal(writes().length, 1)
+    assert.deepEqual(writes()[0].body, { name: '成功保存但保留映射草稿' })
+    assert.equal(mapping('antigravity', 'custom-upstream').publicModelId, 'catalog/custom-upstream')
   })
 
   it('retains a disappeared auto-row draft and authorization, permits discarding mapping only and never creates it through settings', async () => {
@@ -1608,12 +1635,14 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await manual('claude-sonnet-4-5', 'removed/auto-draft')
     buttonNamed(dialog(), '同步模型').click(); await settle(); await settle()
     assert.equal(mapping('antigravity', 'claude-sonnet-4-5'), undefined)
+    assert.equal(modelRow('claude-sonnet-4-5').querySelector('.oauth-mapping-input input').disabled, true)
     assert.equal(modelRow('claude-sonnet-4-5').querySelector('.oauth-mapping-input input').value, 'removed/auto-draft')
     assert.equal(modelRow('claude-sonnet-4-5').querySelector('input[type="checkbox"]').checked, true)
     assert.match(text(modelRow('claude-sonnet-4-5')), /无共享映射/)
+    assert.equal(buttonNamed(modelRow('claude-sonnet-4-5'), '丢弃此映射草稿').disabled, false)
     buttonNamed(modelRow('claude-sonnet-4-5'), '丢弃此映射草稿').click(); await settle()
     assert.equal(modelRow('claude-sonnet-4-5').querySelector('input[type="checkbox"]').checked, true)
-    assert.equal(modelRow('claude-sonnet-4-5').querySelector('.oauth-mapping-input'), null)
+    assert.equal(modelRow('claude-sonnet-4-5').querySelector('.oauth-mapping-input input').value, 'claude-sonnet-4-5')
     await input(field('账号名称'), '保存授权但不新建共享行')
     await save()
     assert.deepEqual(writes()[0].body, { name: '保存授权但不新建共享行' })
@@ -1687,7 +1716,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await mount(fixture)
     await openSettings(IDS.groupedHealthy)
     assert.match(text(dialog()), /目录候选读取失败.*仍可手工输入并保存/)
-    await manual('gemini-3-pro', '   ')
+    await manual('gemini-3-pro', 'x'.repeat(201))
     await save()
     assert.equal(writes().length, 0)
     assert.match(text(host.querySelector('.toast-stack')), /1\.\.200/)
@@ -1716,7 +1745,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(dialog(), null)
   })
 
-  it('requires review when a dirty draft first receives a trusted baseline after initial mapping GET failure, without auto retry', async () => {
+  it('keeps mapping input disabled until a trusted shared baseline is loaded after a read failure', async () => {
     const fixture = createOAuthAccountsFixture()
     fixture.controls.failMappingReads = 1
     const model = 'gemini-3-pro'
@@ -1726,61 +1755,51 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await mount(fixture)
     await openSettings(IDS.quotaError)
     assert.match(text(dialog()), /共享映射读取失败/)
-    await input(field('账号名称'), '首次可信版本前的账号草稿')
-    await manual(model, 'local/draft-before-baseline')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').disabled, true)
     assert.equal(modelRow(model).querySelector('input[type="checkbox"]').checked, true)
-    assert.equal(buttonNamed(dialog(), '保存').disabled, true, 'A draft without a trusted revision cannot be submitted')
+    await input(field('账号名称'), '首次可信版本前的账号草稿')
     buttonNamed(dialog(), '重新读取共享映射').click(); await settle()
     assert.equal(dialog().querySelector('.oauth-mapping-error'), null)
     assert.match(text(dialog()), /版本 7/)
     assert.equal(field('账号名称').value, '首次可信版本前的账号草稿')
-    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, 'local/draft-before-baseline')
-    assert.equal(writes().length, 0, 'Successful GET must not automatically retry the old mapping draft')
-    assert.equal(buttonNamed(dialog(), '保存').disabled, true, 'First trusted baseline must not grant overwrite permission to an unreviewed dirty draft')
-    assert.match(text(modelRow(model)), /最新共享值：other-admin\/latest-pro（manual；来源 manual/)
-    assert.match(text(dialog()), /草稿已保留.*核对最新值.*管理员确认后才可保存/)
-    const confirmation = dialog().querySelector('.oauth-settings-notice input[type="checkbox"]')
-    assert.ok(confirmation)
-    assert.equal(confirmation.checked, false)
-    buttonNamed(dialog(), '刷新共享映射').click(); await settle()
-    assert.equal(buttonNamed(dialog(), '保存').disabled, true, 'Repeated GET is not administrator confirmation')
-    await save()
-    assert.equal(writes().length, 0, 'Even clicking save cannot attach the new revision to the unconfirmed old draft')
-    assert.equal(mapping('antigravity', model).publicModelId, 'other-admin/latest-pro')
-    assert.equal(account(mock.fixture, IDS.quotaError).name, account(createOAuthAccountsFixture(), IDS.quotaError).name)
-    confirmation.click(); await settle()
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').value, 'other-admin/latest-pro')
+    assert.equal(modelRow(model).querySelector('.oauth-mapping-input input').disabled, false)
+    assert.equal(writes().length, 0, 'Reading the trusted baseline does not save settings or mappings')
     assert.equal(buttonNamed(dialog(), '保存').disabled, false)
+    await manual(model, 'local/draft-after-baseline')
     await save()
+    assert.equal(mapping('antigravity', model).publicModelId, 'local/draft-after-baseline')
+    assert.equal(account(mock.fixture, IDS.quotaError).name, '首次可信版本前的账号草稿')
     assert.equal(dialog(), null)
     assert.deepEqual(writes().map(request => [request.path, request.body]), [[
       `/admin/api/oauth-accounts/${IDS.quotaError}/settings`, {
         name: '首次可信版本前的账号草稿',
-        modelMappingChanges: [{ upstreamModel: model, mode: 'manual', canonicalModelId: 'local/draft-before-baseline' }],
+        modelMappingChanges: [{ upstreamModel: model, mode: 'manual', canonicalModelId: 'local/draft-after-baseline' }],
         expectedModelMappingRevision: 7,
       },
     ]])
-    assert.equal(mapping('antigravity', model).publicModelId, 'local/draft-before-baseline')
+    assert.equal(mapping('antigravity', model).publicModelId, 'local/draft-after-baseline')
     assert.deepEqual(account(mock.fixture, IDS.quotaError).models, ['gemini-3-pro'])
   })
 
-  it('keeps unknown dirty mappings invalid rather than conflicted on the first trusted GET and still saves account settings', async () => {
+  it('keeps unmapped inputs disabled after a failed mapping read and still saves account settings', async () => {
     const fixture = createOAuthAccountsFixture()
     fixture.controls.failMappingReads = 1
     const target = account(fixture, IDS.quotaError)
     target.models.push('custom-upstream')
     await mount(fixture)
     await openSettings(target.id)
-    await manual('custom-upstream', 'custom/untrusted-draft')
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, true)
+    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
     await input(field('账号名称'), '首次读取后仅保存账号设置')
     buttonNamed(dialog(), '重新读取共享映射').click(); await settle()
-    assert.match(text(modelRow('custom-upstream')), /无共享映射.*此草稿不会提交/)
+    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').disabled, true)
     assert.equal(dialog().querySelector('.oauth-settings-notice input[type="checkbox"]'), null)
     assert.equal(buttonNamed(dialog(), '保存').disabled, false)
     await save()
     assert.deepEqual(writes().map(request => request.body), [{ name: '首次读取后仅保存账号设置' }])
     assert.equal(mapping('antigravity', 'custom-upstream'), undefined)
-    assert.equal(modelRow('custom-upstream').querySelector('.oauth-mapping-input input').value, 'custom/untrusted-draft')
-    assert.equal(modelRow('custom-upstream').querySelector('input[type="checkbox"]').checked, true)
+    assert.equal(dialog(), null)
   })
 
   it('reports save success separately from failed baseline refresh and never resubmits saved changes', async () => {
