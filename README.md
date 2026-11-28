@@ -34,6 +34,8 @@ client --[client key]--> PrismLLM --[auth & protocol converter]--> upstream LLMs
 - **管理面**：`/admin/api/*`，由 HttpOnly 会话 Cookie 与 CSRF Token 双重保护。
 - **运维面**：`/health/live`、`/health/ready`、`/metrics`（Prometheus 格式）。
 
+当前 Maven 模块职责、`prism-app` 组合根边界及来源地址日志规则见[架构说明](docs/architecture.md)。
+
 ---
 
 ## 快速开始
