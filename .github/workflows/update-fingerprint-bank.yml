@@ -41,13 +41,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh auth setup-git
+          git fetch origin main
+          # 已有更新分支先取回，--force-with-lease 才有可比的远端引用。
           git fetch origin "$UPDATE_BRANCH" || true
-          if git show-ref --verify --quiet "refs/remotes/origin/$UPDATE_BRANCH"; then
-            git switch --create "$UPDATE_BRANCH" --track "origin/$UPDATE_BRANCH"
-            git reset --hard origin/main
-          else
-            git switch --create "$UPDATE_BRANCH"
-          fi
+          # 一律从 origin/main 起分支：workflow_dispatch 允许在任意 ref 上触发，
+          # 直接 switch --create 会把触发分支上的无关提交带进面向 main 的 PR。
+          git switch --force-create "$UPDATE_BRANCH" origin/main
 
       - name: Validate updater
         run: |

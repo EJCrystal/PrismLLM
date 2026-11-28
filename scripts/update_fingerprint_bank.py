@@ -244,7 +244,8 @@ def read_existing_metadata(path: Path) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def atomic_write(path: Path, content: bytes) -> None:
+def staged_temp(path: Path, content: bytes) -> Path:
+    """把内容完整写入目标同目录的临时文件并落盘，返回临时文件路径。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False)
     temporary_path = Path(temporary.name)
@@ -253,9 +254,51 @@ def atomic_write(path: Path, content: bytes) -> None:
             temporary.write(content)
             temporary.flush()
             os.fsync(temporary.fileno())
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
+    return temporary_path
+
+
+def atomic_write(path: Path, content: bytes) -> None:
+    temporary_path = staged_temp(path, content)
+    try:
         os.replace(temporary_path, path)
     finally:
         temporary_path.unlink(missing_ok=True)
+
+
+def publish_pair(pairs: list[tuple[Path, bytes]]) -> None:
+    """成对发布多个文件：先完整暂存全部新内容，再逐个原子替换。
+
+    暂存失败不会改动任何目标文件；替换阶段失败时回滚已替换的文件，保证
+    目标目录要么保持旧的成对内容，要么全部换成新内容。进程在两次替换之间
+    被终止时，下一次 update 会同时重写两个文件，按下载内容恢复一致。
+    """
+    previous = {target: target.read_bytes() if target.exists() else None for target, _ in pairs}
+    staged: list[tuple[Path, Path]] = []
+    replaced: list[Path] = []
+    try:
+        for target, content in pairs:
+            staged.append((target, staged_temp(target, content)))
+        for target, temporary_path in staged:
+            os.replace(temporary_path, target)
+            replaced.append(target)
+    except BaseException:
+        for target in reversed(replaced):
+            original = previous[target]
+            try:
+                if original is None:
+                    target.unlink(missing_ok=True)
+                else:
+                    atomic_write(target, original)
+            except OSError:
+                # 回滚也失败时保留现场，下一次运行会按下载内容整体重写。
+                pass
+        raise
+    finally:
+        for _, temporary_path in staged:
+            temporary_path.unlink(missing_ok=True)
 
 
 def update(repository: str, ref: str, output_dir: Path, dry_run: bool) -> dict[str, Any]:
@@ -270,8 +313,7 @@ def update(repository: str, ref: str, output_dir: Path, dry_run: bool) -> dict[s
     current_ids = {model["id"] for model in metadata["models"]}
     changed = not binary_path.exists() or binary_path.read_bytes() != binary or not metadata_path.exists() or metadata_path.read_bytes() != metadata_bytes
     if changed and not dry_run:
-        atomic_write(binary_path, binary)
-        atomic_write(metadata_path, metadata_bytes)
+        publish_pair([(binary_path, binary), (metadata_path, metadata_bytes)])
     result = {
         "changed": changed,
         "source_repo": repository,
