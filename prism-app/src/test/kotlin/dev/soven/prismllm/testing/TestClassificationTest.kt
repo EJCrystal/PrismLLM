@@ -114,6 +114,7 @@ class TestClassificationTest {
         val INTEGRATION_SCOPES = mapOf(
             "AdminChannelIntegrationTest" to setOf("shard-4", "channel"),
             "AdminConsoleIntegrationTest" to setOf("shard-3"),
+            "AntigravityAgySettingsIntegrationTest" to setOf("shard-2"),
             "ChannelEgressIntegrationTest" to setOf("shard-4", "channel"),
             "ChannelKeyPoolIntegrationTest" to setOf("shard-1", "channel"),
             "ChannelQuotaIntegrationTest" to setOf("shard-1", "channel"),

@@ -1211,8 +1211,10 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
                 print(json.dumps({'jsonrpc':'2.0', 'id':request['id'], 'result':result}), flush=True)
         """.trimIndent())
         app.close()
-        app = GatewayApplication(config().copy(antigravityAgy = dev.soven.prismllm.config.AntigravityAgyConfig(
-            loginScript, directory.resolve("profiles"))))
+        app = GatewayApplication(
+            config().copy(antigravityAgy = AntigravityAgyConfig(loginScript, directory.resolve("profiles"))),
+            antigravityAgyPreparation = { _, _, _ -> },
+        )
         try {
             testApplication {
                 application { app.install(this) }
@@ -1220,6 +1222,10 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
                 val legacy = createOAuthAccount(channel, "fixture-legacy@example.invalid", provider = OAuthProvider.ANTIGRAVITY)
                 val routesBeforeMigration = app.modelCredentialRouteRepository.list()
                 val (cookie, csrf) = client.loginAdmin()
+                app.antigravityAgyRuntime.update(true, "http://127.0.0.1:7897")
+                kotlinx.coroutines.withTimeout(3_000) {
+                    while (app.antigravityAgyRuntime.snapshot().status != "READY") kotlinx.coroutines.delay(5)
+                }
                 val providers = Json.parseToJsonElement(client.get("/admin/api/oauth-providers") {
                     header(HttpHeaders.Cookie, cookie)
                 }.bodyAsText()).jsonArray.map { it.jsonObject }
@@ -1402,11 +1408,18 @@ class SubscriptionOAuthIntegrationTest : GatewayIntegrationTestBase() {
         val home = Files.createDirectory(state.resolve(profile.id))
         Files.writeString(home.resolve("credential.fixture"), "synthetic credential")
         app.close()
-        app = GatewayApplication(config().copy(antigravityAgy = AntigravityAgyConfig(directory.resolve("unused.py"), state)))
+        app = GatewayApplication(
+            config().copy(antigravityAgy = AntigravityAgyConfig(directory.resolve("unused.py"), state)),
+            antigravityAgyPreparation = { _, _, _ -> },
+        )
         try {
             testApplication {
                 application { app.install(this) }
                 val (cookie, csrf) = client.loginAdmin()
+                app.antigravityAgyRuntime.update(true, "http://127.0.0.1:7897")
+                kotlinx.coroutines.withTimeout(3_000) {
+                    while (app.antigravityAgyRuntime.snapshot().status != "READY") kotlinx.coroutines.delay(5)
+                }
                 suspend fun cleanup() = client.delete("/admin/api/antigravity/agy/accounts/" + profile.id) {
                     header(HttpHeaders.Cookie, cookie)
                     header("X-CSRF-Token", csrf)

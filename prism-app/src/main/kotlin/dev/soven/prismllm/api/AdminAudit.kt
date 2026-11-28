@@ -137,6 +137,7 @@ internal fun auditAction(method: String, path: String): String = when {
     method == "PUT" && OAUTH_PROVIDER_MODEL_MAPPINGS_PATTERN.matches(path) -> "oauth_provider.model_mappings.update"
     method == "POST" && path == "/admin/api/oauth-login/start" -> "oauth_account.login.start"
     method == "POST" && path == "/admin/api/antigravity/agy/logins" -> "antigravity.agy.login.start"
+    method == "PUT" && path == "/admin/api/antigravity-agy-settings" -> "antigravity.agy.settings.update"
     method == "POST" && path.matches(Regex("^/admin/api/antigravity/agy/logins/[^/]+/code$")) -> "antigravity.agy.login.code"
     method == "DELETE" && path.matches(Regex("^/admin/api/antigravity/agy/logins/[^/]+$")) -> "antigravity.agy.login.cancel"
     method == "DELETE" && ANTIGRAVITY_AGY_ACCOUNT_PATTERN.matches(path) -> "antigravity.agy.profile.delete"

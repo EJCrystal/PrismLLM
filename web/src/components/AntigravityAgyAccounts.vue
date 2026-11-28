@@ -1,28 +1,61 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import AntigravityAgySettingsModal from './AntigravityAgySettingsModal.vue'
+import { onMounted, onUnmounted, ref } from 'vue'
 import { api } from '../api'
-import type { AntigravityAgyAccount } from '../types/api'
+import type { AntigravityAgyAccount, AntigravityAgySettings } from '../types/api'
 import { formatTime } from '../utils/format'
+import { isAgyEnvironmentPreparing } from '../utils/systemConfig'
 
 defineEmits<{ (event: 'create'): void; (event: 'reauthorize', account: AntigravityAgyAccount): void }>()
 const accounts = ref<AntigravityAgyAccount[]>([])
 const configured = ref(false)
+const showSettings = ref(false)
 const loading = ref(true)
 const error = ref('')
 const actionError = ref('')
 const deletingId = ref<string | null>(null)
-async function load() {
-  loading.value = true
+let timer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+let requestVersion = 0
+let waitingForEnvironment = false
+function shouldWatchEnvironment(status: string | undefined): boolean {
+  return isAgyEnvironmentPreparing(status) || status === 'READY'
+}
+async function load(initial = true) {
+  if (disposed) return
+  const version = ++requestVersion
+  clearTimeout(timer)
+  if (initial) loading.value = true
   error.value = ''
   try {
     const result = await api.listAntigravityAgyAccounts()
+    if (disposed || version !== requestVersion) return
     configured.value = result.configured
     accounts.value = result.accounts
+    if (result.configured) {
+      waitingForEnvironment = false
+    } else {
+      waitingForEnvironment = true
+      const settings = await api.getAntigravityAgySettings()
+      if (disposed || version !== requestVersion) return
+      waitingForEnvironment = shouldWatchEnvironment(settings.status)
+    }
   } catch (cause) {
-    error.value = cause instanceof Error ? cause.message : '无法读取 CLI 授权档案'
+    if (!disposed && version === requestVersion) {
+      configured.value = false
+      error.value = cause instanceof Error ? cause.message : '无法读取 CLI 授权档案'
+    }
   } finally {
-    loading.value = false
+    if (!disposed && version === requestVersion) {
+      loading.value = false
+      if (waitingForEnvironment) timer = setTimeout(() => { void load(false) }, 2000)
+    }
   }
+}
+function settingsSaved(settings: AntigravityAgySettings) {
+  if (disposed) return
+  waitingForEnvironment = shouldWatchEnvironment(settings.status)
+  void load()
 }
 async function cleanOrphan(account: AntigravityAgyAccount) {
   if (!account.cleanupEligible || deletingId.value) return
@@ -41,7 +74,8 @@ async function cleanOrphan(account: AntigravityAgyAccount) {
     deletingId.value = null
   }
 }
-onMounted(load)
+onMounted(() => { void load() })
+onUnmounted(() => { disposed = true; requestVersion++; clearTimeout(timer) })
 </script>
 
 <template>
@@ -51,8 +85,9 @@ onMounted(load)
       <button type="button" class="button" :disabled="loading || !configured || deletingId !== null" @click="$emit('create')">新增 CLI 账号</button>
     </div>
     <p v-if="loading" role="status">正在读取官方 CLI 配置…</p>
-    <p v-else-if="error" class="callout danger" role="alert">{{ error }} <button type="button" class="button" @click="load">重试</button></p>
-    <p v-else-if="!configured" class="callout warning">服务端尚未配置 agy 隔离运行环境。请先完成部署配置；不会退回旧 OAuth 登录。</p>
+    <p v-else-if="error" class="callout danger" role="alert">{{ error }} <button type="button" class="button" @click="load()">重试</button></p>
+    <p v-else-if="!configured" class="callout warning">官方 agy 尚未开启或运行环境尚未准备完成，不会退回旧 OAuth 登录。<button type="button" class="button" @click="showSettings = true">配置运行环境</button></p>
+    <button v-if="configured" type="button" class="button" @click="showSettings = true">运行环境设置</button>
     <p v-if="actionError" class="callout danger" role="alert">{{ actionError }}</p>
     <p v-if="configured && accounts.length" class="muted small">仅未被订阅账号、迁移来源、已保存路由或进行中的登录使用的孤儿档案可清理。清理会永久删除该档案的本地 agy 凭据，并释放一个档案名额。</p>
     <p v-if="!loading && !error && configured && !accounts.length" class="muted small">还没有通过管理台授权的 CLI 账号；新增账号或从旧账号菜单选择“使用 agy 登录迁移”。</p>
@@ -78,5 +113,6 @@ onMounted(load)
       <p v-if="account.sourceAccountId" class="muted small">旧账号迁移保留原账号 ID、渠道关联和模型路由顺序，并清除旧 OAuth token；请确认 CLI 登录的是同一个 Google 账号。</p>
       <p v-if="account.routeModels?.length && !account.enabled" class="small text-warning">账号已在模型路由中，但当前处于停用状态。</p>
     </article>
+    <AntigravityAgySettingsModal v-if="showSettings" @close="showSettings = false" @saved="settingsSaved" />
   </section>
 </template>

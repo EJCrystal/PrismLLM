@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { api } from '../api'
 import type {
+  AntigravityAgySettings,
   ChannelEgressSettings,
   KeyAutoDisableSettingsResponse,
   ModelTestSettings,
@@ -13,7 +14,7 @@ import type {
   WebSearchSettings,
 } from '../types/api'
 import { formatTime } from '../utils/format'
-import { countUpstreamOverrides } from '../utils/systemConfig'
+import { agyEnvironmentStatus, countUpstreamOverrides, isAgyEnvironmentPreparing } from '../utils/systemConfig'
 import { clearAllUpstreamModelCache } from '../upstreamModelCache'
 import Icon from './Icon.vue'
 import ChannelEgressSettingsModal from './ChannelEgressSettingsModal.vue'
@@ -24,10 +25,12 @@ import RetentionSettingsModal from './RetentionSettingsModal.vue'
 import UpstreamRequestSettingsModal from './UpstreamRequestSettingsModal.vue'
 import SystemPromptSettingsModal from './SystemPromptSettingsModal.vue'
 import WebSearchSettingsModal from './WebSearchSettingsModal.vue'
+import AntigravityAgySettingsModal from './AntigravityAgySettingsModal.vue'
 
 const refreshing = ref(false)
 
 const cards = reactive({
+  antigravityAgy: { loading: true, error: '', data: null as AntigravityAgySettings | null },
   modelTest: { loading: true, error: '', data: null as ModelTestSettings | null },
   upstream: { loading: true, error: '', data: null as UpstreamRequestSettings | null },
   systemPrompt: { loading: true, error: '', data: null as SystemPromptSettings | null },
@@ -46,6 +49,10 @@ const showChannelEgress = ref(false)
 const showAutoDisable = ref(false)
 const showNotification = ref(false)
 const showRetention = ref(false)
+const showAntigravityAgy = ref(false)
+let agyRefreshTimer: ReturnType<typeof setTimeout> | undefined
+let disposed = false
+onUnmounted(() => { disposed = true; clearTimeout(agyRefreshTimer) })
 
 interface SettingRow {
   id: string
@@ -166,6 +173,7 @@ async function loadRetention() {
 async function loadAll(refresh = false) {
   if (refresh) refreshing.value = true
   await Promise.allSettled([
+    loadAntigravityAgy(),
     loadModelTest(),
     loadUpstream(),
     loadSystemPrompt(),
@@ -180,6 +188,22 @@ async function loadAll(refresh = false) {
 
 function updatedLabel(timestamp: number): string {
   return timestamp > 0 ? `更新于 ${formatTime(timestamp)}` : '使用默认设置'
+}
+
+async function loadAntigravityAgy() {
+  cards.antigravityAgy.loading = true
+  cards.antigravityAgy.error = ''
+  try {
+    cards.antigravityAgy.data = await api.getAntigravityAgySettings()
+    clearTimeout(agyRefreshTimer)
+    if (!disposed && isAgyEnvironmentPreparing(cards.antigravityAgy.data.status)) {
+      agyRefreshTimer = setTimeout(() => { void loadAntigravityAgy() }, 2000)
+    }
+  } catch (cause) {
+    cards.antigravityAgy.error = errorMessage(cause)
+  } finally {
+    cards.antigravityAgy.loading = false
+  }
 }
 
 function promptValue(prompt: string): string {
@@ -203,7 +227,23 @@ const settingRows = computed<SettingRow[]>(() => {
   const autoDisable = cards.autoDisable
   const notification = cards.notification
   const retention = cards.retention
+  const antigravityAgy = cards.antigravityAgy
   return [
+    {
+      id: 'antigravity-agy',
+      title: 'Antigravity 运行环境',
+      description: '开启后检查服务环境，按需下载并安装缺失依赖',
+      icon: 'layers',
+      loading: antigravityAgy.loading,
+      error: antigravityAgy.error,
+      value: antigravityAgy.data ? agyEnvironmentStatus(antigravityAgy.data.status) : '',
+      valueTitle: '',
+      meta: antigravityAgy.data ? updatedLabel(antigravityAgy.data.updatedAt) : '',
+      alert: antigravityAgy.data?.error || '',
+      tone: antigravityAgy.data?.status === 'READY' ? 'success' : 'muted',
+      onAction: () => { showAntigravityAgy.value = true },
+      onRetry: loadAntigravityAgy,
+    },
     {
       id: 'model-test',
       title: '模型测试',
@@ -416,6 +456,7 @@ onMounted(() => { void loadAll() })
     </p>
 
     <ModelTestSettingsModal v-if="showModelTest" @close="showModelTest = false" @saved="loadModelTest" />
+    <AntigravityAgySettingsModal v-if="showAntigravityAgy" @close="showAntigravityAgy = false" @saved="loadAntigravityAgy" />
     <UpstreamRequestSettingsModal v-if="showUpstream" @close="showUpstream = false" @saved="onUpstreamSaved" />
     <SystemPromptSettingsModal v-if="showSystemPrompt" @close="showSystemPrompt = false" @saved="loadSystemPrompt" />
     <WebSearchSettingsModal v-if="showWebSearch" @close="showWebSearch = false" @saved="loadWebSearch" />

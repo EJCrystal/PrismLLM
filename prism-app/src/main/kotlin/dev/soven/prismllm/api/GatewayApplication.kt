@@ -1,8 +1,8 @@
 package dev.soven.prismllm.api
 
 import dev.soven.prismllm.antigravity.AntigravityAcpGateway
-import dev.soven.prismllm.antigravity.AntigravityAgyGateway
-import dev.soven.prismllm.antigravity.AntigravityAgyLoginService
+import dev.soven.prismllm.antigravity.AntigravityAgyEnvironment
+import dev.soven.prismllm.antigravity.AntigravityAgyRuntime
 import dev.soven.prismllm.shared.error.AnthropicErrorBody
 import dev.soven.prismllm.shared.error.AnthropicErrorEnvelope
 import dev.soven.prismllm.shared.error.ErrorBody
@@ -15,6 +15,7 @@ import dev.soven.prismllm.shared.error.toEnvelope
 import dev.soven.prismllm.shared.error.toGeminiEnvelope
 
 import dev.soven.prismllm.config.GatewayConfig
+import dev.soven.prismllm.config.AntigravityAgyConfig
 import dev.soven.prismllm.config.TrustedProxyNetwork
 import dev.soven.prismllm.db.DatabaseFactory
 import dev.soven.prismllm.proxy.GatewayMetrics
@@ -62,6 +63,7 @@ import dev.soven.prismllm.channel.persistence.ModelTestSettingsRepository
 import dev.soven.prismllm.admin.persistence.WebSearchSettingsRepository
 import dev.soven.prismllm.admin.persistence.ChannelEgressSettingsRepository
 import dev.soven.prismllm.admin.persistence.SystemPromptSettingsRepository
+import dev.soven.prismllm.admin.persistence.AntigravityAgySettingsRepository
 import dev.soven.prismllm.admin.persistence.NotificationRepository
 import dev.soven.prismllm.channel.persistence.KeyStateObserver
 import dev.soven.prismllm.notification.NotificationCredentials
@@ -298,6 +300,8 @@ class GatewayApplication(
     val config: GatewayConfig,
     notificationTransport: NotificationTransport? = null,
     httpClientOverride: HttpClient? = null,
+    antigravityAgyPreparation: suspend (AntigravityAgyConfig, (String, List<String>) -> Unit, () -> Boolean) -> Unit =
+        AntigravityAgyEnvironment()::prepare,
 ) : AutoCloseable {
     init {
         // 协议组合缺失只会在对应请求到达时才暴露，放到启动阶段拦截。
@@ -314,12 +318,8 @@ class GatewayApplication(
 
     internal val requestDrain = RequestDrain()
     internal val antigravityAcp = config.antigravityAcp?.let(::AntigravityAcpGateway)
-    internal val antigravityAgyLogin = config.antigravityAgy?.let {
-        AntigravityAgyLoginService(it, onAuthenticated = { profile ->
-            this@GatewayApplication.registerAgyProfile(profile)
-        })
-    }
-    internal val antigravityAgy = config.antigravityAgy?.let { AntigravityAgyGateway(it) }
+    internal val antigravityAgyLogin get() = antigravityAgyRuntime.login
+    internal val antigravityAgy get() = antigravityAgyRuntime.gateway
     val shuttingDown: Boolean
         get() = requestDrain.shuttingDown
     /** 跨协议携带的 Responses 密封推理，按内容哈希暂存在进程内。 */
@@ -374,6 +374,12 @@ class GatewayApplication(
     val channelEgressSettingsRepository = ChannelEgressSettingsRepository(databaseFactory.database)
     val channelProxyHostAllowlist = ChannelProxyHostAllowlist(channelEgressSettingsRepository)
     val systemPromptSettingsRepository = SystemPromptSettingsRepository(databaseFactory.database)
+    internal val antigravityAgyRuntime = AntigravityAgyRuntime(
+        config.antigravityAgy,
+        AntigravityAgySettingsRepository(databaseFactory.database),
+        onAuthenticated = { profile -> registerAgyProfile(profile) },
+        prepare = antigravityAgyPreparation,
+    )
     val iqTestRunRepository = dev.soven.prismllm.admin.persistence.IqTestRunRepository(databaseFactory.database)
     internal val iqTestJobRepository = dev.soven.prismllm.admin.persistence.IqTestJobRepository(databaseFactory.database)
 
@@ -603,6 +609,7 @@ class GatewayApplication(
 
     fun install(app: Application) {
         databaseFactory.migrate()
+        runBlocking { antigravityAgyRuntime.start() }
         channelHealthIndexJob = dev.soven.prismllm.requestlog.infra.startChannelHealthIndexer(
             { cutoff -> requestLogRepository.indexHealthBatch(cutoff) },
             scope,
@@ -931,8 +938,7 @@ class GatewayApplication(
         (notificationSender as? AutoCloseable)?.close()
         runBlocking { channelHealthIndexJob?.cancelAndJoin() }
         oauthQuotaService.close()
-        antigravityAgyLogin?.close()
-        antigravityAgy?.close()
+        antigravityAgyRuntime.close()
         oauthTokenService.close()
         scope.cancel()
         metrics.close()

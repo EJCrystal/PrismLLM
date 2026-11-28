@@ -638,7 +638,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assert.equal(host.querySelector('.empty-state'), null)
     assert.equal(rows().length, 9)
     assert.deepEqual(stats(), [9, 7, 2, 1])
-    assert.equal(mock.requests.length, 7)
+    assert.equal(mock.requests.filter(request => request.path !== '/admin/api/antigravity-agy-settings').length, 7)
     assert.ok(mock.requests.every(request => request.method === 'GET'))
   })
 
@@ -674,7 +674,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     assertRows([IDS.groupedHealthy, IDS.groupedWarning, IDS.quotaUnknown])
     assert.equal(host.querySelector('.oauth-full-models'), null)
     assert.equal(JSON.stringify(mock.fixture), before)
-    assert.equal(mock.requests.length, 4)
+    assert.equal(mock.requests.filter(request => request.path !== '/admin/api/antigravity-agy-settings').length, 4)
     assert.deepEqual(stats(), [9, 7, 2, 1])
   })
 
@@ -723,7 +723,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await settle()
     assert.equal(host.querySelector('.empty-state'), null)
     assert.equal(rows().length, 9)
-    assert.equal(mock.requests.length, 4)
+    assert.equal(mock.requests.filter(request => request.path !== '/admin/api/antigravity-agy-settings').length, 4)
   })
 
   it('does not hide disabled REAUTH credentials or their refresh error', async () => {
@@ -852,7 +852,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
     await settle()
     assert.equal(toggle.getAttribute('aria-expanded'), 'false')
     assert.equal(document.getElementById(listId), null)
-    assert.equal(mock.requests.length, 4)
+    assert.equal(mock.requests.filter(request => request.path !== '/admin/api/antigravity-agy-settings').length, 4)
   })
 
   it('offers an accessible full-model disclosure even when a single model has no hidden badge', async () => {
@@ -893,7 +893,7 @@ describe('OAuthAccountsView mounted subscription-account dashboard', () => {
       assert.match(text(dialog), /账号代理/)
       assert.match(text(dialog), /模型授权/)
       assert.ok(dialog.querySelector('.oauth-model-picker'))
-      assert.deepEqual(mock.requests.slice(4).map(request => [request.method, request.path]), [
+      assert.deepEqual(mock.requests.filter(request => request.path !== '/admin/api/antigravity-agy-settings').slice(4).map(request => [request.method, request.path]), [
         ['GET', `/admin/api/oauth-providers/${account(mock.fixture, id).provider}/model-mappings`],
         ['POST', '/admin/api/model-suggestions'],
       ], 'Opening settings reads only shared mappings and batch candidates, never upstream or login routes')

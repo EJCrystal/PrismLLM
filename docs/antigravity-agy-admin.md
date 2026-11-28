@@ -18,22 +18,41 @@ Antigravity 的管理台新增和旧账号重新登录不再调用 `/admin/api/o
 官方 CLI 数据面只调用 CLI 当前模型和订阅自带额度；ACP 明确报告额度不足时返回不可重试错误，不切模型、
 不转付费 API，也不继续尝试路由中的后续静态凭据。该集成默认关闭，本次不部署、不改线上路由。
 
-## 服务端配置
+## 管理台开关与按需准备
 
-要求与 ACP 试点一致的 Linux x86_64 环境、Python 3.11+、Bubblewrap 和可用的本机 HTTP 代理。
-登录期间由脚本校验并安装固定官方 CLI，再验证既有文件/进程/网络沙盒；不继承宿主 API Key、
-Google 凭据、钥匙串或 D-Bus。每个 CLI 档案使用独立私有 home、工作目录和排他锁。
-Google token 只保留在 CLI 自己管理的私有 home，设置始终恢复为 `useG1Credits: false`。
+无需填写 agy 环境变量。在“系统配置 → Antigravity 运行环境”或 Antigravity 账号区的“配置运行环境”
+打开开关，确认服务环境内可访问的本机 HTTP 代理并保存。设置持久化到数据库，后台异步准备，
+HTTP 请求不等待安装结束。默认关闭时不检查、不下载、不安装相关运行依赖。
 
-```dotenv
-ANTIGRAVITY_AGY_ENABLED=true
-ANTIGRAVITY_AGY_SCRIPT=/absolute/path/to/PrismLLM/scripts/antigravity_agy_admin.py
-ANTIGRAVITY_AGY_STATE_DIR=/absolute/path/to/private/antigravity-agy-accounts
-ANTIGRAVITY_AGY_PROXY=http://127.0.0.1:7897
-```
+1. 检查当前服务环境是否为 Linux x86_64，以及 Python 3.11+ 和 Bubblewrap 是否已存在。
+2. 管理台列出缺失依赖，仅在缺失时通过当前系统的 apt-get 软件源下载安装；已有依赖不重装。
+   不接受浏览器传入命令、脚本路径、任意下载链接或额外软件源，不运行 sudo、不自动提权。
+   不支持 apt-get、没有安装权限、根文件系统只读或源中的 Python 版本不足时明确提示，由部署管理员处理后重试。
+3. 下载并校验仓库固定版本官方 agy，在新的私有运行目录检查文件、进程和网络沙盒。
+   已有 CLI 必须通过固定版本完整性校验才可复用；新账号仅复制已校验的 CLI 和校验记录，不复用运行目录中的 home。
+4. 只有检查全部通过才显示“运行环境已就绪”，放行官方登录和已配置的 agy 路由。
+   准备不会启动 Google 授权、生成请求、读取旧 token 或自动添加模型路由。失败时显示原因，可显式重试。
 
-默认关闭。未配置时管理台明确报错，不自动回退旧 OAuth。上述路径由部署者设置，不允许浏览器传入。
-提供商列表的 Antigravity 配置状态取决于此 agy 登录服务，不再沿用旧 OAuth 客户端配置的可用状态。
+镜像不预装 Python 和 Bubblewrap，只携带随应用发布的可信脚本及固定版本清单。
+首次开启时下载的系统依赖位于服务所在容器/机器，而不是当前浏览器电脑。
+默认镜像基于 Ubuntu 24.04，使系统源中的 Python 满足最低版本；其他部署环境需自行保证兼容的软件源、
+安装权限和可写文件系统。容器必须允许 Bubblewrap 所需的内核命名空间；这不是下载软件能修复的问题，
+不会通过关闭沙盒、提权容器或旧 OAuth 回退绕过检查。
+
+准备状态包括检查、安装缺失依赖、下载校验 CLI/沙盒检查、就绪、失败和关闭。
+关闭后不删除依赖或账号凭据；已开始的系统安装步骤不会因管理台关闭开关而中断，完成该步骤后停止后续准备。
+停止期间不能重新开启，需等待状态变为关闭后再开启，并重新完成全部准备检查后才会放行服务。
+安装期间不要重启服务或更新容器。重建容器后，仍开启的设置会再次检查并仅安装缺失依赖。
+
+默认脚本位于应用工作目录的 scripts/antigravity_agy_admin.py，状态根目录为 data/antigravity-agy；
+Docker 中分别是 /app/scripts 和 /app/data/antigravity-agy，Compose 使用独立的 prism-llm_agydata 命名卷持久化。
+HTTP 代理仍要求 http://127.0.0.1:端口，不能携带账号密码；容器回环地址指容器自身，需要部署者提供可用出口。
+不继承宿主 API Key、Google 凭据、钥匙串或 D-Bus。每个 CLI 档案使用独立私有 home、工作目录和排他锁。
+Google token 只保留在 CLI 自己管理的私有 home，设置始终恢复为 useG1Credits: false。
+
+开关和代理只从数据库中的管理台设置读取，不再读取旧的 agy 部署环境变量；未保存开启设置时保持关闭。
+旧部署中残留的相关环境变量可删除，不会再影响运行环境。浏览器不能修改脚本、Python 或凭据目录路径。
+提供商列表的 Antigravity 配置状态取决于已就绪的 agy 登录服务，不再沿用旧 OAuth 客户端配置的可用状态。
 状态根目录必须属于服务运行用户，权限 0700，不得通过符号链接引用；持久化目录需要备份和持续保留。
 不能把 #278 已验收的试点状态目录误设为新的档案根目录。原有试点登录保持原样，不扫描、读取或搬运
 该目录中的凭据；旧 OAuth 数据库账号迁移仅通过管理台选中旧记录后，用官方 CLI 重新授权完成。
@@ -76,6 +95,8 @@ ANTIGRAVITY_AGY_PROXY=http://127.0.0.1:7897
 
 | 方法 | 路径（前缀 `/admin/api`） | 用途 |
 | --- | --- | --- |
+| GET | /antigravity-agy-settings | 开关、服务端准备状态、缺失依赖与失败原因 |
+| PUT | /antigravity-agy-settings | 保存开关和本机 HTTP 代理，开启后异步检查并按需安装 |
 | GET | `/antigravity/agy/accounts` | 配置可用性与 CLI 档案元数据 |
 | POST | `/antigravity/agy/logins` | 发起登录，202；可带 `name`、`sourceAccountId` |
 | GET | `/antigravity/agy/logins/{loginId}` | 轮询脱敏状态和官方登录链接 |

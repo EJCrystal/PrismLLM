@@ -59,7 +59,7 @@ data class GatewayConfig(
     /** Responses 内置 web_search 的网关代执行配置。 */
     val webSearch: WebSearchConfig = WebSearchConfig(),
     val antigravityAcp: AntigravityAcpConfig? = null,
-    val antigravityAgy: AntigravityAgyConfig? = null,
+    val antigravityAgy: AntigravityAgyConfig = AntigravityAgyConfig.defaults(),
 ) {
     companion object {
         /** 智商检测单次等待上游的硬上限；题目默认、环境变量与单次请求覆盖都不能超过它。 */
@@ -225,7 +225,6 @@ data class GatewayConfig(
                     .getOrElse { cause -> error("TRUSTED_PROXY_CIDRS 配置无效: ${cause.message}") },
                 oauth = OAuthConfig.fromEnv(env),
                 antigravityAcp = AntigravityAcpConfig.fromEnv(env),
-                antigravityAgy = AntigravityAgyConfig.fromEnv(env),
                 webSearch = WebSearchConfig(
                     enabled = webSearchEnabled,
                     provider = webSearchProvider,

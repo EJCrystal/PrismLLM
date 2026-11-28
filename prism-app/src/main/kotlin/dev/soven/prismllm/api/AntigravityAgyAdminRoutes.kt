@@ -13,6 +13,7 @@ import io.ktor.server.routing.Route
 import io.ktor.server.routing.delete
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.put
 import kotlinx.serialization.Serializable
 import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
 import org.jetbrains.exposed.v1.jdbc.transactions.transaction
@@ -42,7 +43,24 @@ data class AntigravityAgyLoginRequest(val name: String? = null, val sourceAccoun
 @Serializable
 data class AntigravityAgyCodeRequest(val code: String)
 
+@Serializable
+data class AntigravityAgySettingsRequest(val enabled: Boolean, val proxy: String)
+
 internal fun Route.antigravityAgyAdminRoutes(app: GatewayApplication) {
+    get("/antigravity-agy-settings") {
+        call.requireAdmin(app)
+        call.response.headers.append("Cache-Control", "no-store")
+        call.respond(app.antigravityAgyRuntime.snapshot())
+    }
+
+    put("/antigravity-agy-settings") {
+        call.requireAdmin(app)
+        val request = call.receive<AntigravityAgySettingsRequest>()
+        val settings = app.antigravityAgyRuntime.update(request.enabled, request.proxy.trim())
+        call.response.headers.append("Cache-Control", "no-store")
+        call.respond(settings)
+    }
+
     get("/antigravity/agy/accounts") {
         call.requireAdmin(app)
         call.response.headers.append("Cache-Control", "no-store")

@@ -25,12 +25,14 @@ COPY prism-admin ./prism-admin
 COPY prism-app ./prism-app
 RUN --mount=type=cache,target=/root/.m2 mvn -B -DskipTests -pl prism-app -am package
 
-FROM eclipse-temurin:21-jre-jammy
+FROM eclipse-temurin:21-jre-noble
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=build /app/prism-app/target/prism-llm-0.1.0-SNAPSHOT.jar app.jar
 COPY --from=web /web/dist /app/web/dist
+COPY scripts/antigravity_agy_admin.py scripts/antigravity_acp_pilot.py scripts/antigravity-acp-release.json /app/scripts/
+RUN install -d -m 0700 /app/data/antigravity-agy
 EXPOSE 8080
 ENTRYPOINT ["java", "-jar", "/app/app.jar"]

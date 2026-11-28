@@ -137,6 +137,7 @@ export function createOAuthAccountsFixture(now = FIXTURE_NOW) {
   }]))
   return {
     now, accounts, channels, providers: createMockOAuthProviders(), providerMappings,
+    agySettings: { enabled: false, proxy: 'http://127.0.0.1:7897', status: 'DISABLED', missingDependencies: [], error: null, updatedAt: now },
     syncCatalogs: {}, automaticMappings: {},
     controls: { failSuggestions: false, failMappingReads: 0, conflictNextSave: false, failMappingAfterSave: false, syncConflict: null },
   }
