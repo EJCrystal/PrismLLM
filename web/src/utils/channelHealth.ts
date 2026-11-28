@@ -51,10 +51,9 @@ export function healthMetricWarnings(
   policy: { minimumSamples: number; warningErrorRate: number; slowFirstTokenMs: number; slowP50FirstTokenMs: number },
 ): { failureRate: boolean; p95: boolean; p50: boolean } {
   const eligible = state === 'WARNING' || state === 'CRITICAL'
-  const enoughAttempts = metrics.attempts >= policy.minimumSamples
   const enoughFirstTokens = metrics.firstTokenSamples >= policy.minimumSamples
   return {
-    failureRate: eligible && enoughAttempts && metrics.attempts > 0 && metrics.failures / metrics.attempts >= policy.warningErrorRate,
+    failureRate: eligible && metrics.attempts > 0 && metrics.failures / metrics.attempts >= policy.warningErrorRate,
     p95: eligible && enoughFirstTokens && metrics.p95FirstTokenMs != null && metrics.p95FirstTokenMs > policy.slowFirstTokenMs,
     p50: eligible && enoughFirstTokens && metrics.p50FirstTokenMs != null && metrics.p50FirstTokenMs > policy.slowP50FirstTokenMs,
   }

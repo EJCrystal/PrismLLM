@@ -28,8 +28,9 @@ describe('channel health display', () => {
     }
   })
 
-  it('requires sufficient samples and uses inclusive failure but strict latency thresholds', () => {
-    assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, attempts: 19, firstTokenSamples: 19 }, policy), noWarnings)
+  it('uses observed failure rates without a sample gate but keeps latency sample thresholds', () => {
+    assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, attempts: 19, firstTokenSamples: 19 }, policy), { failureRate: true, p95: false, p50: false })
+    assert.deepEqual(healthMetricWarnings('CRITICAL', { ...warningMetrics, attempts: 7, failures: 7, firstTokenSamples: 0 }, policy), { failureRate: true, p95: false, p50: false })
     assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, failures: 4, p95FirstTokenMs: 30_000, p50FirstTokenMs: 10_000 }, policy), noWarnings)
     assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, attempts: 0, failures: 0, p95FirstTokenMs: null, p50FirstTokenMs: null }, policy), noWarnings)
     assert.deepEqual(healthMetricWarnings('WARNING', { ...warningMetrics, firstTokenSamples: 19 }, policy), { failureRate: true, p95: false, p50: false })

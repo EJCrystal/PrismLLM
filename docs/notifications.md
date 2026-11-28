@@ -27,7 +27,7 @@
 | `attempt.recovered` | 连续失败告警后的首次成功尝试 |
 | `notification.test` | 管理员点击测试按钮；不受目标事件及渠道筛选限制 |
 
-健康判定与管理台最近一小时一致：至少 20 次有效尝试；失败率 ≥5% 为 WARNING，≥20% 为 CRITICAL；首 token 延迟使用 `HEALTH_SLOW_FIRST_TOKEN_MS` / `HEALTH_SLOW_P50_FIRST_TOKEN_MS`。启用渠道没有可路由凭据时立即判定 NO_CREDENTIALS，无需样本。UNKNOWN、样本不足和历史索引未完成都不是恢复；主动关闭渠道会停止其健康告警。
+健康告警独立使用最近一小时观测，仍需至少 20 次有效尝试，管理台健康展示取消样本门槛不会放宽告警或恢复通知条件。失败率 ≥5% 为 WARNING，≥20% 为 CRITICAL；首 token 延迟使用 `HEALTH_SLOW_FIRST_TOKEN_MS` / `HEALTH_SLOW_P50_FIRST_TOKEN_MS`，仍需至少 20 个首 token 样本。启用渠道没有可路由凭据时立即判定 NO_CREDENTIALS，无需样本。UNKNOWN、样本不足和历史索引未完成都不是恢复；主动关闭渠道会停止其健康告警。
 
 连续失败按完成后的观测顺序统计，支持静态密钥和 OAuth 凭据。路由跳过、客户端取消、本地协议转换错误和不应归咎于上游的无效参数既不累计，也不清零。成功清零并允许下一段失败重新告警；持续失败只告警一次。此计数不修改路由冷却或密钥自动停用规则。
 

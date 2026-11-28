@@ -204,8 +204,8 @@ function tryClose() {
               <span>上游尝试成功率</span>
               <strong :class="{ 'health-metric-warning': warnings?.failureRate }">{{ healthPercent(metrics.successRate) }}</strong>
               <small>{{ metrics.successes }} 成功 / {{ metrics.attempts }} 有效尝试</small>
-              <small v-if="metrics.attempts < detail.report.minimumSamples" class="health-metric-warning">样本不足，暂不判定</small>
-              <small v-else-if="warnings?.failureRate" class="health-metric-warning">失败率达到关注阈值</small>
+              <small v-if="warnings?.failureRate" class="health-metric-warning">失败率达到关注阈值</small>
+              <small v-if="metrics.attempts > 0 && metrics.attempts < detail.report.minimumSamples" class="muted">小样本，仅供参考</small>
             </div>
             <div>
               <span>首 token · P95</span>
@@ -241,7 +241,8 @@ function tryClose() {
             <div class="health-explanation-body muted small">
               <p>真实请求观测 · 不发起额外探测，也不修改模型路由顺序。所有时间按请求完成时间统计。</p>
               <p>排除 {{ metrics.excluded }} 次客户端取消、参数错误或网关协议转换失败。HTTP 200 后流式失败仍算失败。未知不代表可用或不可用。</p>
-              <p>至少 {{ detail.report.minimumSamples }} 个样本才判定健康度；最近一小时无有效样本显示未知。错误率 ≥ {{ healthPercent(detail.report.warningErrorRate) }} 需关注、≥ {{ healthPercent(detail.report.criticalErrorRate) }} 异常；首 token P95 超过 {{ formatDuration(detail.report.slowFirstTokenMs) }}、或 P50 超过 {{ formatDuration(detail.report.slowP50FirstTokenMs) }}，且样本足够时提示关注。这两条只影响关注提示，不触发冷却。</p>
+              <p>健康展示按实际失败率判定，不设最少样本门槛；无有效样本或最近一小时无有效样本显示未知。错误率 ≥ {{ healthPercent(detail.report.warningErrorRate) }} 需关注、≥ {{ healthPercent(detail.report.criticalErrorRate) }} 异常；少于 {{ detail.report.minimumSamples }} 个有效样本时提示“小样本，仅供参考”。</p>
+              <p>失败率告警和健康恢复通知仍需至少 {{ detail.report.minimumSamples }} 个有效样本；无可用凭据等确定性状态不受该门槛限制。首 token P95 超过 {{ formatDuration(detail.report.slowFirstTokenMs) }}、或 P50 超过 {{ formatDuration(detail.report.slowP50FirstTokenMs) }}，且首 token 样本至少 {{ detail.report.minimumSamples }} 个时提示关注。这两条只影响关注提示，不触发冷却。</p>
               <p>趋势色块按各时段的实际失败率显示正常、需关注或异常，不设最少样本门槛；无有效请求的时段留空，不代表正常。</p>
               <p>TTFT 仅统计有首 token 的成功流式尝试；总耗时按上游单次尝试计时。输出速度为输出 token ÷（上游耗时 − 首 token），包含传输及工具等待，只供同模型、同协议比较。</p>
               <p>估算输出速度完整值：{{ healthThroughput(metrics.outputTokensPerSecond) === '—' ? '—' : metrics.outputTokensPerSecond?.toFixed(1) + ' tok/s' }}。</p>
@@ -264,7 +265,7 @@ function tryClose() {
             <div v-else v-scroll-hint class="table-scroll health-table-wrap">
               <table class="data-table health-responsive-table health-breakdown">
                 <thead><tr><th scope="col">名称</th><th scope="col">有效尝试</th><th scope="col">成功率</th><th scope="col">首 token P50 / P95</th><th scope="col">耗时 P95</th></tr></thead>
-                <tbody><tr v-for="row in rows" :key="row.id"><td class="health-row-name" data-label="名称">{{ row.name }}<small v-if="row.metrics.attempts < detail.report.minimumSamples" class="health-metric-warning"> 样本不足</small></td><td data-label="有效尝试">{{ row.metrics.attempts }}</td><td data-label="成功率">{{ healthPercent(row.metrics.successRate) }}</td><td data-label="首 token P50 / P95">{{ formatDuration(row.metrics.p50FirstTokenMs) }} / {{ formatDuration(row.metrics.p95FirstTokenMs) }}</td><td data-label="耗时 P95">{{ formatDuration(row.metrics.p95TotalMs) }}</td></tr></tbody>
+                <tbody><tr v-for="row in rows" :key="row.id"><td class="health-row-name" data-label="名称">{{ row.name }}<small v-if="row.metrics.attempts > 0 && row.metrics.attempts < detail.report.minimumSamples" class="muted"> 小样本，仅供参考</small></td><td data-label="有效尝试">{{ row.metrics.attempts }}</td><td data-label="成功率">{{ healthPercent(row.metrics.successRate) }}</td><td data-label="首 token P50 / P95">{{ formatDuration(row.metrics.p50FirstTokenMs) }} / {{ formatDuration(row.metrics.p95FirstTokenMs) }}</td><td data-label="耗时 P95">{{ formatDuration(row.metrics.p95TotalMs) }}</td></tr></tbody>
               </table>
             </div>
           </template>

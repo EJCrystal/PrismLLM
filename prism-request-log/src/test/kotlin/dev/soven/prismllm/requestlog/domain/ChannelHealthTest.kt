@@ -21,18 +21,26 @@ class ChannelHealthTest {
         healthState(metrics, enabled, now, policy, routableCredentials).first
 
     @Test
-    fun `unknown covers empty sparse and stale observations`() {
+    fun `unknown covers empty missing timestamps and stale observations`() {
         assertEquals("UNKNOWN", state(HealthMetrics()))
         assertEquals("UNKNOWN", state(HealthMetrics(
-            attempts = ChannelHealthThresholds.MINIMUM_SAMPLES - 1L,
-            successes = ChannelHealthThresholds.MINIMUM_SAMPLES - 1L,
-            lastObservedAt = now,
+            attempts = 7,
+            successes = 7,
         )))
         assertEquals("UNKNOWN", state(HealthMetrics(
             attempts = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong(),
             successes = ChannelHealthThresholds.MINIMUM_SAMPLES.toLong(),
             lastObservedAt = now - ChannelHealthThresholds.STALE_AFTER_MS - 1,
         )))
+    }
+
+    @Test
+    fun `small samples are classified by observed failure rate`() {
+        assertEquals("HEALTHY", state(HealthMetrics(attempts = 1, successes = 1, lastObservedAt = now)))
+        assertEquals("HEALTHY", state(HealthMetrics(attempts = 7, successes = 7, lastObservedAt = now)))
+        assertEquals("WARNING", state(HealthMetrics(attempts = 19, successes = 18, failures = 1, lastObservedAt = now)))
+        assertEquals("CRITICAL", state(HealthMetrics(attempts = 1, failures = 1, lastObservedAt = now)))
+        assertEquals("CRITICAL", state(HealthMetrics(attempts = 7, failures = 7, lastObservedAt = now)))
     }
 
     @Test
@@ -81,6 +89,7 @@ class ChannelHealthTest {
         assertEquals("HEALTHY", state(metrics))
         assertEquals("WARNING", state(metrics.copy(firstTokenSamples = 20)))
         assertEquals("HEALTHY", state(metrics.copy(firstTokenSamples = 20, p95FirstTokenMs = 2_000.0)))
+        assertEquals("HEALTHY", state(metrics.copy(attempts = 7, successes = 7, firstTokenSamples = 7, p50FirstTokenMs = 501.0)))
     }
 
     @Test
