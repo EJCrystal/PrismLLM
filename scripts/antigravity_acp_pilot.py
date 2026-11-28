@@ -205,7 +205,7 @@ def proxy_address(value):
         return None
     parsed = urllib.parse.urlsplit(value)
     try:
-        port = parsed.port or 80
+        port = parsed.port if parsed.port is not None else 80
     except ValueError:
         raise PilotError("Use an HTTP proxy host and port without embedded credentials") from None
     if (parsed.scheme != "http" or not parsed.hostname or parsed.username is not None or parsed.password is not None or

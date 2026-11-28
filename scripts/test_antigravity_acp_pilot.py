@@ -62,7 +62,7 @@ class PilotPreparationTest(unittest.TestCase):
         self.assertIsNone(pilot.proxy_address(""))
         self.assertEqual(("127.0.0.1", 7897), pilot.proxy_address("http://127.0.0.1:7897"))
         self.assertEqual(("proxy.example", 80), pilot.proxy_address("http://proxy.example"))
-        for value in ("http://user:secret@127.0.0.1:7897",
+        for value in ("http://user:secret@127.0.0.1:7897", "http://proxy.example:0",
                       "https://127.0.0.1:7897", "http://127.0.0.1:7897/private", "http://127.0.0.1:7897?token=x"):
             with self.subTest(value=value), self.assertRaises(pilot.PilotError):
                 pilot.proxy_address(value)
